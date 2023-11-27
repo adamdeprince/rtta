@@ -31,7 +31,7 @@ Each operator has a paramater fillna.  If set to false, nan values
 will be returned until the operation is "populated".  If set to true,
 best guesses will be returned until the operation is populated.
 
-So for example, our exponential moving average `EMAIndicator` works sort of like this:
+So for example, our simple moving average `SMAIndicator` works sort of like this:
 
 ```python
 >>> import rtta.trend as trend
