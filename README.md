@@ -43,7 +43,7 @@ So for example, our simple moving average `SMAIndicator` works sort of like this
 >>> sma.update(3)
 2
 >>> sma.update(2)
-1
+2
 >>> sma.update(2)
 2.25 <- The 1 fell off the end of the sliding window
 ```
