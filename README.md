@@ -19,7 +19,6 @@ fast as fast can be.
 Installation
 ------------
 
-### From a repository checkout
 
 ```bash
 pip install rtta
