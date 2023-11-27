@@ -1,46 +1,56 @@
-from distutils.core import Extension, setup
-from Cython.Build import cythonize
-from Cython.Compiler import Options
-import Cython.Compiler.Options
+#!/usr/bin/python3
+
+import os
+from setuptools import setup, find_packages, Extension
 import numpy
 
-Cython.Compiler.Options.cimport_from_pyx = True
+try:
+    from Cython.Build import cythonize
+except ImportError:
+    cythonize = None
 
 
-def tests():
-    return TestLoader().discover('test', pattern='test_*.py')
-print('#'*30)
-print(numpy.get_include())
+# https://cython.readthedocs.io/en/latest/src/userguide/source_files_and_compilation.html#distributing-cython-modules
+def no_cythonize(extensions, **_ignore):
+    for extension in extensions:
+        sources = []
+        for sfile in extension.sources:
+            path, ext = os.path.splitext(sfile)
+            if ext in (".pyx", ".py"):
+                if extension.language == "c++":
+                    ext = ".cpp"
+                else:
+                    ext = ".c"
+                sfile = path + ext
+            sources.append(sfile)
+        extension.sources[:] = sources
+    return extensions
+
+
+extensions = [
+    Extension("rtta.trend", ["src/rtta/trend.pyx"]),
+]
+
+CYTHONIZE = bool(int(os.getenv("CYTHONIZE", 0))) and cythonize is not None
+
+if CYTHONIZE:
+    compiler_directives = {"language_level": 3, "embedsignature": True}
+    extensions = cythonize(extensions, compiler_directives=compiler_directives)
+else:
+    extensions = no_cythonize(extensions)
+
+with open("requirements.txt") as fp:
+    install_requires = fp.read().strip().split("\n")
+
+with open("requirements-dev.txt") as fp:
+    dev_requires = fp.read().strip().split("\n")
+
 setup(
-    name="rtta",
-    packages=["rtta"],
-    version="0.0.1",
-    description="Real time incremental Technical Analysis Library in Python",
-    long_description="It is a real time incremetnal Technical Analyissi library to perform incremental time series computaitons.  It is built on the numpy library.",
-    author="Adam DePrince",
-    author_email="adamdeprince@gmail.com",
-    maintainer="Adam DePrince",
-    maintainer_email="adamdeprince@gmail.com",
-    install_requires=[
-        "numpy",
-        ],
-    keywords=['technical analysis', 'realtime', 'real time', 'real time technical analysis', 'numpy'],
-    license='GNU AGPLv3',
-    classifiers=[
-        "Intended Audience :: Financial and Insurance Industry",
-        "Programming Language :: Python :: 3.6",
-        "Programming Language :: Python :: 3.7",
-        "License :: OSI Approved :: MIT License",
-    ],
-    project_urls = {},
-    ext_modules=cythonize(
-        ["rtta/trend.pyx",],
-        language_level=3,
-        nthreads=4,
-        include_path=[numpy.get_include()]),
-    
-    package_data = {
-        'rtta': ['*.pxd'],
+    ext_modules=extensions,
+    install_requires=install_requires,
+    extras_require={
+        "dev": dev_requires,
+        "docs": ["sphinx", "sphinx-rtd-theme"]
     },
-    
+    include_dirs=[numpy.get_include()],
 )

@@ -1,0 +1,2 @@
+[build-system]
+requires = ["setuptools>=64.0.0", "setuptools-scm>1.5.4", 'numpy', 'cython']
