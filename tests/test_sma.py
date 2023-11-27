@@ -2,9 +2,10 @@ import math
 from unittest import TestCase, main
 
 import numpy as np
+import pandas as pd
 
 from rtta.trend import SMAIndicator 
-
+from ta.trend import SMAIndicator as SMAIndicatorReference
 
 class SMAIndicatorTest(TestCase):
 
@@ -23,6 +24,13 @@ class SMAIndicatorTest(TestCase):
         self.assertAlmostEqual(sma.update(3), sum([1,2,3])/3)
         self.assertAlmostEqual(sma.update(4), sum([1,2,3,4])/4)
         self.assertAlmostEqual(sma.update(5), sum([2,3,4, 5]) / 4)
+
+    def test_against_reference(self):
+        data = np.random.rand(100)
+        sma = SMAIndicator(window=4, fillna=True)
+        for (x,y) in zip(SMAIndicatorReference(window=4, fillna=True, close=pd.Series(data)).sma_indicator(),
+                         [sma.update(x) for x in data]):
+            self.assertAlmostEqual(x,y)
 
 
 if __name__ == "__main__":
