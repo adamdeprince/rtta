@@ -48,3 +48,11 @@ So for example, our exponential moving average `EMAIndicator` works sort of like
 2.25 <- The 1 fell off the end of the sliding window
 ```
 
+Performance
+-----------
+
+|Indicator | Latency |
+|----------|---------|
+| SMA      | 36ns    |
+| EMA      | 36ns    |
+| MACD     | 55ns    |
