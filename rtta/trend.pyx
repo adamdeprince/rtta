@@ -1,6 +1,8 @@
 import sys
 import numpy as np
-
+cimport numpy as cnp
+cimport cython
+cnp.import_array()
 
 cdef class SMAIndicator():
     """SMA - Simple Moving Average
@@ -12,6 +14,7 @@ cdef class SMAIndicator():
 
     cdef bint first_pass
     cdef object history
+    cdef double[:] history_view
     cdef int index
     cdef int window
     cdef bint fillna
@@ -19,16 +22,19 @@ cdef class SMAIndicator():
     
     def __init__(self, int window, bint fillna=False):
         self.history = np.zeros(window)
+        self.history_view = self.history
         self.first_pass = True
         self.index = 0
         self.window = window
         self.fillna = fillna
         self.tally = 0
         
+    @cython.boundscheck(False) # turn off bounds-checking for entire function
+    @cython.wraparound(False)
     cpdef double update(self, float value):
-        self.tally -= self.history[self.index]
+        self.tally -= self.history_view[self.index]
         self.tally += value
-        self.history[self.index] = value
+        self.history_view[self.index] = value
 
         self.index += 1
 

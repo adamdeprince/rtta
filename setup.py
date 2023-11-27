@@ -2,13 +2,15 @@ from distutils.core import Extension, setup
 from Cython.Build import cythonize
 from Cython.Compiler import Options
 import Cython.Compiler.Options
+import numpy
 
 Cython.Compiler.Options.cimport_from_pyx = True
 
 
 def tests():
     return TestLoader().discover('test', pattern='test_*.py')
-
+print('#'*30)
+print(numpy.get_include())
 setup(
     name="rtta",
     packages=["rtta"],
@@ -34,9 +36,11 @@ setup(
     ext_modules=cythonize(
         ["rtta/trend.pyx",],
         language_level=3,
-        nthreads=4),
+        nthreads=4,
+        include_path=[numpy.get_include()]),
     
     package_data = {
         'rtta': ['*.pxd'],
     },
+    
 )
