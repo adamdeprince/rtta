@@ -8,15 +8,15 @@ from collections import namedtuple
 
 
         
-cdef class AwesomeOscillatorIndicator():
-    cdef SMAIndicator oscillator_1
-    cdef SMAIndicator oscillator_2
+cdef class AwesomeOscillatorIndicator:
+    cdef SMA oscillator_1
+    cdef SMA oscillator_2
     cdef long counter
     cdef int window
 
-    def __init__(self, int window_1 = 34, int window_2 = 5, bint fillna = False):
-        self.oscillator_1 = SMAIndicator(window=window_1, fillna=True)
-        self.oscillator_2 = SMAIndicator(window=window_2, fillna=True)
+    def __init__(self, int window_1 = 34, int window_2 = 5, bint fillna = True):
+        self.oscillator_1 = SMA(window=window_1, fillna=True)
+        self.oscillator_2 = SMA(window=window_2, fillna=True)
         self.counter = 0
         self.window = max(window_1, window_2) if not fillna else 0
 
@@ -40,9 +40,39 @@ cdef class AwesomeOscillatorIndicator():
     cpdef batch(self, high, low):
         mid = (high + low) * 0.5
         return self.oscillator_1.batch(mid) - self.oscillator_2.batch(mid)
+
+
+cdef class Delay:
+    cdef int index
+    cdef int max
+    cdef bint fillna
+    cdef double[:] buffer_view
+    cdef object buffer
+    cdef bint first
+    
+    def __init__(self, int window=1, bint fillna=True):
+        self.index = 0
+        self.max = window
+        self.fillna = fillna
+        self.buffer = np.zeros(self.max)
+        self.buffer_view = self.buffer
+        self.first = True
+
+    cpdef double update(self, double value):
+        cdef int idx
+        if self.first:
+            self.first = False
+            self.buffer[:] = value if self.fillna else np.nan
+        retval = self.buffer_view[self.index]
+        self.buffer_view[self.index] = value
+        self.index += 1 
+        if self.index  == self.max:
+            self.index = 0
+        return retval
+
         
 
-cdef class EMAIndicator:
+cdef class EMA:
     """SMA - Simple Moving Average
 
     Args:
@@ -92,6 +122,27 @@ cdef class EMAIndicator:
             output_view[i] = self.update(input_view[i])
         return retval
 
+
+cdef class KamaIndicator():
+    """KamaIndicator - Kaufman's Adaptive Moving Average (KAMA),
+    created by Perry Kaufman, is an advanced moving average that
+    responds to both trends and volatility. It is a potent
+    trend-following indicator based on the Exponential Moving Average
+    (EMA). The KAMA closely follows the price when noise levels are
+    low, and it smooths out the noise when the price fluctuates. KAMA
+    can be used like other moving averages to visualize the trend, and
+    price crossing it may indicate a change in
+    direction. Additionally, price can bounce off the KAMA, which can
+    act as dynamic support and resistance. KAMA is often combined with
+    other signals and analysis techniques.
+
+    Args:
+      window: (10) n period
+      pow1: (2) number of periods for the fastest EMA constant
+      pow2: (30) number of periods for the slowest EMA constant
+      fillna: fill in nan values
+    """
+    pass
     
 cdef class MACD():
     """MCAD - Moving average convergence divergence.
@@ -103,9 +154,9 @@ cdef class MACD():
       a, b, c: The EMA period parameters
     """
 
-    cdef EMAIndicator a
-    cdef EMAIndicator b
-    cdef EMAIndicator c
+    cdef EMA a
+    cdef EMA b
+    cdef EMA c
     cdef long counter
     cdef bint fillna
     cdef int window    
@@ -114,9 +165,9 @@ cdef class MACD():
         """
         https://school.stockcharts.com/doku.php?id=technical_indicators:moving_average_convergence_divergence_macd
         """
-        self.a = EMAIndicator(window=a, fillna=True)
-        self.b = EMAIndicator(window=b, fillna=True)
-        self.c = EMAIndicator(window=c, fillna=fillna)
+        self.a = EMA(window=a, fillna=True)
+        self.b = EMA(window=b, fillna=True)
+        self.c = EMA(window=c, fillna=fillna)
         self.counter = 0
         self.fillna = fillna
         self.window = max(a,b) +c 
@@ -144,16 +195,16 @@ cdef class MACD():
 
             
 cdef class MassIndex():
-    cdef EMAIndicator single
-    cdef EMAIndicator double
+    cdef EMA single
+    cdef EMA double
     cdef Summation summation
     cdef long counter
     cdef int window
     cdef bint fillna
     
     def __init__(self, int single=9, int double=9, int summation=25, bint fillna=False):
-        self.single = EMAIndicator(window=single, fillna=True)
-        self.double = EMAIndicator(window=double, fillna=True)
+        self.single = EMA(window=single, fillna=True)
+        self.double = EMA(window=double, fillna=True)
         self.summation = Summation(window=summation, fillna=True)
         self.counter = 0
         self.window = max(single, double) + summation
@@ -179,7 +230,7 @@ cdef class MassIndex():
 
         
 
-cdef class SMAIndicator():
+cdef class SMA():
     """SMA - Simple Moving Average
 
     Args:
@@ -243,16 +294,16 @@ cdef struct PercentagePriceOscillatorResponse:
     
 
 cdef class PercentagePriceOscillator():
-    cdef EMAIndicator oscillator_1
-    cdef EMAIndicator oscillator_2
-    cdef EMAIndicator oscillator_3
+    cdef EMA oscillator_1
+    cdef EMA oscillator_2
+    cdef EMA oscillator_3
     cdef int window
     cdef long counter
     
     def __init__(self, int window_1=12, int window_2=26, int window_3=9, fillna=False):
-        self.oscillator_1 = EMAIndicator(window=window_1, fillna=True)
-        self.oscillator_2 = EMAIndicator(window=window_2, fillna=True)
-        self.oscillator_3 = EMAIndicator(window=window_3, fillna=True)
+        self.oscillator_1 = EMA(window=window_1, fillna=True)
+        self.oscillator_2 = EMA(window=window_2, fillna=True)
+        self.oscillator_3 = EMA(window=window_3, fillna=True)
         self.window = max(window_1, window_2, window_3) if not fillna else 0
         self.counter = 0
 
