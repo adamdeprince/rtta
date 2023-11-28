@@ -323,6 +323,13 @@ cdef class PercentagePriceOscillator():
         retval.histogram = retval.ppo - retval.signal
 
         return retval
+
+    cpdef batch(self, close):
+        o26 = self.oscillator_2.batch(close)
+        ppo = ((self.oscillator_1.batch(close) - o26) / o26 ) * 100
+        signal = self.oscillator_3.batch(ppo)
+        histogram = ppo - signal
+        return {'histogram':histogram, 'signal': signal, 'ppo': ppo}
         
 
         
