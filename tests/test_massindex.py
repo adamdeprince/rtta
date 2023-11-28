@@ -5,7 +5,7 @@ from unittest import TestCase, main
 import numpy as np
 import pandas as pd
 
-from rtta.trend import MassIndex
+from rtta.indicator import MassIndex
 from ta.trend import MassIndex as MassIndexReference
 
 

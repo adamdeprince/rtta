@@ -28,7 +28,7 @@ def no_cythonize(extensions, **_ignore):
 
 
 extensions = [
-    Extension("rtta.trend", ["src/rtta/trend.pyx"]),
+    Extension("rtta.indicator", ["src/rtta/indicator.pyx"]),
 ]
 
 CYTHONIZE = bool(int(os.getenv("CYTHONIZE", 0))) and cythonize is not None

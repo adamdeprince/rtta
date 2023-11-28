@@ -4,7 +4,7 @@ from unittest import TestCase, main
 import numpy as np
 import pandas as pd
 
-from rtta.trend import EMAIndicator 
+from rtta.indicator import EMAIndicator 
 from ta.trend import EMAIndicator as EMAIndicatorReference
 
 class EMAIndicatorTest(TestCase):

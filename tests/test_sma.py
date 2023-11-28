@@ -4,7 +4,7 @@ from unittest import TestCase, main
 import numpy as np
 import pandas as pd
 
-from rtta.trend import SMAIndicator 
+from rtta.indicator import SMAIndicator 
 from ta.trend import SMAIndicator as SMAIndicatorReference
 
 class SMAIndicatorTest(TestCase):

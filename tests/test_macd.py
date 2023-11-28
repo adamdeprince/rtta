@@ -5,7 +5,7 @@ from unittest import TestCase, main
 import numpy as np
 import pandas as pd
 
-from rtta.trend import MACD
+from rtta.indicator import MACD
 from ta.trend import MACD as MACDReference
 
 
