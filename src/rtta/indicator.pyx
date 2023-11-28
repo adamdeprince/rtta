@@ -6,119 +6,41 @@ cnp.import_array()
 from collections import namedtuple
 
 
-cdef class Summation():
-    """Summation - Summation acorss a fixed window.
 
-    Args:
-      window(int): n period
-      fillna(bool): if True, fill nan values
-    """
-
-    cdef bint first_pass
-    cdef object history
-    cdef double[:] history_view
-    cdef int index
-    cdef int window
-    cdef bint fillna
-    cdef double tally
-    
-    def __init__(self, int window, bint fillna=False):
-        self.history = np.zeros(window)
-        self.history_view = self.history
-        self.first_pass = True
-        self.index = 0
-        self.window = window
-        self.fillna = fillna
-        self.tally = 0
         
-    @cython.boundscheck(False) # turn off bounds-checking for entire function
-    @cython.wraparound(False)
-    cpdef double update(self, double value):
-        self.tally -= self.history_view[self.index]
-        self.tally += value
-        self.history_view[self.index] = value
+cdef class AwesomeOscillatorIndicator():
+    cdef SMAIndicator oscillator_1
+    cdef SMAIndicator oscillator_2
+    cdef long counter
+    cdef int window
 
-        self.index += 1
+    def __init__(self, int window_1 = 34, int window_2 = 5, bint fillna = False):
+        self.oscillator_1 = SMAIndicator(window=window_1, fillna=True)
+        self.oscillator_2 = SMAIndicator(window=window_2, fillna=True)
+        self.counter = 0
+        self.window = max(window_1, window_2) if not fillna else 0
 
-        if self.index == self.window:
-            self.index = 0
-            self.first_pass = False
-            
-        if self.first_pass:
-            if not self.fillna:
-                return np.nan
-            return self.tally
-        return self.tally
+    cpdef double update(self, double high, double low):
+        self.counter += 1
 
-    cpdef batch(self, input):
-        cdef long i 
-        retval = np.empty(input.shape[0], dtype=np.double)
+        if high < low:
+            high, low = low, high
 
-        cdef double[:] input_view = input
-        cdef double[:] output_view = retval
 
-        for i in range(input.shape[0]):
-            output_view[i] = self.update(input_view[i])
+        cdef double median = (high + low) * 0.5
+
+
+        cdef double retval = self.oscillator_2.update(median) - self.oscillator_1.update(median)
+
+
+        if self.counter <= self.window:
+            return np.nan
         return retval
 
-
-
-cdef class SMAIndicator():
-    """SMA - Simple Moving Average
-
-    Args:
-      window(int): n period
-      fillna(bool): if True, fill nan values
-    """
-
-    cdef bint first_pass
-    cdef object history
-    cdef double[:] history_view
-    cdef int index
-    cdef int window
-    cdef bint fillna
-    cdef double tally
-    
-    def __init__(self, int window, bint fillna=False):
-        self.history = np.zeros(window)
-        self.history_view = self.history
-        self.first_pass = True
-        self.index = 0
-        self.window = window
-        self.fillna = fillna
-        self.tally = 0
+    cpdef batch(self, high, low):
+        mid = (high + low) * 0.5
+        return self.oscillator_1.batch(mid) - self.oscillator_2.batch(mid)
         
-    @cython.boundscheck(False) # turn off bounds-checking for entire function
-    @cython.wraparound(False)
-    cpdef double update(self, double value):
-        self.tally -= self.history_view[self.index]
-        self.tally += value
-        self.history_view[self.index] = value
-
-        self.index += 1
-
-        if self.index == self.window:
-            self.index = 0
-            self.first_pass = False
-            
-        if self.first_pass:
-            if not self.fillna:
-                return np.nan
-            return self.tally / self.index
-        return self.tally/self.window
-
-    cpdef batch(self, input):
-        cdef long i 
-        retval = np.empty(input.shape[0], dtype=np.double)
-
-        cdef double[:] input_view = input
-        cdef double[:] output_view = retval
-
-        for i in range(input.shape[0]):
-            output_view[i] = self.update(input_view[i])
-        return retval
-
-
 
 cdef class EMAIndicator:
     """SMA - Simple Moving Average
@@ -256,40 +178,62 @@ cdef class MassIndex():
             self.counter += 1
 
         
-        
-cdef class AwesomeOscillatorIndicator():
-    cdef SMAIndicator oscillator_1
-    cdef SMAIndicator oscillator_2
-    cdef long counter
+
+cdef class SMAIndicator():
+    """SMA - Simple Moving Average
+
+    Args:
+      window(int): n period
+      fillna(bool): if True, fill nan values
+    """
+
+    cdef bint first_pass
+    cdef object history
+    cdef double[:] history_view
+    cdef int index
     cdef int window
+    cdef bint fillna
+    cdef double tally
+    
+    def __init__(self, int window, bint fillna=False):
+        self.history = np.zeros(window)
+        self.history_view = self.history
+        self.first_pass = True
+        self.index = 0
+        self.window = window
+        self.fillna = fillna
+        self.tally = 0
+        
+    @cython.boundscheck(False) # turn off bounds-checking for entire function
+    @cython.wraparound(False)
+    cpdef double update(self, double value):
+        self.tally -= self.history_view[self.index]
+        self.tally += value
+        self.history_view[self.index] = value
 
-    def __init__(self, int window_1 = 34, int window_2 = 5, bint fillna = False):
-        self.oscillator_1 = SMAIndicator(window=window_1, fillna=True)
-        self.oscillator_2 = SMAIndicator(window=window_2, fillna=True)
-        self.counter = 0
-        self.window = max(window_1, window_2) if not fillna else 0
+        self.index += 1
 
-    cpdef double update(self, double high, double low):
-        self.counter += 1
+        if self.index == self.window:
+            self.index = 0
+            self.first_pass = False
+            
+        if self.first_pass:
+            if not self.fillna:
+                return np.nan
+            return self.tally / self.index
+        return self.tally/self.window
 
-        if high < low:
-            high, low = low, high
+    cpdef batch(self, input):
+        cdef long i 
+        retval = np.empty(input.shape[0], dtype=np.double)
 
+        cdef double[:] input_view = input
+        cdef double[:] output_view = retval
 
-        cdef double median = (high + low) * 0.5
-
-
-        cdef double retval = self.oscillator_2.update(median) - self.oscillator_1.update(median)
-
-
-        if self.counter <= self.window:
-            return np.nan
+        for i in range(input.shape[0]):
+            output_view[i] = self.update(input_view[i])
         return retval
 
-    cpdef batch(self, high, low):
-        mid = (high + low) * 0.5
-        return self.oscillator_1.batch(mid) - self.oscillator_2.batch(mid)
-        
 
 
 cdef struct PercentagePriceOscillatorResponse:
@@ -333,3 +277,61 @@ cdef class PercentagePriceOscillator():
         
 
         
+
+cdef class Summation():
+    """Summation - Summation acorss a fixed window.
+
+    Args:
+      window(int): n period
+      fillna(bool): if True, fill nan values
+    """
+
+    cdef bint first_pass
+    cdef object history
+    cdef double[:] history_view
+    cdef int index
+    cdef int window
+    cdef bint fillna
+    cdef double tally
+    
+    def __init__(self, int window, bint fillna=False):
+        self.history = np.zeros(window)
+        self.history_view = self.history
+        self.first_pass = True
+        self.index = 0
+        self.window = window
+        self.fillna = fillna
+        self.tally = 0
+        
+    @cython.boundscheck(False) # turn off bounds-checking for entire function
+    @cython.wraparound(False)
+    cpdef double update(self, double value):
+        self.tally -= self.history_view[self.index]
+        self.tally += value
+        self.history_view[self.index] = value
+
+        self.index += 1
+
+        if self.index == self.window:
+            self.index = 0
+            self.first_pass = False
+            
+        if self.first_pass:
+            if not self.fillna:
+                return np.nan
+            return self.tally
+        return self.tally
+
+    cpdef batch(self, input):
+        cdef long i 
+        retval = np.empty(input.shape[0], dtype=np.double)
+
+        cdef double[:] input_view = input
+        cdef double[:] output_view = retval
+
+        for i in range(input.shape[0]):
+            output_view[i] = self.update(input_view[i])
+        return retval
+
+
+
