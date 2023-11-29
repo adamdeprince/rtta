@@ -410,8 +410,74 @@ cdef class PercentagePrice():
                 'histogram':histogram}
 
 
+cdef class ROC:
+    """ROC: The Rate-of-Change (ROC) indicator, also known as Momentum, is
+    a pure momentum oscillator that quantifies the percentage change
+    in price between two consecutive periods. The ROC calculation
+    involves comparing the current price to the price from "n" periods
+    ago. The oscillator forms a plot that oscillates above and below
+    the zero line as the Rate-of-Change shifts from positive to
+    negative. As a momentum oscillator, ROC signals include centerline
+    crossovers, divergences, and overbought-oversold
+    readings. Although divergences are not always reliable indicators
+    of reversals, they will not be discussed in detail in this
+    article. Despite being susceptible to whipsaws, particularly in
+    short-term contexts, centerline crossovers can be employed to
+    determine the overall trend. Identifying overbought or oversold
+    extremes comes naturally to the Rate-of-Change oscillator.
 
-cdef class Summation():
+    Args:
+      window: Window size
+      fillna:
+    """
+
+    cdef Delay close
+    cdef int window
+    cdef bint fillna
+    cdef long counter 
+
+    def __init__(self, int window, bint fillna=True):
+        self.close = Delay(window=window, fillna=True)
+        self.window = window
+        self.fillna = fillna
+        self.counter = 0
+        
+    cpdef double update(self, double close):
+        cdef double close_ago = self.close.update(close)
+        if not self.fillna and self.counter < self.window:
+            self.counter += 1
+            return np.nan
+        if close_ago == 0:
+            self.counter += 1
+            return 0
+        self.counter += 1
+        return  ((close - close_ago) / (close_ago)) * 100
+
+    cpdef batch(self, close):
+        cdef int j = close.shape[0]
+        cdef int i
+        cdef double close_ago
+        
+        retval = np.empty(close.shape[0])
+        cdef double[:] input_view = close
+        cdef double[:] output_view = retval
+        
+        for i in range(j):
+            close_ago = self.close.update(input_view[i])
+            if not self.fillna and self.counter < self.window:
+                output_view[i] = np.nan
+            elif close_ago == 0:
+                output_view[i] = 0
+            else:
+                output_view[i] = 100 * ((input_view[i] - close_ago) / (close_ago))
+            self.counter += 1
+
+        return retval
+        
+        
+        
+
+cdef class Summation:
     """Summation - Summation acorss a fixed window.
 
     Args:
