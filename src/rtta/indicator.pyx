@@ -138,7 +138,7 @@ cdef class EMA:
             self.last_value = l
         return retval
 
-class Kama():
+cdef class Kama():
     """Kama - Kaufman's Adaptive Moving Average (KAMA), created by Perry
     Kaufman, is an advanced moving average that responds to both
     trends and volatility. It is a potent trend-following indicator
@@ -157,6 +157,13 @@ class Kama():
       fillna: fill in nan values
     """
 
+    cdef Delay vol
+    cdef Delay window
+    cdef Summation den
+    cdef double _pow1
+    cdef double _pow2
+    cdef bint first
+    cdef Delay kama
 
     def __init__(self, int window=10, int fast_ema=2, int slow_ema=30, fillna=True):
         
@@ -168,13 +175,13 @@ class Kama():
         self.first = True
         self.kama = Delay(1)
 
-    def update(self, double close):
-        vol = abs(close - self.vol.update(close))
-        er_num = abs(close - self.window.update(close))
-        er_den = self.den.update(vol)
+    cpdef double update(self, double close):
+        cdef double vol = abs(close - self.vol.update(close))
+        cdef double er_num = abs(close - self.window.update(close))
+        cdef double er_den = self.den.update(vol)
 
-        efficiency_ratio = 0 if er_den == 0 else er_num / er_den
-        smoothing_constant = (
+        cdef double efficiency_ratio = 0 if er_den == 0 else er_num / er_den
+        cdef double smoothing_constant = (
             (
                 efficiency_ratio * (2.0 / (self._pow1 + 1) - 2.0 / (self._pow2 + 1.0))
                 + 2 / (self._pow2 + 1.0)
@@ -187,8 +194,8 @@ class Kama():
             self.kama.update(close)
             self.first = False 
             return close
-        peek = self.kama.peek()
-        retval = peek + smoothing_constant * (close - peek)
+        cdef double peek = self.kama.peek()
+        cdef double retval = peek + smoothing_constant * (close - peek)
         self.kama.update(retval)
         return retval
 
@@ -401,7 +408,8 @@ cdef class PercentagePrice():
 
         return {'ppo': ppo, 'signal': signal,
                 'histogram':histogram}
-        
+
+
 
 cdef class Summation():
     """Summation - Summation acorss a fixed window.
