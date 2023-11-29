@@ -81,7 +81,7 @@ cdef class EMA:
     """
 
     cdef bint first_pass
-    cdef int index
+    cdef long index
     cdef int window
     cdef bint fillna
     cdef double last_value
@@ -103,7 +103,6 @@ cdef class EMA:
         self.last_value = self.weighted_multiplier * value + self.last_value * self.inverted_multiplier
         self.index += 1
         if self.index == self.window:
-            self.index = 0
             self.first_pass = False
 
         if self.first_pass and not self.fillna:
@@ -112,14 +111,28 @@ cdef class EMA:
         return self.last_value
 
     cpdef batch(self, input):
-        cdef long i 
+        cdef long i
+        cdef long j
+        cdef double l = self.last_value
         retval = np.empty(input.shape[0], dtype=np.double)
 
         cdef double[:] input_view = input
         cdef double[:] output_view = retval
 
-        for i in range(input.shape[0]):
-            output_view[i] = self.update(input_view[i])
+        if self.fillna:
+            for i in range(j):
+                output_view[i] = l = self.weighted_multiplier * input_view[i] + l * self.inverted_multiplier
+            self.last_value = l
+            self.index += input.shape[0]
+        else:
+            for i in range(j):
+                l = self.weighted_multiplier * input_view[i] + l * self.inverted_multiplier
+                self.index += 1
+                if self.index < self.window:
+                    output_view[i] = np.nan
+                else:
+                    output_view[i] = l
+            self.last_value = l
         return retval
 
 
@@ -143,6 +156,7 @@ cdef class KamaIndicator():
       fillna: fill in nan values
     """
     pass
+
     
 cdef class MACD():
     """MCAD - Moving average convergence divergence.
