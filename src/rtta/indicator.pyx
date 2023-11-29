@@ -8,7 +8,7 @@ from collections import namedtuple
 
 
         
-cdef class AwesomeOscillatorIndicator:
+cdef class AwesomeOscillator:
     cdef SMA oscillator_1
     cdef SMA oscillator_2
     cdef long counter
@@ -62,13 +62,16 @@ cdef class Delay:
         cdef int idx
         if self.first:
             self.first = False
-            self.buffer[:] = value if self.fillna else np.nan
+            self.buffer[:] = 0 if self.fillna else np.nan
         retval = self.buffer_view[self.index]
         self.buffer_view[self.index] = value
         self.index += 1 
         if self.index  == self.max:
             self.index = 0
         return retval
+
+    cpdef double peek(self):
+        return self.buffer[self.index]
 
         
 
@@ -135,19 +138,17 @@ cdef class EMA:
             self.last_value = l
         return retval
 
-
-cdef class KamaIndicator():
-    """KamaIndicator - Kaufman's Adaptive Moving Average (KAMA),
-    created by Perry Kaufman, is an advanced moving average that
-    responds to both trends and volatility. It is a potent
-    trend-following indicator based on the Exponential Moving Average
-    (EMA). The KAMA closely follows the price when noise levels are
-    low, and it smooths out the noise when the price fluctuates. KAMA
-    can be used like other moving averages to visualize the trend, and
-    price crossing it may indicate a change in
-    direction. Additionally, price can bounce off the KAMA, which can
-    act as dynamic support and resistance. KAMA is often combined with
-    other signals and analysis techniques.
+class Kama():
+    """Kama - Kaufman's Adaptive Moving Average (KAMA), created by Perry
+    Kaufman, is an advanced moving average that responds to both
+    trends and volatility. It is a potent trend-following indicator
+    based on the Exponential Moving Average (EMA). The KAMA closely
+    follows the price when noise levels are low, and it smooths out
+    the noise when the price fluctuates. KAMA can be used like other
+    moving averages to visualize the trend, and price crossing it may
+    indicate a change in direction. Additionally, price can bounce off
+    the KAMA, which can act as dynamic support and resistance. KAMA is
+    often combined with other signals and analysis techniques.
 
     Args:
       window: (10) n period
@@ -155,7 +156,54 @@ cdef class KamaIndicator():
       pow2: (30) number of periods for the slowest EMA constant
       fillna: fill in nan values
     """
-    pass
+
+
+    def __init__(self, int window=10, int fast_ema=2, int slow_ema=30, fillna=True):
+        
+        self.vol = Delay(1)
+        self.window = Delay(window)
+        self.den = Summation(window)
+        self._pow1 = fast_ema
+        self._pow2 = slow_ema
+        self.first = True
+        self.kama = Delay(1)
+
+    def update(self, double close):
+        vol = abs(close - self.vol.update(close))
+        er_num = abs(close - self.window.update(close))
+        er_den = self.den.update(vol)
+
+        efficiency_ratio = 0 if er_den == 0 else er_num / er_den
+        smoothing_constant = (
+            (
+                efficiency_ratio * (2.0 / (self._pow1 + 1) - 2.0 / (self._pow2 + 1.0))
+                + 2 / (self._pow2 + 1.0)
+            )
+            ** 2.0)
+
+        if np.isnan(smoothing_constant):
+            return np.nan
+        elif self.first:
+            self.kama.update(close)
+            self.first = False 
+            return close
+        peek = self.kama.peek()
+        retval = peek + smoothing_constant * (close - peek)
+        self.kama.update(retval)
+        return retval
+
+    cpdef batch(self, input):
+        cdef long i 
+        retval = np.empty(input.shape[0], dtype=np.double)
+
+        cdef double[:] input_view = input
+        cdef double[:] output_view = retval
+
+        for i in range(input.shape[0]):
+            output_view[i] = self.update(input_view[i])
+        return retval
+
+    
 
     
 cdef class MACD():
@@ -301,13 +349,13 @@ cdef class SMA():
 
 
 
-cdef struct PercentagePriceOscillatorResponse:
+cdef struct PercentagePriceResponse:
     double ppo
     double signal
     double histogram
     
 
-cdef class PercentagePriceOscillator():
+cdef class PercentagePrice():
     cdef EMA oscillator_1
     cdef EMA oscillator_2
     cdef EMA oscillator_3
@@ -321,12 +369,12 @@ cdef class PercentagePriceOscillator():
         self.window = max(window_1, window_2, window_3) if not fillna else 0
         self.counter = 0
 
-    cpdef PercentagePriceOscillatorResponse update(self, double close):
+    cpdef PercentagePriceResponse update(self, double close):
         self.counter += 1
 
         cdef double o26 = self.oscillator_2.update(close)
 
-        retval = PercentagePriceOscillatorResponse()
+        retval = PercentagePriceResponse()
         retval.ppo = ((self.oscillator_1.update(close) - o26)  / o26) * 100
         retval.signal = self.oscillator_3.update(retval.ppo)
         retval.histogram = retval.ppo - retval.signal
@@ -334,13 +382,25 @@ cdef class PercentagePriceOscillator():
         return retval
 
     cpdef batch(self, close):
-        o26 = self.oscillator_2.batch(close)
-        ppo = ((self.oscillator_1.batch(close) - o26) / o26 ) * 100
-        signal = self.oscillator_3.batch(ppo)
-        histogram = ppo - signal
-        return {'histogram':histogram, 'signal': signal, 'ppo': ppo}
-        
+        cdef int j = close.shape[0]
+        cdef int i
+        ppo = np.empty(input.shape[0], dtyle=np.double)
+        signal = np.empty(input.shape[0], dtyle=np.double)
+        histogram = np.empty(input.shape[0], dtyle=np.double)
 
+        cdef double[:] input_view=close
+        cdef double[:] ppo_view=ppo
+        cdef double[:] signal_view=signal
+        cdef double[:] histogram_view=histogram
+        
+        for i in range(j):
+            output = self.update(input_view[i])
+            ppo_view[i] = output.ppo
+            signal_view[i] = output.signal
+            histogram_view[i] = output.histogram
+
+        return {'ppo': ppo, 'signal': signal,
+                'histogram':histogram}
         
 
 cdef class Summation():
@@ -359,7 +419,7 @@ cdef class Summation():
     cdef bint fillna
     cdef double tally
     
-    def __init__(self, int window, bint fillna=False):
+    def __init__(self, int window, bint fillna=True):
         self.history = np.zeros(window)
         self.history_view = self.history
         self.first_pass = True
