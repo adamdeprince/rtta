@@ -474,8 +474,62 @@ cdef class ROC:
 
         return retval
         
-        
-        
+cdef class RSI:
+    """RSI: The Relative Strength Index (RSI) is a tool used to
+    analyze the speed and direction of price fluctuations in a
+    security. It compares the magnitudes of recent gains and losses
+    over a specified time period to determine the pace of price
+    movements. The primary purpose of the RSI is to identify whether
+    an asset is overbought or oversold, which can help inform trading
+    decisions.
+    """
+
+    cdef bint fillna
+    cdef int window
+    cdef long counter
+    cdef double prev
+    cdef double high
+    cdef double low
+
+    def __init__(self, int window=14, bint fillna=True):
+        self.fillna = fillna
+        self.window = window
+        self.counter = 0
+        self.prev = 0
+        self.high = 0
+        self.low = 0 
+
+    cpdef double def update(self, double value):
+        try:
+            if self.counter == 0:
+                self.prev = value
+                if self.fillna:
+                    return 50
+                else:
+                    return np.nan
+            elif self.counter <= self.window:
+                if value < self.prev:
+                    self.low = (self.low * (self.counter-1) +  self.prev - value) / self.counter
+                elif value > self.prev:
+                    self.high = (self.high * (self.counter-1) + value - self.prev) / self.counter
+                if not self.fillna:
+                    return np.nan
+                elif self.low == 0:
+                    return 100
+                else:
+                    return 100 - (100 / (1 + (self.high / self.window) / (self.low / self.window)))
+            else:
+                if value < self.prev:
+                    self.low = (self.low * (self.window - 1) + self.prev - value) / self.window
+                elif self.low == 0:
+                    return 100
+                elif value > self.prev:
+                    self.high = (self.high * (self.window-1) + value - self.prev) / self.window
+                return 100 - (100 / (1 + (self.high / self.window) / (self.low / self.window)))
+        finally:
+            self.prev = value
+            self.counter += 1
+    
 
 cdef class Summation:
     """Summation - Summation acorss a fixed window.
