@@ -499,7 +499,7 @@ cdef class RSI:
         self.high = 0
         self.low = 0 
 
-    cpdef double def update(self, double value):
+    cpdef double update(self, double value):
         try:
             if self.counter == 0:
                 self.prev = value
