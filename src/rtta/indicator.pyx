@@ -115,7 +115,7 @@ cdef class EMA:
 
     cpdef batch(self, input):
         cdef long i
-        cdef long j
+        cdef long j = input.shape[0]
         cdef double l = self.last_value
         retval = np.empty(input.shape[0], dtype=np.double)
 
