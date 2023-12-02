@@ -374,7 +374,7 @@ cdef class PercentagePrice():
         self.oscillator_1 = EMA(window=window_1, fillna=True)
         self.oscillator_2 = EMA(window=window_2, fillna=True)
         self.oscillator_3 = EMA(window=window_3, fillna=True)
-        self.window = max(window_1, window_2, window_3) if not fillna else 0
+        self.window = int(max(window_1, window_2, window_3)) if not fillna else 0
         self.counter = 0
 
     cpdef PercentagePriceResponse update(self, double close):
