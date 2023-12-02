@@ -92,6 +92,7 @@ cdef class EMA:
     cdef double inverted_multiplier
     
     def __init__(self, double window, bint fillna=False):
+        print(f"EMA({window})")
         self.first_pass = True
         self.index = 0
         self.window = max(int(window), 1)
@@ -369,7 +370,7 @@ cdef class PercentagePrice():
     cdef int window
     cdef long counter
     
-    def __init__(self, int window_1=12, int window_2=26, int window_3=9, fillna=False):
+    def __init__(self, double window_1=12, double window_2=26, double window_3=9, fillna=False):
         self.oscillator_1 = EMA(window=window_1, fillna=True)
         self.oscillator_2 = EMA(window=window_2, fillna=True)
         self.oscillator_3 = EMA(window=window_3, fillna=True)
