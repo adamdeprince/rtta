@@ -92,7 +92,6 @@ cdef class EMA:
     cdef double inverted_multiplier
     
     def __init__(self, double window, bint fillna=False):
-        print(f"EMA({window})")
         self.first_pass = True
         self.index = 0
         self.window = max(int(window), 1)
