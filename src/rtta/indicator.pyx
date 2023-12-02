@@ -85,7 +85,7 @@ cdef class EMA:
 
     cdef bint first_pass
     cdef long index
-    cdef double window
+    cdef int window
     cdef bint fillna
     cdef double last_value
     cdef double weighted_multiplier
@@ -94,7 +94,7 @@ cdef class EMA:
     def __init__(self, double window, bint fillna=False):
         self.first_pass = True
         self.index = 0
-        self.window = window
+        self.window = max(int(window), 1)
         self.fillna = fillna
         self.last_value = 0
         self.weighted_multiplier = 2.0 / (1.0 + float(window))
