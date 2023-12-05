@@ -6,6 +6,24 @@ cnp.import_array()
 from collections import namedtuple
 
 
+cdef class ATR:
+    cdef Delay yesterday_close
+    cdef Delay last_tr
+    cdef double window
+
+    def __init__(self, float window = 14, bint fillna=True):
+        self.window = window
+        self.yesterday_close = Delay(1)
+        self.last_tr = Delay(1)
+
+    cpdef double update(self, double close, double high, double low):
+        cdef prev_close = self.yesterday_close.update(close)
+        cdef double tr = max(
+            high - low,
+            abs(prev_close - high),
+            abs(prev_close-low))
+        cdef double prior_tr = self.last_tr.update(tr)
+        return (prior_tr * (self.window-1) + tr) / self.window
 
         
 cdef class AwesomeOscillator:
