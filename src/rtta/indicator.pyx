@@ -25,7 +25,16 @@ cdef class ATR:
         cdef double prior_tr = self.last_tr.update(tr)
         return (prior_tr * (self.window-1) + tr) / self.window
 
-        
+cdef class ATRP:
+    cdef ATR atr
+
+    def __init__(self, float window=14, bint fillna=True):
+        self.atr = ATR(window, fillna)
+
+    cpdef double update(self, double close, double high, double low):
+        return self.atr.update(close, high, low) / close
+
+
 cdef class AwesomeOscillator:
     cdef SMA oscillator_1
     cdef SMA oscillator_2
