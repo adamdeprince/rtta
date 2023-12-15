@@ -166,17 +166,7 @@ cdef class EMA:
         return retval
 
 cdef class Kama():
-    """Kama - Kaufman's Adaptive Moving Average (KAMA), created by Perry
-    Kaufman, is an advanced moving average that responds to both
-    trends and volatility. It is a potent trend-following indicator
-    based on the Exponential Moving Average (EMA). The KAMA closely
-    follows the price when noise levels are low, and it smooths out
-    the noise when the price fluctuates. KAMA can be used like other
-    moving averages to visualize the trend, and price crossing it may
-    indicate a change in direction. Additionally, price can bounce off
-    the KAMA, which can act as dynamic support and resistance. KAMA is
-    often combined with other signals and analysis techniques.
-
+    """
     Args:
       window: (10) n period
       pow1: (2) number of periods for the fastest EMA constant
@@ -447,15 +437,9 @@ cdef class PercentageVolume:
     """PercentageVolume: The Percentage Volume Oscillator (PVO) is a
     momentum indicator for volume. It calculates the difference
     between two volume-based moving averages as a percentage of the
-    larger moving average. Similar to MACD and the Percentage Price
-    Oscillator (PPO), the PVO is represented by a signal line, a
-    histogram, and a centerline. The PVO is positive when the shorter
-    volume EMA is above the longer volume EMA and negative when the
-    shorter volume EMA is below. This indicator can be used to analyze
-    volume fluctuations, which can then be used to confirm or
-    contradict other signals. Generally, a breakout or support break
-    is considered valid when the PVO is rising or positive.
-
+    larger moving average.  It is similar to the MACD and the
+    Percentage Price Oscillator (PPO).
+    
     https://school.stockcharts.com/doku.php?id=technical_indicators:percentage_volume_oscillator_pvo
     """
 
@@ -534,20 +518,7 @@ cdef class PercentageVolume:
 
 
 cdef class ROC:
-    """ROC: The Rate-of-Change (ROC) indicator, also known as Momentum, is
-    a pure momentum oscillator that quantifies the percentage change
-    in price between two consecutive periods. The ROC calculation
-    involves comparing the current price to the price from "n" periods
-    ago. The oscillator forms a plot that oscillates above and below
-    the zero line as the Rate-of-Change shifts from positive to
-    negative. As a momentum oscillator, ROC signals include centerline
-    crossovers, divergences, and overbought-oversold
-    readings. Although divergences are not always reliable indicators
-    of reversals, they will not be discussed in detail in this
-    article. Despite being susceptible to whipsaws, particularly in
-    short-term contexts, centerline crossovers can be employed to
-    determine the overall trend. Identifying overbought or oversold
-    extremes comes naturally to the Rate-of-Change oscillator.
+    """ROC:
 
     Args:
       window: Window size
@@ -598,13 +569,7 @@ cdef class ROC:
         return retval
         
 cdef class RSI:
-    """RSI: The Relative Strength Index (RSI) is a tool used to
-    analyze the speed and direction of price fluctuations in a
-    security. It compares the magnitudes of recent gains and losses
-    over a specified time period to determine the pace of price
-    movements. The primary purpose of the RSI is to identify whether
-    an asset is overbought or oversold, which can help inform trading
-    decisions.
+    """RSI: The Relative Strength Index (RSI)
     """
 
     cdef bint fillna
