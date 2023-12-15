@@ -418,9 +418,9 @@ cdef class PercentagePrice():
     cpdef batch(self, close):
         cdef int j = close.shape[0]
         cdef int i
-        ppo = np.empty(input.shape[0], dtyle=np.double)
-        signal = np.empty(input.shape[0], dtyle=np.double)
-        histogram = np.empty(input.shape[0], dtyle=np.double)
+        ppo = np.empty(input.shape[0], dtype=np.double)
+        signal = np.empty(input.shape[0], dtype=np.double)
+        histogram = np.empty(input.shape[0], dtype=np.double)
 
         cdef double[:] input_view=close
         cdef double[:] ppo_view=ppo
@@ -435,6 +435,102 @@ cdef class PercentagePrice():
 
         return {'ppo': ppo, 'signal': signal,
                 'histogram':histogram}
+
+
+cdef struct PercentageVolumeResponse:
+    double pvo
+    double signal
+    double histogram
+
+    
+cdef class PercentageVolume:
+    """PercentageVolume: The Percentage Volume Oscillator (PVO) is a
+    momentum indicator for volume. It calculates the difference
+    between two volume-based moving averages as a percentage of the
+    larger moving average. Similar to MACD and the Percentage Price
+    Oscillator (PPO), the PVO is represented by a signal line, a
+    histogram, and a centerline. The PVO is positive when the shorter
+    volume EMA is above the longer volume EMA and negative when the
+    shorter volume EMA is below. This indicator can be used to analyze
+    volume fluctuations, which can then be used to confirm or
+    contradict other signals. Generally, a breakout or support break
+    is considered valid when the PVO is rising or positive.
+
+    https://school.stockcharts.com/doku.php?id=technical_indicators:percentage_volume_oscillator_pvo
+    """
+
+    cdef EMA oscillator_1
+    cdef EMA oscillator_2
+    cdef EMA signal
+    cdef long counter
+
+    def __init__(self, double window_1=12, double window_2=26, double signal=9, fillna=True):
+        self.oscillator_1 = EMA(window=window_1, fillna=True)
+        self.oscillator_2 = EMA(window=window_2, fillna=True)
+        self.signal = EMA(window=signal, fillna=True)
+
+        if fillna:
+            self.counter = 0
+        else:
+            self.counter = -int(max(window_1, window_2))
+
+    cpdef PercentageVolumeResponse update(self, double volume):
+        self.counter += 1
+
+        cdef double ema_2 = self.oscillator_2.update(volume)
+
+        cdef double pvo = 100 * (self.oscillator_1.update(volume) - ema_2) / (ema_2)
+        cdef double signal = self.signal.update(pvo)
+        cdef double histogram = pvo - signal
+        
+        cdef PercentageVolumeResponse retval
+
+        if self.counter < 0:
+            retval.pvo = np.nan
+            retval.signal = np.nan
+            retval.histogram = np.nan
+        else:
+            retval.pvo = pvo
+            retval.signal = signal
+            retval.histogram = histogram
+
+        return retval
+
+    cpdef batch(self, volume):
+        cdef int j = volume.shape[0]
+        cdef int i
+
+        pvos = np.empty(j, dtype=np.double)
+        signals = np.empty(j, dtype=np.double)
+        histograms = np.empty(j, dtype=np.double)
+
+        cdef double[:] input_view=volume
+        cdef double[:] pvo_view=pvos
+        cdef double[:] signal_view=signals
+        cdef double[:] histogram_view=histograms
+
+        cdef double pvo = 0
+        cdef double signal = 0
+        cdef double histogram = 0
+        cdef double ema_2 = 0
+        
+        for i in range(j):
+            self.counter += 1
+            ema_2 = self.oscillator_2.update(input_view[i])
+            pvo = 100 * (self.oscillator_1.update(input_view[i]) - ema_2) / ema_2
+            signal = self.signal.update(pvo)
+
+            if self.counter < 0:
+                pvo_view[i] = np.nan
+                signal_view[i] = np.nan
+                histogram_view[i] = np.nan
+            else:
+                pvo_view[i] = pvo
+                signal_view[i] = signal
+                histogram_view[i] = pvo - signal
+
+        return {'pvo': pvos, 'signal': signals,
+                'histogram':histograms}
 
 
 cdef class ROC:
