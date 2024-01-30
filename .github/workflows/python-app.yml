@@ -6,17 +6,18 @@ name: Python application
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  job-1:
 
     runs-on: ubuntu-latest
-
+    concurrency:
+      group: test
+      cancel-in-progress: true
+      
     steps:
     - uses: actions/checkout@v3
     - name: Set up Python 3.10
