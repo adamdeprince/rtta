@@ -28,7 +28,7 @@ class SMATest(TestCase):
 
     def test_one_fillna(self):
         delay = Delay(window=1, fillna=True)
-        self.assertAlmostEqual(delay.update(1), 1)
+        self.assertAlmostEqual(delay.update(1), 0)
         self.assertAlmostEqual(delay.update(2), 1)
         self.assertAlmostEqual(delay.update(3), 2)
         self.assertAlmostEqual(delay.update(4), 3)

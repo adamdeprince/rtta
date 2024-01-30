@@ -2,3 +2,4 @@ numpy
 coverage
 pycodestyle
 setuptools<60
+ta=0.11.0

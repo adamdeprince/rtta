@@ -675,4 +675,149 @@ cdef class Summation:
         return retval
 
 
+cdef class High:
+    """High - Return the highest value in a window.
 
+    Args:
+      window(int): n period
+      fillna(bool): if True, fill nan values
+    """
+
+    cdef bint first_pass
+    cdef int window_size
+    cdef int offset
+    cdef object window
+    cdef double[:] window_view
+    cdef bint fillna
+
+    def __init__(self, int window, bint fillna=True):
+        self.window = np.zeros(window)
+        self.window_view = self.window
+        self.first_pass = True
+        self.offset = 0
+        self.window_size = window
+        self.fillna = fillna
+
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cpdef double update(self, double value):
+        cdef double max
+        cdef int i
+        
+        self.window_view[self.offset] = value
+
+        if self.first_pass:
+            if not self.fillna:
+                self.offset += 1
+                if self.offset >= self.window_size:
+                    self.first_pass = False
+                    self.offset = 0 
+                return np.nan
+            max = self.window_view[0]
+            for i in range(1, self.offset+1):
+                if self.window_view[i] > max:
+                    max = self.window_view[i]
+            self.offset += 1
+            if self.offset >= self.window_size:
+                self.first_pass = False
+                self.offset = 0 
+            return max
+        max = self.window_view[0]
+        for i in range(1, self.window_size):
+            if self.window_view[i] > max:
+                max = self.window_view[i]
+        self.offset += 1
+        if self.offset >= self.window_size:
+            self.offset = 0
+        return max
+
+    
+cdef class Low:
+    """Low - Return the lowest value in a window.
+
+    Args:
+      window(int): n period
+      fillna(bool): if True, fill nan values
+    """
+
+    cdef bint first_pass
+    cdef int window_size
+    cdef int offset
+    cdef object window
+    cdef double[:] window_view
+    cdef bint fillna
+
+    def __init__(self, int window, bint fillna=True):
+        self.window = np.zeros(window)
+        self.window_view = self.window
+        self.first_pass = True
+        self.offset = 0
+        self.window_size = window
+        self.fillna = fillna
+
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cpdef double update(self, double value):
+        cdef double min
+        cdef int i
+        
+        self.window_view[self.offset] = value
+
+        if self.first_pass:
+            if not self.fillna:
+                self.offset += 1
+                if self.offset >= self.window_size:
+                    self.first_pass = False
+                    self.offset = 0 
+                return np.nan
+            min = self.window_view[0]
+            for i in range(1, self.offset+1):
+                if self.window_view[i] < min:
+                    min = self.window_view[i]
+            self.offset += 1
+            if self.offset >= self.window_size:
+                self.first_pass = False
+                self.offset = 0 
+            return min
+        min = self.window_view[0]
+        for i in range(1, self.window_size):
+            if self.window_view[i] < min:
+                min = self.window_view[i]
+        self.offset += 1
+        if self.offset >= self.window_size:
+            self.offset = 0
+        return min
+            
+
+cdef class StochRSI:
+    """StochRSI: Measures the RSI relative to its high/low range.
+
+    https://school.stockcharts.com/doku.php?id=technical_indicators:stochrsi
+
+    Args:
+      window: default 14
+      fillna: default True
+    """
+
+    cdef object rsi
+    cdef object lowest_rsi
+    cdef object highest_rsi
+    cdef int window_size
+    cdef bint fillna
+
+    def __init__(self, int window=14, bint fillna=True):
+        self.rsi = RSI(window, True)
+        self.lowest_rsi = Low(window, fillna)
+        self.highest_rsi = High(window, fillna)
+
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cpdef double update(self, double value):
+        cdef double rsi = self.rsi.update(value)
+        cdef double low = self.lowest_rsi.update(rsi)
+        cdef double high = self.highest_rsi.update(rsi)
+        if high == low:
+            return 0
+        return (rsi / low ) / (high - low)
+
+    

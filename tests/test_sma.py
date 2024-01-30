@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from rtta.indicator import SMA 
-from ta.trend import SMA as SMAReference
+from ta.trend import SMAIndicator as SMAReference
 
 class SMATest(TestCase):
 
