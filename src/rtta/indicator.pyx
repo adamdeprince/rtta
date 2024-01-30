@@ -799,9 +799,9 @@ cdef class StochRSI:
       fillna: default True
     """
 
-    cdef object rsi
-    cdef object lowest_rsi
-    cdef object highest_rsi
+    cdef RSI rsi
+    cdef Low lowest_rsi
+    cdef High highest_rsi
     cdef int window_size
     cdef bint fillna
 
@@ -819,5 +819,35 @@ cdef class StochRSI:
         if high == low:
             return 0
         return (rsi / low ) / (high - low)
+
+cdef class TSI:
+    """TSI: True Strength Index
+
+    https://school.stockcharts.com/doku.php?id=technical_indicators:true_strength_index
+    """
+
+    cdef Delay P
+    cdef EMA A
+    cdef EMA B
+    cdef Delay D
+    cdef EMA E
+    cdef EMA F
+
+    def __init__(self, int window_1 = 25, int window_2 = 13):
+
+        self.P = Delay(1)
+        self.A = EMA(window_1, True)
+        self.B = EMA(window_2, True)
+        self.D = Delay(1)
+        self.E = EMA(window_1, True)
+        self.F = EMA(window_2, True)
+
+    def update(self, double x):
+        return (100 * self.B.update(self.A.update(x-self.P.update(x)))) / (self.F.update(self.E.update(abs(x-self.D.update(x)))))
+
+    
+
+        
+        
 
     
