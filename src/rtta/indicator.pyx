@@ -916,7 +916,7 @@ cdef class BollingerBands:
     cdef StdDev stddev
 
     def __init__(self, int window=20, bint fillna=True):
-        self.SMA = SMA(window, fillna=fillna)
+        self.sma = SMA(window, fillna=fillna)
         self.stddev=StdDev(window, fillna=fillna)
 
     @cython.boundscheck(False) # turn off bounds-checking for entire function
