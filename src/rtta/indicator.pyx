@@ -4,7 +4,7 @@ cimport numpy as cnp
 cimport cython
 cnp.import_array()
 from collections import namedtuple
-
+from cython.cimports.libc.math import sqrt
 
 cdef class ATR:
     cdef Delay yesterday_close
@@ -845,9 +845,96 @@ cdef class TSI:
     def update(self, double x):
         return (100 * self.B.update(self.A.update(x-self.P.update(x)))) / (self.F.update(self.E.update(abs(x-self.D.update(x)))))
 
-    
 
+cdef class StdDev:
+    """StdDev: Standard Deviation
+
+    https://www.khanacademy.org/math/statistics-probability/summarizing-quantitative-data/variance-standard-deviation-population/a/calculating-standard-deviation-step-by-step
+    """
+
+    cdef object history
+    cdef double[:] history_view
+    cdef bint fillna
+    cdef int offset
+    cdef int window_size
+    cdef bint first_pass
+    cdef SMA mean
+
+    def __init__(self, int window, bint fillna=True):
+        self.history = np.zeros(window)
+        self.history_view = self.history
+        self.first_pass = True
+        self.window_size = window
+        self.offset = 0
+        self.mean = SMA(window, True)
+        self.fillna = fillna
+
+    @cython.boundscheck(False) # turn off bounds-checking for entire function
+    @cython.wraparound(False)
+    cpdef double update(self, double value):
+        cdef int i
+        cdef double tally
+        cdef double mean
+
+        try:
+            self.history_view[self.offset] = value
+            self.offset += 1
+            mean = self.mean.update(value)
+            tally = 0
+            if self.first_pass:
+                if not self.fillna:
+                    return np.nan
+                for i in range(self.offset):
+                    tally += (self.history_view[i] - mean) ** 2
+                tally /= self.offset
+            else:
+                for i in range(self.window_size):
+                    tally += (self.history_view[i] - mean) ** 2
+                tally /= self.window_size
+            return sqrt(tally)
+            
+        finally:
+            if self.offset >= self.window_size:
+                self.offset = 0
+                self.first_pass = False
+                
+
+
+cdef struct BollingerBandResponse:
+    double middle
+    double lower
+    double upper
+    
+    
+cdef class BollingerBands:
+    """BollingerBands: Bollinger Bands
+    
+    https://school.stockcharts.com/doku.php?id=technical_indicators:bollinger_bands 
+    """
+
+    cdef SMA sma
+    cdef StdDev stddev
+
+    def __init__(self, int window=20, bint fillna=True):
+        self.SMA = SMA(window, fillna=fillna)
+        self.stddev=StdDev(window, fillna=fillna)
+
+    @cython.boundscheck(False) # turn off bounds-checking for entire function
+    @cython.wraparound(False)
+    cpdef BollingerBandResponse update(self, double value):
+
+        cdef BollingerBandResponse retval
+
+        cdef double stddev = self.stddev.update(value)
+        retval.middle = self.sma.update(value)
         
+        retval.upper = retval.middle + stddev * 2
+        retval.lower = retval.middle - stddev * 2
+        
+        return retval
+        
+
+    
         
 
     
