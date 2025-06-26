@@ -11,6 +11,9 @@ dependencies = [
     "numpy>=2.0.2",
 ]
 
+[tool.setuptools.packages.find]
+where = ["rtta"]
+
 [tool.scikit-build]
 minimum-version = "build-system.requires"
 build-dir = "build/{wheel_tag}"
