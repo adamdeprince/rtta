@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["rtta"]
+where = ["src"]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"

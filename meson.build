@@ -9,7 +9,7 @@ inc_np = include_directories(incdir_numpy)
 
 py.extension_module(
     'rtta',  # Replace with your module name
-    'rtta/rtta.pyx', # Replace with the path to your .pyx file
+    'src/rtta.pyx', # Replace with the path to your .pyx file
     dependencies: dep_py,
     include_directories: inc_np,	
     install: true,
