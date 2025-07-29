@@ -1,0 +1,5 @@
+uv version
+Change setup.cfg
+uv lock
+uv build --sdist
+uv publish
