@@ -344,6 +344,8 @@ cdef class SMA():
         self.tally = 0
         self._mean = float('nan')
 
+    def length(self):
+        return self.window
 
     cpdef double mean(self):
         return self._stored_mean
