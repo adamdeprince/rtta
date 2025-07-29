@@ -331,6 +331,7 @@ cdef class SMA():
     cdef int window
     cdef bint fillna
     cdef double tally
+    cdef double mean
     
     def __init__(self, int window, bint fillna=False):
         self.history = np.zeros(window)
@@ -340,6 +341,7 @@ cdef class SMA():
         self.window = window
         self.fillna = fillna
         self.tally = 0
+        self.mean = float('nan')
         
     @cython.boundscheck(False) # turn off bounds-checking for entire function
     @cython.wraparound(False)
@@ -356,9 +358,12 @@ cdef class SMA():
             
         if self.first_pass:
             if not self.fillna:
-                return np.nan
-            return self.tally / self.index
-        return self.tally/self.window
+                self.mean = np.nan
+                return self.mean
+            self.mean = self.tally / self.index
+            return self.mean
+        self.mean = self.tally/self.window
+        return self.mean
 
     cpdef batch(self, input):
         cdef long i 
