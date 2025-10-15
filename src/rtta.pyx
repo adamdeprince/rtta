@@ -76,7 +76,7 @@ cdef class Delay:
     cdef double[:] buffer_view
     cdef object buffer
     cdef bint first
-    
+
     def __init__(self, int window=1, bint fillna=True):
         self.index = 0
         self.max = window
@@ -92,7 +92,7 @@ cdef class Delay:
             self.buffer[:] = 0 if self.fillna else np.nan
         retval = self.buffer_view[self.index]
         self.buffer_view[self.index] = value
-        self.index += 1 
+        self.index += 1
         if self.index  == self.max:
             self.index = 0
         return retval
@@ -100,7 +100,7 @@ cdef class Delay:
     cpdef double peek(self):
         return self.buffer[self.index]
 
-        
+
 
 cdef class EMA:
     """EMA - Exponential moving average
@@ -117,7 +117,7 @@ cdef class EMA:
     cdef double last_value
     cdef double weighted_multiplier
     cdef double inverted_multiplier
-    
+
     def __init__(self, double window, bint fillna=False):
         self.first_pass = True
         self.index = 0
@@ -166,7 +166,7 @@ cdef class EMA:
         return retval
 
 cdef class EWMA:
-    """EWMA - Exponentailly Weighted Moving Average 
+    """EWMA - Exponentailly Weighted Moving Average
 
     EWMA (Exponentially Weighted Moving Average) is a statistical
     technique that smooths time series data by applying exponentially
@@ -182,7 +182,7 @@ cdef class EWMA:
     cdef double alpha
     cdef double last
     cdef bint first
-    
+
     def __init__(self, alpha=None, span=None, com=None, bint fillna=False):
         if sum(x is not None for x in  (alpha, span, com)) != 1:
             raise ValueError("You must define one of alpha, span or com");
@@ -192,13 +192,13 @@ cdef class EWMA:
             self.alpha = 2 / (span + 1)
         elif com is not None:
             self.alpha = 1 / (com + 1)
-            
+
         self.first = True
-        
+
         if 0 < self.alpha <= 1:
             return
         raise ValueError("EWMA's alpha parameter must be in the range 0<⍺<=1")
-        
+
     cpdef double update(self, double value):
         if self.first:
             self.last = value
@@ -226,7 +226,7 @@ cdef class Kama():
     cdef Delay kama
 
     def __init__(self, int window=10, int fast_ema=2, int slow_ema=30, fillna=True):
-        
+
         self.vol = Delay(1)
         self.window = Delay(window)
         self.den = Summation(window)
@@ -252,7 +252,7 @@ cdef class Kama():
             return np.nan
         elif self.first:
             self.kama.update(close)
-            self.first = False 
+            self.first = False
             return close
         cdef double peek = self.kama.peek()
         cdef double retval = peek + smoothing_constant * (close - peek)
@@ -260,7 +260,7 @@ cdef class Kama():
         return retval
 
     cpdef batch(self, input):
-        cdef long i 
+        cdef long i
         retval = np.empty(input.shape[0], dtype=np.double)
 
         cdef double[:] input_view = input
@@ -271,7 +271,7 @@ cdef class Kama():
         return retval
 
 cdef class KeltnerChannel():
-    """KeltnerChannel - Keltner Channels 
+    """KeltnerChannel - Keltner Channels
     Keltner Channels are a trend-following tool that helps spot
     potential reversals by tracking price breakouts and the direction
     of the channel. When the market is moving sideways, they can also
@@ -286,7 +286,7 @@ cdef class KeltnerChannel():
     cdef ATR atr
     cdef double multiplier
     cdef bint start
-    
+
     def __init__(self, span=20, window_atr=20, fillna=False, multiplier = 2):
         self.atr = ATR(window_atr)
         self.middle = EWMA(span=span)
@@ -301,10 +301,10 @@ cdef class KeltnerChannel():
             tp + (self.multiplier * atr),
             tp - (self.multiplier * atr)
         )
-      
+
 
 cdef class KeltnerChannelOriginal():
-    """KeltnerChannel - Keltner Channels 
+    """KeltnerChannel - Keltner Channels
     Keltner Channels are a trend-following tool that helps spot
     potential reversals by tracking price breakouts and the direction
     of the channel. When the market is moving sideways, they can also
@@ -324,7 +324,7 @@ cdef class KeltnerChannelOriginal():
     cdef SMA high
     cdef SMA middle
     cdef SMA low
-    
+
     def __init__(self, window=20,  fillna=False):
         self.high = SMA(window, fillna=fillna)
         self.middle = SMA(window, fillna=fillna)
@@ -336,14 +336,14 @@ cdef class KeltnerChannelOriginal():
             self.high.update((high * 4 + close - 2 * low) / 3.0),
             self.low.update((close + 4 * low - 2*high) / 3.0)
             )
-      
-    
+
+
 cdef class MACD():
     """MCAD - Moving average convergence divergence.
     https://en.wikipedia.org/wiki/MACD
 
     MACD(a, b, c)
-    
+
     Args:
       a, b, c: The EMA period parameters
     """
@@ -353,7 +353,7 @@ cdef class MACD():
     cdef EMA c
     cdef long counter
     cdef bint fillna
-    cdef int window    
+    cdef int window
 
     def __init__(self, int a=12, int b=26, int c=9, bint fillna=False):
         """
@@ -364,7 +364,7 @@ cdef class MACD():
         self.c = EMA(window=c, fillna=fillna)
         self.counter = 0
         self.fillna = fillna
-        self.window = max(a,b) +c 
+        self.window = max(a,b) +c
 
     cpdef double update(self, double value):
         cdef double retval
@@ -374,10 +374,10 @@ cdef class MACD():
                 return np.nan
             return retval
         finally:
-            self.counter += 1 
+            self.counter += 1
 
     cpdef batch(self, input):
-        cdef long i 
+        cdef long i
         retval = np.empty(input.shape[0], dtype=np.double)
 
         cdef double[:] input_view = input
@@ -387,7 +387,7 @@ cdef class MACD():
             output_view[i] = self.update(input_view[i])
         return retval
 
-            
+
 cdef class MassIndex():
     cdef EMA single
     cdef EMA double
@@ -395,7 +395,7 @@ cdef class MassIndex():
     cdef long counter
     cdef int window
     cdef bint fillna
-    
+
     def __init__(self, int single=9, int double=9, int summation=25, bint fillna=False):
         self.single = EMA(window=single, fillna=True)
         self.double = EMA(window=double, fillna=True)
@@ -411,10 +411,10 @@ cdef class MassIndex():
         try:
             if high < low:
                 high, low = low, high
-                
+
             single = self.single.update(high-low)
             double_ = self.double.update(single)
-            
+
             retval = self.summation.update(single/double_)
             if not self.fillna and self.counter < self.window:
                 return np.nan
@@ -422,7 +422,7 @@ cdef class MassIndex():
         finally:
             self.counter += 1
 
-        
+
 
 cdef class SMA():
     """SMA - Simple Moving Average
@@ -441,7 +441,7 @@ cdef class SMA():
     cdef double tally
     cdef double _stored_mean
     cdef double _mean
-    
+
     def __init__(self, int window, bint fillna=False):
         self.history = np.zeros(window)
         self.history_view = self.history
@@ -457,7 +457,7 @@ cdef class SMA():
 
     cpdef double mean(self):
         return self._stored_mean
-        
+
     @cython.boundscheck(False) # turn off bounds-checking for entire function
     @cython.wraparound(False)
     cpdef double update(self, double value):
@@ -470,7 +470,7 @@ cdef class SMA():
         if self.index == self.window:
             self.index = 0
             self.first_pass = False
-            
+
         if self.first_pass:
             if not self.fillna:
                 self._mean = np.nan
@@ -481,7 +481,7 @@ cdef class SMA():
         return self._mean
 
     cpdef batch(self, input):
-        cdef long i 
+        cdef long i
         retval = np.empty(input.shape[0], dtype=np.double)
 
         cdef double[:] input_view = input
@@ -497,7 +497,7 @@ cdef struct PercentagePriceResponse:
     double ppo
     double signal
     double histogram
-    
+
 
 cdef class PercentagePrice():
     cdef EMA oscillator_1
@@ -505,7 +505,7 @@ cdef class PercentagePrice():
     cdef EMA oscillator_3
     cdef int window
     cdef long counter
-    
+
     def __init__(self, double window_1=12, double window_2=26, double window_3=9, fillna=False):
         self.oscillator_1 = EMA(window=window_1, fillna=True)
         self.oscillator_2 = EMA(window=window_2, fillna=True)
@@ -536,7 +536,7 @@ cdef class PercentagePrice():
         cdef double[:] ppo_view=ppo
         cdef double[:] signal_view=signal
         cdef double[:] histogram_view=histogram
-        
+
         for i in range(j):
             output = self.update(input_view[i])
             ppo_view[i] = output.ppo
@@ -552,14 +552,14 @@ cdef struct PercentageVolumeResponse:
     double signal
     double histogram
 
-    
+
 cdef class PercentageVolume:
     """PercentageVolume: The Percentage Volume Oscillator (PVO) is a
     momentum indicator for volume. It calculates the difference
     between two volume-based moving averages as a percentage of the
     larger moving average.  It is similar to the MACD and the
     Percentage Price Oscillator (PPO).
-    
+
     https://school.stockcharts.com/doku.php?id=technical_indicators:percentage_volume_oscillator_pvo
     """
 
@@ -586,7 +586,7 @@ cdef class PercentageVolume:
         cdef double pvo = 100 * (self.oscillator_1.update(volume) - ema_2) / (ema_2)
         cdef double signal = self.signal.update(pvo)
         cdef double histogram = pvo - signal
-        
+
         cdef PercentageVolumeResponse retval
 
         if self.counter < 0:
@@ -617,7 +617,7 @@ cdef class PercentageVolume:
         cdef double signal = 0
         cdef double histogram = 0
         cdef double ema_2 = 0
-        
+
         for i in range(j):
             self.counter += 1
             ema_2 = self.oscillator_2.update(input_view[i])
@@ -648,14 +648,14 @@ cdef class ROC:
     cdef Delay close
     cdef int window
     cdef bint fillna
-    cdef long counter 
+    cdef long counter
 
     def __init__(self, int window, bint fillna=True):
         self.close = Delay(window=window, fillna=True)
         self.window = window
         self.fillna = fillna
         self.counter = 0
-        
+
     cpdef double update(self, double close):
         cdef double close_ago = self.close.update(close)
         if not self.fillna and self.counter < self.window:
@@ -671,11 +671,11 @@ cdef class ROC:
         cdef int j = close.shape[0]
         cdef int i
         cdef double close_ago
-        
+
         retval = np.empty(close.shape[0])
         cdef double[:] input_view = close
         cdef double[:] output_view = retval
-        
+
         for i in range(j):
             close_ago = self.close.update(input_view[i])
             if not self.fillna and self.counter < self.window:
@@ -687,7 +687,7 @@ cdef class ROC:
             self.counter += 1
 
         return retval
-        
+
 cdef class RSI:
     """RSI: The Relative Strength Index (RSI)
     """
@@ -705,7 +705,7 @@ cdef class RSI:
         self.counter = 0
         self.prev = 0
         self.high = 0
-        self.low = 0 
+        self.low = 0
 
     cpdef double update(self, double value):
         try:
@@ -737,7 +737,7 @@ cdef class RSI:
         finally:
             self.prev = value
             self.counter += 1
-    
+
 
 cdef class Summation:
     """Summation - Summation acorss a fixed window.
@@ -754,7 +754,7 @@ cdef class Summation:
     cdef int window
     cdef bint fillna
     cdef double tally
-    
+
     def __init__(self, int window, bint fillna=True):
         self.history = np.zeros(window)
         self.history_view = self.history
@@ -763,7 +763,7 @@ cdef class Summation:
         self.window = window
         self.fillna = fillna
         self.tally = 0
-        
+
     @cython.boundscheck(False) # turn off bounds-checking for entire function
     @cython.wraparound(False)
     cpdef double update(self, double value):
@@ -776,7 +776,7 @@ cdef class Summation:
         if self.index == self.window:
             self.index = 0
             self.first_pass = False
-            
+
         if self.first_pass:
             if not self.fillna:
                 return np.nan
@@ -784,7 +784,7 @@ cdef class Summation:
         return self.tally
 
     cpdef batch(self, input):
-        cdef long i 
+        cdef long i
         retval = np.empty(input.shape[0], dtype=np.double)
 
         cdef double[:] input_view = input
@@ -823,7 +823,7 @@ cdef class High:
     cpdef double update(self, double value):
         cdef double max
         cdef int i
-        
+
         self.window_view[self.offset] = value
 
         if self.first_pass:
@@ -831,7 +831,7 @@ cdef class High:
                 self.offset += 1
                 if self.offset >= self.window_size:
                     self.first_pass = False
-                    self.offset = 0 
+                    self.offset = 0
                 return np.nan
             max = self.window_view[0]
             for i in range(1, self.offset+1):
@@ -840,7 +840,7 @@ cdef class High:
             self.offset += 1
             if self.offset >= self.window_size:
                 self.first_pass = False
-                self.offset = 0 
+                self.offset = 0
             return max
         max = self.window_view[0]
         for i in range(1, self.window_size):
@@ -851,7 +851,7 @@ cdef class High:
             self.offset = 0
         return max
 
-    
+
 cdef class Low:
     """Low - Return the lowest value in a window.
 
@@ -880,7 +880,7 @@ cdef class Low:
     cpdef double update(self, double value):
         cdef double min
         cdef int i
-        
+
         self.window_view[self.offset] = value
 
         if self.first_pass:
@@ -888,7 +888,7 @@ cdef class Low:
                 self.offset += 1
                 if self.offset >= self.window_size:
                     self.first_pass = False
-                    self.offset = 0 
+                    self.offset = 0
                 return np.nan
             min = self.window_view[0]
             for i in range(1, self.offset+1):
@@ -897,7 +897,7 @@ cdef class Low:
             self.offset += 1
             if self.offset >= self.window_size:
                 self.first_pass = False
-                self.offset = 0 
+                self.offset = 0
             return min
         min = self.window_view[0]
         for i in range(1, self.window_size):
@@ -907,7 +907,7 @@ cdef class Low:
         if self.offset >= self.window_size:
             self.offset = 0
         return min
-            
+
 
 cdef class StochRSI:
     """StochRSI: Measures the RSI relative to its high/low range.
@@ -1012,24 +1012,24 @@ cdef class StdDev:
                     tally += (self.history_view[i] - mean) ** 2
                 tally /= self.window_size
             return sqrt(tally)
-            
+
         finally:
             if self.offset >= self.window_size:
                 self.offset = 0
                 self.first_pass = False
-                
+
 
 
 cdef struct BollingerBandResponse:
     double middle
     double lower
     double upper
-    
-    
+
+
 cdef class BollingerBands:
     """BollingerBands: Bollinger Bands
-    
-    https://school.stockcharts.com/doku.php?id=technical_indicators:bollinger_bands 
+
+    https://school.stockcharts.com/doku.php?id=technical_indicators:bollinger_bands
     """
 
     cdef SMA sma
@@ -1047,14 +1047,8 @@ cdef class BollingerBands:
 
         cdef double stddev = self.stddev.update(value)
         retval.middle = self.sma.update(value)
-        
+
         retval.upper = retval.middle + stddev * 2
         retval.lower = retval.middle - stddev * 2
-        
+
         return retval
-        
-
-    
-        
-
-    
