@@ -103,10 +103,10 @@ cdef class Delay:
         
 
 cdef class EMA:
-    """SMA - Simple Moving Average
+    """EMA - Exponential moving average
 
     Args:
-      window(int): n period
+      window(int): decay rate
       fillna(bool): if True, fill nan values
     """
 
@@ -164,6 +164,49 @@ cdef class EMA:
                     output_view[i] = l
             self.last_value = l
         return retval
+
+cdef class EWMA:
+    """EWMA - Exponentailly Weighted Moving Average 
+
+    EWMA (Exponentially Weighted Moving Average) is a statistical
+    technique that smooths time series data by applying exponentially
+    decreasing weights to past observations, giving more importance to
+    recent values. It’s commonly used in forecasting and process
+    control to detect trends or shifts over time.
+
+    Args:
+      window(int): decay rate
+      fillna(bool): if True, fill nan values
+    """
+
+    cdef double alpha
+    cdef double last
+    cdef bint first
+    
+    def __init__(self, alpha=None, span=None, com=None, bint fillna=False):
+        if sum(x is not None for x in  (alpha, span, com)) != 1:
+            raise ValueError("You must define one of alpha, span or com");
+        if alpha is not None:
+            self.alpha = alpha
+        elif span is not None:
+            self.alpha = 2 / (span + 1)
+        elif com is not None:
+            self.alpha = 1 / (com + 1)
+            
+        self.first = True
+        
+        if 0 < self.alpha <= 1:
+            return
+        raise ValueError("EWMA's alpha parameter must be in the range 0<⍺<=1")
+        
+    cpdef double update(self, double value):
+        if self.first:
+            self.last = value
+            self.first = False
+        else:
+            self.last = self.alpha * value + (1 - self.alpha) * self.last
+        return self.last
+
 
 cdef class Kama():
     """
@@ -227,8 +270,73 @@ cdef class Kama():
             output_view[i] = self.update(input_view[i])
         return retval
 
-    
+cdef class KeltnerChannel():
+    """KeltnerChannel - Keltner Channels 
+    Keltner Channels are a trend-following tool that helps spot
+    potential reversals by tracking price breakouts and the direction
+    of the channel. When the market is moving sideways, they can also
+    indicate overbought or oversold conditions.
 
+    Args:
+      window: n period
+      fillna: True/False
+      multiplier: Defaults to 2
+    """
+    cdef EWMA middle
+    cdef ATR atr
+    cdef double multiplier
+    cdef bint start
+    
+    def __init__(self, span=20, window_atr=20, fillna=False, multiplier = 2):
+        self.atr = ATR(window_atr)
+        self.middle = EWMA(span=span)
+        self.multiplier = multiplier
+        self.start = True
+
+    def update(self, double close, double high, double low):
+        cdef double atr = self.atr.update(close, high, low)
+        cdef double tp = self.middle.update(close)
+        return (
+            tp,
+            tp + (self.multiplier * atr),
+            tp - (self.multiplier * atr)
+        )
+      
+
+cdef class KeltnerChannelOriginal():
+    """KeltnerChannel - Keltner Channels 
+    Keltner Channels are a trend-following tool that helps spot
+    potential reversals by tracking price breakouts and the direction
+    of the channel. When the market is moving sideways, they can also
+    indicate overbought or oversold conditions.
+
+    Args:
+      window: n period
+      window_atr: n atr period.  Only used if origin is False
+      fillna: True/False
+      multiplier: Defaults to 2
+    """
+
+    cdef int window
+    cdef bint fillna
+    cdef double multiplier
+
+    cdef SMA high
+    cdef SMA middle
+    cdef SMA low
+    
+    def __init__(self, window=20,  fillna=False):
+        self.high = SMA(window, fillna=fillna)
+        self.middle = SMA(window, fillna=fillna)
+        self.low = SMA(window, fillna=fillna)
+
+    cpdef update(self, double close, double high, double low):
+        return (
+            self.middle.update((high + close + low) / 3.0),
+            self.high.update((high * 4 + close - 2 * low) / 3.0),
+            self.low.update((close + 4 * low - 2*high) / 3.0)
+            )
+      
     
 cdef class MACD():
     """MCAD - Moving average convergence divergence.
