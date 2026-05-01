@@ -19,9 +19,26 @@ fast as fast can be.
 Installation
 ------------
 
-
 ```bash
 pip install rtta
+```
+
+Development
+-----------
+
+This project is built as a C++23 nanobind extension with CMake through
+`scikit-build-core`. Poetry is used for dependency management.
+
+```bash
+poetry install --with build,dev --no-root
+poetry run python -m pip install --no-build-isolation -e .
+poetry run pytest
+```
+
+To build a wheel:
+
+```bash
+poetry run python -m build --wheel
 ```
 
 Usage
@@ -31,11 +48,11 @@ Each operator has a paramater fillna.  If set to false, nan values
 will be returned until the operation is "populated".  If set to true,
 best guesses will be returned until the operation is populated.
 
-So for example, our simple moving average `SMAIndicator` works sort of like this:
+So for example, the simple moving average works sort of like this:
 
 ```python
->>> import rtta.trend as trend
->>> sma = trend.SMAIndicator(window=4, fillna=True)
+>>> from rtta.indicator import SMA
+>>> sma = SMA(window=4, fillna=True)
 >>> sma.update(1)
 1
 >>> sma.update(2)
@@ -45,14 +62,32 @@ So for example, our simple moving average `SMAIndicator` works sort of like this
 >>> sma.update(2)
 2
 >>> sma.update(2)
-2.25 <- The 1 fell off the end of the sliding window
+2.25
 ```
 
 Performance
 -----------
 
-|Indicator | Latency |
-|----------|---------|
-| SMA      | 36ns    |
-| EMA      | 36ns    |
-| MACD     | 55ns    |
+Use the benchmark utility to generate blog-ready Markdown tables with
+nanoseconds per input sample. RTTA ndarray batch, RTTA pandas table batch,
+RTTA record-list batch, TA-Lib batch, and `ta` batch timings are reported
+together where equivalent indicators are available. RTTA `update()` latency is
+reported separately.
+
+RTTA batch methods accept contiguous NumPy float64 and float32 arrays. They
+also accept pandas tables when the referenced columns can be read as contiguous
+float64 or float32 arrays without copying.
+
+The comparison packages are optional and intentionally not listed in
+`pyproject.toml`:
+
+```bash
+python -m pip install ta==0.11.0 TA-Lib
+python benchmarks/benchmark_indicators.py --samples 200000 --output benchmark.md
+```
+
+CSV output is also available:
+
+```bash
+python benchmarks/benchmark_indicators.py --format csv --output benchmark.csv
+```

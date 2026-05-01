@@ -1,5 +1,4 @@
-uv version
-Change setup.cfg
-uv lock
-uv build --sdist
-uv publish
+poetry install --with build,dev --no-root
+poetry run python -m pip install --no-build-isolation -e .
+poetry run python -m build --sdist --wheel
+poetry publish

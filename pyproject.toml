@@ -1,30 +1,59 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.12",
+    "nanobind>=2.2",
+]
+build-backend = "scikit_build_core.build"
+
 [project]
 name = "rtta"
-version = "0.1.10"
+version = "0.2.0"
 description = "Low latency incremental technical analysis"
 readme = "README.md"
-authors = [
-    { name = "Adam DePrince", email = "adam.deprince@gmail.com" }
-]
 requires-python = ">=3.9.8"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Adam DePrince", email = "adam.deprince@gmail.com" },
+]
 dependencies = [
     "numpy>=2.0.2",
 ]
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.scikit-build]
-minimum-version = "build-system.requires"
-build-dir = "build/{wheel_tag}"
-
-[build-system]
-build-backend = 'mesonpy'
-requires = [
-    'meson-python', # Or a specific version, e.g., 'meson-python >= 0.12.0'
-    'meson', # Or a specific version, e.g., 'meson >= 1.0.0'
-    'cython', # Or a specific version, e.g., 'cython >= 3.0.0a11'
-    'numpy',
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Mathematics",
 ]
 
+[project.urls]
+Homepage = "https://github.com/adamdeprince/rtta"
+Repository = "https://github.com/adamdeprince/rtta"
 
+[tool.scikit-build]
+minimum-version = "0.12"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/rtta"]
+wheel.exclude = ["**/*.cpp"]
+sdist.exclude = [".codex"]
+
+[tool.scikit-build.cmake]
+version = ">=3.21"
+
+[tool.poetry]
+package-mode = true
+requires-poetry = ">=2.0"
+
+[tool.poetry.dependencies]
+python = ">=3.9.8,<4.0"
+
+[tool.poetry.group.build.dependencies]
+build = ">=1.2"
+nanobind = ">=2.2"
+scikit-build-core = ">=0.12"
+
+[tool.poetry.group.dev.dependencies]
+flake8 = ">=3.7"
+pandas = ">=2.0"
+pytest = ">=5.1"

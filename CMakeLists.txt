@@ -1,8 +1,25 @@
-cmake_minimum_required(VERSION 3.15)
-project(${SKBUILD_PROJECT_NAME} LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.21...4.0)
 
-set(PYBIND11_FINDPYTHON ON)
-find_package(pybind11 CONFIG REQUIRED)
+if (NOT DEFINED SKBUILD_PROJECT_NAME)
+  set(SKBUILD_PROJECT_NAME rtta)
+endif()
 
-pybind11_add_module(_core MODULE src/main.cpp)
-install(TARGETS _core DESTINATION ${SKBUILD_PROJECT_NAME})
+if (NOT DEFINED SKBUILD_PROJECT_VERSION)
+  set(SKBUILD_PROJECT_VERSION 0.2.0)
+endif()
+
+project(${SKBUILD_PROJECT_NAME} VERSION ${SKBUILD_PROJECT_VERSION} LANGUAGES CXX)
+
+if (NOT SKBUILD)
+  message(WARNING
+    "This project is configured for scikit-build-core. "
+    "Use `pip install .` or `python -m build` from the project root.")
+endif()
+
+find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
+find_package(nanobind CONFIG REQUIRED)
+
+nanobind_add_module(indicator NB_STATIC src/rtta/indicator.cpp)
+target_compile_features(indicator PRIVATE cxx_std_23)
+
+install(TARGETS indicator LIBRARY DESTINATION rtta)

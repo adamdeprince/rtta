@@ -1,4 +1,5 @@
 TEST_TMP
+.codex
 *.whl
 __pycache__
 *egg-info
