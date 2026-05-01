@@ -5,6 +5,12 @@
 - Added a standalone benchmark utility at `benchmarks/benchmark_indicators.py`.
   It reports nanoseconds per sample with batch-vs-batch comparisons separated
   from RTTA `update()` latency.
+- Added `benchmarks/benchmark_update_latency.py` for RTTA-first incremental
+  latency tracking. It reports Python loop overhead, gross `update()` latency,
+  loop-adjusted update latency, and future `advance()` latency columns.
+- Added no-return `advance()` bindings for every public indicator with
+  `update()`, plus coverage that verifies `advance()` performs the same state
+  transition as `update()`.
 - Split benchmark reporting into RTTA ndarray batch, RTTA record-list batch,
   RTTA pandas table batch, third-party batch, and RTTA `update()` timing
   columns.
@@ -36,6 +42,12 @@
 - Added a dedicated small-window raw-scan batch kernel for `MidPrice`, with
   state rebuild logic so `batch()` remains compatible with subsequent
   incremental `update()` calls.
+- Added dedicated fresh-batch fast paths for small-window extrema-derived
+  value indicators (`High`, `Low`, `HighLow`, `MidPoint`, `WilliamsR`, and
+  stochastic fast-k), while keeping index/Aroon outputs on the faster
+  monotonic-queue path; also flattened EMA chains for `T3MovingAverage`,
+  direct momentum loops, prefix-style statistical kernels, and flattened
+  Wilder smoothing loops for ATR and directional-movement indicators.
 - Specialized EMA, SMA, Summation, ROC, and Kama batch loops to avoid
   per-sample nanobind indexing and unnecessary `update()` dispatch inside
   batch runs.

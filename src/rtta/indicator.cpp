@@ -24,6 +24,9 @@ enum class InputDType {
 
 constexpr long NPY_FLOAT32_TYPE_NUM = 11;
 constexpr long NPY_FLOAT64_TYPE_NUM = 12;
+constexpr std::size_t SMALL_SCAN_WINDOW_LIMIT = 64;
+// Index outputs need absolute offsets; the monotonic queue path is faster than rescanning windows.
+constexpr std::size_t SMALL_INDEX_SCAN_WINDOW_LIMIT = 0;
 
 double nan() {
     return std::numeric_limits<double>::quiet_NaN();
@@ -727,6 +730,84 @@ struct BollingerBandsBatchResult {
     nb::object lower;
 };
 
+inline double result_checksum(double value) {
+    return value;
+}
+
+inline double result_checksum(const nb::tuple &values) {
+    double checksum = 0.0;
+    const Py_ssize_t size = PyTuple_GET_SIZE(values.ptr());
+    for (Py_ssize_t i = 0; i < size; ++i) {
+        PyObject *item = PyTuple_GET_ITEM(values.ptr(), i);
+        const double value = PyFloat_AsDouble(item);
+        if (PyErr_Occurred() != nullptr) {
+            throw nb::python_error();
+        }
+        checksum += value;
+    }
+    return checksum;
+}
+
+inline double result_checksum(const EaseOfMovementResult &value) {
+    return value.ease_of_movement + value.sma;
+}
+
+inline double result_checksum(const LinearRegressionResult &value) {
+    return value.value + value.slope + value.intercept + value.angle + value.tsf;
+}
+
+inline double result_checksum(const RollingMinMaxResult &value) {
+    return value.min + value.max;
+}
+
+inline double result_checksum(const HighLowResult &value) {
+    return value.min + value.max;
+}
+
+inline double result_checksum(const HighLowIndexResult &value) {
+    return value.min_index + value.max_index;
+}
+
+inline double result_checksum(const DonchianChannelResult &value) {
+    return value.upper + value.lower + value.middle + value.width + value.percent;
+}
+
+inline double result_checksum(const AroonResult &value) {
+    return value.down + value.up;
+}
+
+inline double result_checksum(const VortexResult &value) {
+    return value.positive + value.negative + value.difference;
+}
+
+inline double result_checksum(const KSTOscillatorResult &value) {
+    return value.kst + value.signal + value.difference;
+}
+
+inline double result_checksum(const IchimokuResult &value) {
+    return value.conversion + value.base + value.span_a + value.span_b;
+}
+
+inline double result_checksum(const PercentagePriceResult &value) {
+    return value.ppo + value.signal + value.histogram;
+}
+
+inline double result_checksum(const PercentageVolumeResult &value) {
+    return value.pvo + value.signal + value.histogram;
+}
+
+inline double result_checksum(const FastStochasticResult &value) {
+    return value.fastk + value.fastd;
+}
+
+inline double result_checksum(const StochasticResult &value) {
+    return value.slowk + value.slowd;
+}
+
+inline double result_checksum(const BollingerBandsResult &value) {
+    return value.middle + value.upper + value.lower;
+}
+
 class RollingExtremeQueue {
 public:
     RollingExtremeQueue(std::size_t capacity, bool maximum)
@@ -970,6 +1051,41 @@ private:
     std::size_t count_;
 };
 
+class RollingSumWindow {
+public:
+    explicit RollingSumWindow(int window)
+        : values_(static_cast<std::size_t>(std::max(window, 1)), 0.0),
+          next_(0),
+          count_(0),
+          sum_(0.0) {}
+
+    inline void push(double value) {
+        if (count_ == values_.size()) {
+            sum_ -= values_[next_];
+        } else {
+            ++count_;
+        }
+
+        values_[next_] = value;
+        next_ = (next_ + 1) % values_.size();
+        sum_ += value;
+    }
+
+    inline bool full() const {
+        return count_ == values_.size();
+    }
+
+    inline double sum() const {
+        return sum_;
+    }
+
+private:
+    std::vector<double> values_;
+    std::size_t next_;
+    std::size_t count_;
+    double sum_;
+};
+
 inline void rolling_sum_push(RollingBuffer &buffer, double &sum, double value) {
     if (buffer.full()) {
         sum -= buffer.oldest();
@@ -1151,6 +1267,134 @@ void rolling_stddev(
     }
 }
 
+template <typename Value>
+void rolling_variance_fresh(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *output) {
+    double sum = 0.0;
+    double sum2 = 0.0;
+    for (std::size_t i = 0; i < size; ++i) {
+        const double value = static_cast<double>(values[i]);
+        sum += value;
+        sum2 += value * value;
+        if (i >= window) {
+            const double old = static_cast<double>(values[i - window]);
+            sum -= old;
+            sum2 -= old * old;
+        }
+
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && count < window) {
+            output[i] = nan();
+        } else {
+            const double n = static_cast<double>(count);
+            const double variance = (sum2 - sum * sum / n) / n;
+            output[i] = variance < 0.0 && variance > -1e-12 ? 0.0 : variance;
+        }
+    }
+}
+
+template <typename Value>
+void rolling_stddev_fresh(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    int window_size,
+    double *output) {
+    double sum = 0.0;
+    double sum2 = 0.0;
+    for (std::size_t i = 0; i < size; ++i) {
+        const double value = static_cast<double>(values[i]);
+        sum += value;
+        sum2 += value * value;
+        if (i >= window) {
+            const double old = static_cast<double>(values[i - window]);
+            sum -= old;
+            sum2 -= old * old;
+        }
+
+        if (!fillna && static_cast<long>(i) < window_size) {
+            output[i] = nan();
+        } else {
+            const double n = static_cast<double>(std::min(window, i + 1));
+            const double variance = (sum2 - sum * sum / n) / n;
+            output[i] = std::sqrt(variance < 0.0 && variance > -1e-12 ? 0.0 : variance);
+        }
+    }
+}
+
+template <typename Value>
+void rebuild_buffer_sum(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    RollingBuffer &history,
+    double &sum,
+    double &sum2) {
+    history.reset();
+    sum = 0.0;
+    sum2 = 0.0;
+    const std::size_t start = size > window ? size - window : 0;
+    for (std::size_t i = start; i < size; ++i) {
+        const double value = static_cast<double>(values[i]);
+        history.push(value);
+        sum += value;
+        sum2 += value * value;
+    }
+}
+
+template <typename Value0, typename Value1>
+void rolling_pair_fresh(
+    const Value0 *x,
+    const Value1 *y,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    bool beta,
+    double *output) {
+    double sum_x = 0.0;
+    double sum_y = 0.0;
+    double sum_x2 = 0.0;
+    double sum_y2 = 0.0;
+    double sum_xy = 0.0;
+
+    for (std::size_t i = 0; i < size; ++i) {
+        const double x_value = static_cast<double>(x[i]);
+        const double y_value = static_cast<double>(y[i]);
+        sum_x += x_value;
+        sum_y += y_value;
+        sum_x2 += x_value * x_value;
+        sum_y2 += y_value * y_value;
+        sum_xy += x_value * y_value;
+        if (i >= window) {
+            const double old_x = static_cast<double>(x[i - window]);
+            const double old_y = static_cast<double>(y[i - window]);
+            sum_x -= old_x;
+            sum_y -= old_y;
+            sum_x2 -= old_x * old_x;
+            sum_y2 -= old_y * old_y;
+            sum_xy -= old_x * old_y;
+        }
+
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && count < window) {
+            output[i] = nan();
+        } else {
+            const double n = static_cast<double>(count);
+            const double covariance = n * sum_xy - sum_x * sum_y;
+            if (beta) {
+                output[i] = safe_divide(covariance, n * sum_y2 - sum_y * sum_y);
+            } else {
+                output[i] = safe_divide(covariance, std::sqrt((n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)));
+            }
+        }
+    }
+}
+
 template <typename Close, typename High, typename Low>
 void true_range(
     const Close *close,
@@ -1240,6 +1484,42 @@ void chande_momentum_oscillator(
     }
 }
 
+template <typename Value>
+void chande_momentum_oscillator_fresh(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *output) {
+    double gain_sum = 0.0;
+    double loss_sum = 0.0;
+    for (std::size_t i = 0; i < size; ++i) {
+        double gain = 0.0;
+        double loss = 0.0;
+        if (i > 0) {
+            const double change = static_cast<double>(values[i]) - static_cast<double>(values[i - 1]);
+            if (change > 0.0) {
+                gain = change;
+            } else {
+                loss = -change;
+            }
+        }
+        gain_sum += gain;
+        loss_sum += loss;
+        if (i >= window) {
+            const double old_change = static_cast<double>(values[i - window + 1]) - static_cast<double>(values[i - window]);
+            if (old_change > 0.0) {
+                gain_sum -= old_change;
+            } else {
+                loss_sum += old_change;
+            }
+        }
+
+        const std::size_t count = std::min(window, i + 1);
+        output[i] = (!fillna && count < window) ? nan() : safe_divide(100.0 * (gain_sum - loss_sum), gain_sum + loss_sum);
+    }
+}
+
 template <typename Close, typename High, typename Low, typename Volume>
 void money_flow_index(
     const Close *close,
@@ -1278,6 +1558,63 @@ void money_flow_index(
         first = false;
 
         if (!fillna && !positive_history.full()) {
+            output[i] = nan();
+        } else if (negative_sum == 0.0) {
+            output[i] = positive_sum == 0.0 ? 50.0 : 100.0;
+        } else {
+            output[i] = 100.0 - 100.0 / (1.0 + positive_sum / negative_sum);
+        }
+    }
+}
+
+template <typename Close, typename High, typename Low, typename Volume>
+void money_flow_index_fresh(
+    const Close *close,
+    const High *high,
+    const Low *low,
+    const Volume *volume,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *output) {
+    double positive_sum = 0.0;
+    double negative_sum = 0.0;
+    for (std::size_t i = 0; i < size; ++i) {
+        const double typical = (static_cast<double>(high[i]) + static_cast<double>(low[i]) + static_cast<double>(close[i])) / 3.0;
+        double positive = 0.0;
+        double negative = 0.0;
+        if (i > 0) {
+            const double previous_typical = (static_cast<double>(high[i - 1]) + static_cast<double>(low[i - 1]) + static_cast<double>(close[i - 1])) / 3.0;
+            const double money_flow = typical * static_cast<double>(volume[i]);
+            if (typical > previous_typical) {
+                positive = money_flow;
+            } else if (typical < previous_typical) {
+                negative = money_flow;
+            }
+        }
+
+        positive_sum += positive;
+        negative_sum += negative;
+        if (i >= window) {
+            const std::size_t old_index = i - window;
+            const double old_typical = (
+                static_cast<double>(high[old_index]) +
+                static_cast<double>(low[old_index]) +
+                static_cast<double>(close[old_index])) / 3.0;
+            const double old_previous_typical = old_index == 0 ? old_typical : (
+                static_cast<double>(high[old_index - 1]) +
+                static_cast<double>(low[old_index - 1]) +
+                static_cast<double>(close[old_index - 1])) / 3.0;
+            const double old_money_flow = old_typical * static_cast<double>(volume[old_index]);
+            if (old_typical > old_previous_typical) {
+                positive_sum -= old_money_flow;
+            } else if (old_typical < old_previous_typical) {
+                negative_sum -= old_money_flow;
+            }
+        }
+
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && count < window) {
             output[i] = nan();
         } else if (negative_sum == 0.0) {
             output[i] = positive_sum == 0.0 ? 50.0 : 100.0;
@@ -1405,6 +1742,242 @@ void midprice_small_window_scan(
             lowest = std::min(lowest, low_value);
         }
         output[i] = (highest + lowest) * 0.5;
+    }
+}
+
+template <typename Value>
+void rolling_high_small_window_scan(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    bool high_fillna_requires_extra_sample,
+    double *output) {
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && (high_fillna_requires_extra_sample ? i < window : count < window)) {
+            output[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = i + 1 - count;
+        double highest = static_cast<double>(values[start]);
+        for (std::size_t j = start + 1; j <= i; ++j) {
+            highest = std::max(highest, static_cast<double>(values[j]));
+        }
+        output[i] = highest;
+    }
+}
+
+template <typename Value>
+void rolling_low_small_window_scan(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    bool high_fillna_requires_extra_sample,
+    double *output) {
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && (high_fillna_requires_extra_sample ? i < window : count < window)) {
+            output[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = i + 1 - count;
+        double lowest = static_cast<double>(values[start]);
+        for (std::size_t j = start + 1; j <= i; ++j) {
+            lowest = std::min(lowest, static_cast<double>(values[j]));
+        }
+        output[i] = lowest;
+    }
+}
+
+template <typename Value>
+void high_low_small_window_scan(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *min_output,
+    double *max_output) {
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && count < window) {
+            min_output[i] = nan();
+            max_output[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = i + 1 - count;
+        double lowest = static_cast<double>(values[start]);
+        double highest = lowest;
+        for (std::size_t j = start + 1; j <= i; ++j) {
+            const double value = static_cast<double>(values[j]);
+            highest = std::max(highest, value);
+            lowest = std::min(lowest, value);
+        }
+        min_output[i] = lowest;
+        max_output[i] = highest;
+    }
+}
+
+template <typename Value>
+void high_low_index_small_window_scan(
+    const Value *values,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *min_index,
+    double *max_index) {
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && count < window) {
+            min_index[i] = nan();
+            max_index[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = i + 1 - count;
+        double lowest = static_cast<double>(values[start]);
+        double highest = lowest;
+        std::size_t lowest_index = start;
+        std::size_t highest_index = start;
+        for (std::size_t j = start + 1; j <= i; ++j) {
+            const double value = static_cast<double>(values[j]);
+            if (value <= lowest) {
+                lowest = value;
+                lowest_index = j;
+            }
+            if (value >= highest) {
+                highest = value;
+                highest_index = j;
+            }
+        }
+        min_index[i] = static_cast<double>(lowest_index);
+        max_index[i] = static_cast<double>(highest_index);
+    }
+}
+
+template <typename High, typename Low>
+void aroon_small_window_scan(
+    const High *high,
+    const Low *low,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *down,
+    double *up) {
+    const std::size_t lookback = window + 1;
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t count = std::min(lookback, i + 1);
+        if (!fillna && count < lookback) {
+            down[i] = nan();
+            up[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = i + 1 - count;
+        double highest = static_cast<double>(high[start]);
+        double lowest = static_cast<double>(low[start]);
+        std::size_t highest_index = start;
+        std::size_t lowest_index = start;
+        for (std::size_t j = start + 1; j <= i; ++j) {
+            const double high_value = static_cast<double>(high[j]);
+            const double low_value = static_cast<double>(low[j]);
+            if (high_value >= highest) {
+                highest = high_value;
+                highest_index = j;
+            }
+            if (low_value <= lowest) {
+                lowest = low_value;
+                lowest_index = j;
+            }
+        }
+
+        const double denom = static_cast<double>(std::max<std::size_t>(count - 1, 1));
+        down[i] = 100.0 * static_cast<double>(lowest_index - start) / denom;
+        up[i] = 100.0 * static_cast<double>(highest_index - start) / denom;
+    }
+}
+
+template <typename Close, typename High, typename Low>
+void williams_r_small_window_scan(
+    const Close *close,
+    const High *high,
+    const Low *low,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *output) {
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && count < window) {
+            output[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = i + 1 - count;
+        double highest = static_cast<double>(high[start]);
+        double lowest = static_cast<double>(low[start]);
+        for (std::size_t j = start + 1; j <= i; ++j) {
+            highest = std::max(highest, static_cast<double>(high[j]));
+            lowest = std::min(lowest, static_cast<double>(low[j]));
+        }
+        output[i] = safe_divide(-100.0 * (highest - static_cast<double>(close[i])), highest - lowest);
+    }
+}
+
+template <typename Close, typename High, typename Low>
+void stochastic_fastk_small_window_scan(
+    const Close *close,
+    const High *high,
+    const Low *low,
+    std::size_t size,
+    std::size_t window,
+    bool fillna,
+    double *output) {
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t count = std::min(window, i + 1);
+        if (!fillna && count < window) {
+            output[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = i + 1 - count;
+        double highest = static_cast<double>(high[start]);
+        double lowest = static_cast<double>(low[start]);
+        for (std::size_t j = start + 1; j <= i; ++j) {
+            highest = std::max(highest, static_cast<double>(high[j]));
+            lowest = std::min(lowest, static_cast<double>(low[j]));
+        }
+        output[i] = safe_divide(100.0 * (static_cast<double>(close[i]) - lowest), highest - lowest);
+    }
+}
+
+template <typename Value>
+void rebuild_extreme_state(const Value *values, std::size_t size, std::size_t window, RollingExtreme &extreme) {
+    extreme.reset();
+    const std::size_t start = size > window ? size - window : 0;
+    for (std::size_t i = start; i < size; ++i) {
+        extreme.push(static_cast<double>(values[i]));
+    }
+}
+
+template <typename High, typename Low>
+void rebuild_pair_extreme_state(
+    const High *high,
+    const Low *low,
+    std::size_t size,
+    std::size_t window,
+    RollingExtreme &highs,
+    RollingExtreme &lows) {
+    highs.reset();
+    lows.reset();
+    const std::size_t start = size > window ? size - window : 0;
+    for (std::size_t i = start; i < size; ++i) {
+        highs.push(static_cast<double>(high[i]));
+        lows.push(static_cast<double>(low[i]));
     }
 }
 
@@ -1598,6 +2171,23 @@ public:
         return value_;
     }
 
+    int window() const {
+        return window_;
+    }
+
+    double value() const {
+        return value_;
+    }
+
+    long count() const {
+        return count_;
+    }
+
+    void set_state(double value, long count) {
+        value_ = value;
+        count_ = count;
+    }
+
 private:
     int window_;
     double value_;
@@ -1693,6 +2283,54 @@ public:
         return atr_;
     }
 
+    template <typename Array0, typename Array1, typename Array2>
+    void batch_to(const Array0 &close, const Array1 &high, const Array2 &low, double *output) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        double previous_close = previous_close_;
+        bool first = first_;
+        int count = count_;
+        double tr_sum = tr_sum_;
+        double atr = atr_;
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const double close_value = static_cast<double>(close_values[i]);
+            const double high_value = static_cast<double>(high_values[i]);
+            const double low_value = static_cast<double>(low_values[i]);
+            const double tr = first ? high_value - low_value : true_range(close_value, high_value, low_value, previous_close);
+            previous_close = close_value;
+            first = false;
+            ++count;
+
+            if (count <= window_) {
+                tr_sum += tr;
+                atr = tr_sum / static_cast<double>(count);
+                output[i] = (!fillna_ && count < window_) ? nan() : atr;
+            } else {
+                atr = (atr * (window_ - 1.0) + tr) / window_;
+                output[i] = atr;
+            }
+        }
+
+        previous_close_ = previous_close;
+        first_ = first;
+        count_ = count;
+        tr_sum_ = tr_sum;
+        atr_ = atr;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        batch_to(close, high, low, output.data());
+        return make_array(std::move(output));
+    }
+
 private:
     int window_;
     bool fillna_;
@@ -1710,6 +2348,18 @@ public:
 
     double update(double close, double high, double low) {
         return atr_.update(close, high, low) / close;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        atr_.batch_to(close, high, low, output.data());
+        const auto *close_values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] /= static_cast<double>(close_values[i]);
+        }
+        return make_array(std::move(output));
     }
 
 private:
@@ -1741,6 +2391,21 @@ public:
 
         if (first_pass_ && !fillna_) {
             return nan();
+        }
+
+        return last_value_;
+    }
+
+    inline double update_always_filled(double value) {
+        if (first_pass_ && index_ == 0) {
+            last_value_ = value;
+        }
+
+        last_value_ = weighted_multiplier_ * value + last_value_ * inverted_multiplier_;
+        ++index_;
+
+        if (index_ == window_) {
+            first_pass_ = false;
         }
 
         return last_value_;
@@ -1821,12 +2486,12 @@ void t3_moving_average(
     const double c4 = 1.0 + 3.0 * vfactor + v3 + 3.0 * v2;
 
     for (std::size_t i = 0; i < size; ++i) {
-        const double e1 = e1_indicator.update(static_cast<double>(values[i]));
-        const double e2 = e2_indicator.update(e1);
-        const double e3 = e3_indicator.update(e2);
-        const double e4 = e4_indicator.update(e3);
-        const double e5 = e5_indicator.update(e4);
-        const double e6 = e6_indicator.update(e5);
+        const double e1 = e1_indicator.update_always_filled(static_cast<double>(values[i]));
+        const double e2 = e2_indicator.update_always_filled(e1);
+        const double e3 = e3_indicator.update_always_filled(e2);
+        const double e4 = e4_indicator.update_always_filled(e3);
+        const double e5 = e5_indicator.update_always_filled(e4);
+        const double e6 = e6_indicator.update_always_filled(e5);
         const bool return_nan = !fillna && counter < window;
         ++counter;
         output[i] = return_nan ? nan() : c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3;
@@ -2461,6 +3126,18 @@ public:
         return 100.0 * atr_.update(close, high, low) / close;
     }
 
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        atr_.batch_to(close, high, low, output.data());
+        const auto *close_values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = 100.0 * output[i] / static_cast<double>(close_values[i]);
+        }
+        return make_array(std::move(output));
+    }
+
 private:
     ATR atr_;
 };
@@ -2559,9 +3236,24 @@ public:
           previous_high_(0.0),
           previous_low_(0.0),
           first_(true),
-          fillna_(fillna) {}
+          fillna_(fillna),
+          last_{nan(), nan()} {}
 
     EaseOfMovementResult update(double high, double low, double volume) {
+        update_core(high, low, volume);
+        return last_;
+    }
+
+    void advance(double high, double low, double volume) {
+        update_core(high, low, volume);
+    }
+
+    inline const EaseOfMovementResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low, double volume) {
         const double value = first_
             ? 0.0
             : safe_divide((high - previous_high_ + low - previous_low_) * (high - low), 2.0 * volume) * 100000000.0;
@@ -2570,12 +3262,13 @@ public:
         first_ = false;
         eom_.push(value);
 
-        return {
+        last_ = {
             (!fillna_ && eom_.size() == 1) ? nan() : value,
             (!fillna_ && !eom_.full()) ? nan() : eom_.sum() / eom_.size(),
         };
     }
 
+public:
     EaseOfMovementBatchResult batch(const InputArray &high, const InputArray &low, const InputArray &volume) {
         const std::size_t size = high.shape(0);
         std::vector<double> eom(size);
@@ -2595,6 +3288,7 @@ private:
     double previous_low_;
     bool first_;
     bool fillna_;
+    EaseOfMovementResult last_;
 };
 
 class VolumePriceTrend {
@@ -2733,6 +3427,21 @@ public:
         std::vector<double> output(size);
         const auto *values = close.data();
         const long start_counter = counter_;
+        if (start_counter == 0 && close_.size() == 0 && window_ > 0) {
+            const std::size_t window = static_cast<std::size_t>(window_);
+            for (std::size_t i = 0; i < size; ++i) {
+                output[i] = i < window ? nan() : static_cast<double>(values[i]) - static_cast<double>(values[i - window]);
+            }
+
+            const std::size_t keep = std::min<std::size_t>(window, size);
+            close_.reset();
+            for (std::size_t i = size - keep; i < size; ++i) {
+                close_.push(static_cast<double>(values[i]));
+            }
+            counter_ = static_cast<long>(size);
+            return make_array(std::move(output));
+        }
+
         batch_kernels::momentum(values, size, close_, window_, fillna_, start_counter, output.data());
 
         const std::size_t keep = std::min<std::size_t>(static_cast<std::size_t>(std::max(window_, 0)), size);
@@ -3143,6 +3852,7 @@ public:
     ChandeMomentumOscillator(int window = 14, bool fillna = true)
         : gains_(window),
           losses_(window),
+          window_(window),
           gain_sum_(0.0),
           loss_sum_(0.0),
           previous_(0.0),
@@ -3177,23 +3887,66 @@ public:
     nb::object batch_array(const Array &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> output(size);
-        batch_kernels::chande_momentum_oscillator(
-            close.data(),
-            size,
-            gains_,
-            losses_,
-            gain_sum_,
-            loss_sum_,
-            previous_,
-            first_,
-            fillna_,
-            output.data());
+        if (first_ && gains_.size() == 0) {
+            batch_kernels::chande_momentum_oscillator_fresh(
+                close.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                output.data());
+            rebuild_state(close.data(), size);
+        } else {
+            batch_kernels::chande_momentum_oscillator(
+                close.data(),
+                size,
+                gains_,
+                losses_,
+                gain_sum_,
+                loss_sum_,
+                previous_,
+                first_,
+                fillna_,
+                output.data());
+        }
         return make_array(std::move(output));
     }
 
 private:
+    template <typename Value>
+    void rebuild_state(const Value *values, std::size_t size) {
+        if (size == 0) {
+            return;
+        }
+
+        gains_.reset();
+        losses_.reset();
+        gain_sum_ = 0.0;
+        loss_sum_ = 0.0;
+        const std::size_t window = static_cast<std::size_t>(std::max(window_, 1));
+        const std::size_t start = size > window ? size - window : 0;
+        for (std::size_t i = start; i < size; ++i) {
+            double gain = 0.0;
+            double loss = 0.0;
+            if (i > 0) {
+                const double change = static_cast<double>(values[i]) - static_cast<double>(values[i - 1]);
+                if (change > 0.0) {
+                    gain = change;
+                } else {
+                    loss = -change;
+                }
+            }
+            gains_.push(gain);
+            losses_.push(loss);
+            gain_sum_ += gain;
+            loss_sum_ += loss;
+        }
+        previous_ = static_cast<double>(values[size - 1]);
+        first_ = false;
+    }
+
     RollingBuffer gains_;
     RollingBuffer losses_;
+    int window_;
     double gain_sum_;
     double loss_sum_;
     double previous_;
@@ -3233,6 +3986,7 @@ public:
     MoneyFlowIndex(int window = 14, bool fillna = true)
         : positive_(window),
           negative_(window),
+          window_(window),
           positive_sum_(0.0),
           negative_sum_(0.0),
           previous_typical_(0.0),
@@ -3275,26 +4029,80 @@ public:
         require_same_size(size, low.shape(0));
         require_same_size(size, volume.shape(0));
         std::vector<double> output(size);
-        batch_kernels::money_flow_index(
-            close.data(),
-            high.data(),
-            low.data(),
-            volume.data(),
-            size,
-            positive_,
-            negative_,
-            positive_sum_,
-            negative_sum_,
-            previous_typical_,
-            first_,
-            fillna_,
-            output.data());
+        if (first_ && positive_.size() == 0) {
+            batch_kernels::money_flow_index_fresh(
+                close.data(),
+                high.data(),
+                low.data(),
+                volume.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                output.data());
+            rebuild_state(close.data(), high.data(), low.data(), volume.data(), size);
+        } else {
+            batch_kernels::money_flow_index(
+                close.data(),
+                high.data(),
+                low.data(),
+                volume.data(),
+                size,
+                positive_,
+                negative_,
+                positive_sum_,
+                negative_sum_,
+                previous_typical_,
+                first_,
+                fillna_,
+                output.data());
+        }
         return make_array(std::move(output));
     }
 
 private:
+    template <typename Close, typename High, typename Low, typename Volume>
+    void rebuild_state(const Close *close, const High *high, const Low *low, const Volume *volume, std::size_t size) {
+        if (size == 0) {
+            return;
+        }
+
+        positive_.reset();
+        negative_.reset();
+        positive_sum_ = 0.0;
+        negative_sum_ = 0.0;
+        const std::size_t window = static_cast<std::size_t>(std::max(window_, 1));
+        const std::size_t start = size > window ? size - window : 0;
+        for (std::size_t i = start; i < size; ++i) {
+            const double typical = (static_cast<double>(high[i]) + static_cast<double>(low[i]) + static_cast<double>(close[i])) / 3.0;
+            double positive = 0.0;
+            double negative = 0.0;
+            if (i > 0) {
+                const double previous_typical = (
+                    static_cast<double>(high[i - 1]) +
+                    static_cast<double>(low[i - 1]) +
+                    static_cast<double>(close[i - 1])) / 3.0;
+                const double money_flow = typical * static_cast<double>(volume[i]);
+                if (typical > previous_typical) {
+                    positive = money_flow;
+                } else if (typical < previous_typical) {
+                    negative = money_flow;
+                }
+            }
+            positive_.push(positive);
+            negative_.push(negative);
+            positive_sum_ += positive;
+            negative_sum_ += negative;
+        }
+        previous_typical_ = (
+            static_cast<double>(high[size - 1]) +
+            static_cast<double>(low[size - 1]) +
+            static_cast<double>(close[size - 1])) / 3.0;
+        first_ = false;
+    }
+
     RollingBuffer positive_;
     RollingBuffer negative_;
+    int window_;
     double positive_sum_;
     double negative_sum_;
     double previous_typical_;
@@ -3357,6 +4165,20 @@ public:
         return safe_divide(covariance, variance_y);
     }
 
+    std::size_t capacity() const {
+        return x_.capacity();
+    }
+
+    void reset() {
+        x_.reset();
+        y_.reset();
+        sum_x_ = 0.0;
+        sum_y_ = 0.0;
+        sum_x2_ = 0.0;
+        sum_y2_ = 0.0;
+        sum_xy_ = 0.0;
+    }
+
 private:
     RollingBuffer x_;
     RollingBuffer y_;
@@ -3381,6 +4203,29 @@ public:
         return stats_.correlation();
     }
 
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        const std::size_t size = real0.shape(0);
+        require_same_size(size, real1.shape(0));
+        std::vector<double> output(size);
+        if (stats_.size() == 0) {
+            const std::size_t window = stats_.capacity();
+            batch_kernels::rolling_pair_fresh(real0.data(), real1.data(), size, window, fillna_, false, output.data());
+            stats_.reset();
+            const std::size_t start = size > window ? size - window : 0;
+            for (std::size_t i = start; i < size; ++i) {
+                stats_.push(static_cast<double>(real0.data()[i]), static_cast<double>(real1.data()[i]));
+            }
+        } else {
+            const auto *x = real0.data();
+            const auto *y = real1.data();
+            for (std::size_t i = 0; i < size; ++i) {
+                output[i] = update(static_cast<double>(x[i]), static_cast<double>(y[i]));
+            }
+        }
+        return make_array(std::move(output));
+    }
+
 private:
     RollingPairStats stats_;
     bool fillna_;
@@ -3398,6 +4243,29 @@ public:
             return nan();
         }
         return stats_.beta();
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        const std::size_t size = real0.shape(0);
+        require_same_size(size, real1.shape(0));
+        std::vector<double> output(size);
+        if (stats_.size() == 0) {
+            const std::size_t window = stats_.capacity();
+            batch_kernels::rolling_pair_fresh(real0.data(), real1.data(), size, window, fillna_, true, output.data());
+            stats_.reset();
+            const std::size_t start = size > window ? size - window : 0;
+            for (std::size_t i = start; i < size; ++i) {
+                stats_.push(static_cast<double>(real0.data()[i]), static_cast<double>(real1.data()[i]));
+            }
+        } else {
+            const auto *x = real0.data();
+            const auto *y = real1.data();
+            for (std::size_t i = 0; i < size; ++i) {
+                output[i] = update(static_cast<double>(x[i]), static_cast<double>(y[i]));
+            }
+        }
+        return make_array(std::move(output));
     }
 
 private:
@@ -3437,7 +4305,13 @@ public:
     nb::object batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
-        batch_kernels::rolling_variance(input.data(), size, values_, fillna_, sum_, sum2_, output.data());
+        if (values_.size() == 0) {
+            const std::size_t window = values_.capacity();
+            batch_kernels::rolling_variance_fresh(input.data(), size, window, fillna_, output.data());
+            batch_kernels::rebuild_buffer_sum(input.data(), size, window, values_, sum_, sum2_);
+        } else {
+            batch_kernels::rolling_variance(input.data(), size, values_, fillna_, sum_, sum2_, output.data());
+        }
         return make_array(std::move(output));
     }
 
@@ -3599,6 +4473,7 @@ class HighIndex {
 public:
     HighIndex(int window = 30, bool fillna = true)
         : values_(window, true),
+          window_(window),
           fillna_(fillna),
           counter_(-1) {}
 
@@ -3616,12 +4491,26 @@ public:
     nb::object batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
-        batch_kernels::rolling_extreme_index(input.data(), size, values_, fillna_, counter_, output.data());
+        if (counter_ < 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_INDEX_SCAN_WINDOW_LIMIT) {
+            std::vector<double> min_index(size);
+            batch_kernels::high_low_index_small_window_scan(
+                input.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                min_index.data(),
+                output.data());
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), values_);
+            counter_ = static_cast<long>(size) - 1;
+        } else {
+            batch_kernels::rolling_extreme_index(input.data(), size, values_, fillna_, counter_, output.data());
+        }
         return make_array(std::move(output));
     }
 
 private:
     RollingExtreme values_;
+    int window_;
     bool fillna_;
     long counter_;
 };
@@ -3630,6 +4519,7 @@ class LowIndex {
 public:
     LowIndex(int window = 30, bool fillna = true)
         : values_(window, false),
+          window_(window),
           fillna_(fillna),
           counter_(-1) {}
 
@@ -3647,12 +4537,26 @@ public:
     nb::object batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
-        batch_kernels::rolling_extreme_index(input.data(), size, values_, fillna_, counter_, output.data());
+        if (counter_ < 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_INDEX_SCAN_WINDOW_LIMIT) {
+            std::vector<double> max_index(size);
+            batch_kernels::high_low_index_small_window_scan(
+                input.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                output.data(),
+                max_index.data());
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), values_);
+            counter_ = static_cast<long>(size) - 1;
+        } else {
+            batch_kernels::rolling_extreme_index(input.data(), size, values_, fillna_, counter_, output.data());
+        }
         return make_array(std::move(output));
     }
 
 private:
     RollingExtreme values_;
+    int window_;
     bool fillna_;
     long counter_;
 };
@@ -3662,23 +4566,53 @@ public:
     HighLow(int window = 30, bool fillna = true)
         : min_(window, false),
           max_(window, true),
-          fillna_(fillna) {}
+          window_(window),
+          fillna_(fillna),
+          last_{nan(), nan()} {}
 
     HighLowResult update(double value) {
+        update_core(value);
+        return last_;
+    }
+
+    void advance(double value) {
+        update_core(value);
+    }
+
+    inline const HighLowResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double value) {
         min_.push(value);
         max_.push(value);
         if (!fillna_ && !min_.full()) {
-            return {nan(), nan()};
+            last_ = {nan(), nan()};
+        } else {
+            last_ = {min_.value(), max_.value()};
         }
-        return {min_.value(), max_.value()};
     }
 
+public:
     template <typename Array>
     HighLowBatchResult batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> min_values(size);
         std::vector<double> max_values(size);
-        batch_kernels::high_low(input.data(), size, min_, max_, fillna_, min_values.data(), max_values.data());
+        if (min_.size() == 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_SCAN_WINDOW_LIMIT) {
+            batch_kernels::high_low_small_window_scan(
+                input.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                min_values.data(),
+                max_values.data());
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), min_);
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), max_);
+        } else {
+            batch_kernels::high_low(input.data(), size, min_, max_, fillna_, min_values.data(), max_values.data());
+        }
 
         return {make_array(std::move(min_values)), make_array(std::move(max_values))};
     }
@@ -3686,7 +4620,9 @@ public:
 private:
     RollingExtreme min_;
     RollingExtreme max_;
+    int window_;
     bool fillna_;
+    HighLowResult last_;
 };
 
 class HighLowIndex {
@@ -3694,49 +4630,85 @@ public:
     HighLowIndex(int window = 30, bool fillna = true)
         : min_(window, false),
           max_(window, true),
+          window_(window),
           fillna_(fillna),
-          counter_(-1) {}
+          counter_(-1),
+          last_{nan(), nan()} {}
 
     HighLowIndexResult update(double value) {
+        update_core(value);
+        return last_;
+    }
+
+    void advance(double value) {
+        update_core(value);
+    }
+
+    inline const HighLowIndexResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double value) {
         ++counter_;
         min_.push(value);
         max_.push(value);
         if (!fillna_ && !min_.full()) {
-            return {nan(), nan()};
+            last_ = {nan(), nan()};
+        } else {
+            const long base = counter_ - static_cast<long>(min_.size()) + 1;
+            last_ = {
+                static_cast<double>(base + static_cast<long>(min_.offset())),
+                static_cast<double>(base + static_cast<long>(max_.offset())),
+            };
         }
-        const long base = counter_ - static_cast<long>(min_.size()) + 1;
-        return {
-            static_cast<double>(base + static_cast<long>(min_.offset())),
-            static_cast<double>(base + static_cast<long>(max_.offset())),
-        };
     }
 
+public:
     template <typename Array>
     HighLowIndexBatchResult batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> min_index(size);
         std::vector<double> max_index(size);
-        batch_kernels::high_low_index(input.data(), size, min_, max_, fillna_, counter_, min_index.data(), max_index.data());
+        if (counter_ < 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_INDEX_SCAN_WINDOW_LIMIT) {
+            batch_kernels::high_low_index_small_window_scan(
+                input.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                min_index.data(),
+                max_index.data());
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), min_);
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), max_);
+            counter_ = static_cast<long>(size) - 1;
+        } else {
+            batch_kernels::high_low_index(input.data(), size, min_, max_, fillna_, counter_, min_index.data(), max_index.data());
+        }
         return {make_array(std::move(min_index)), make_array(std::move(max_index))};
     }
 
 private:
     RollingExtreme min_;
     RollingExtreme max_;
+    int window_;
     bool fillna_;
     long counter_;
+    HighLowIndexResult last_;
 };
 
 class MidPoint {
 public:
     MidPoint(int window = 14, bool fillna = true)
-        : min_(window, false),
+        : window_(static_cast<std::size_t>(std::max(window, 1))),
+          min_(window, false),
           max_(window, true),
+          history_(window),
           fillna_(fillna) {}
 
     double update(double value) {
         min_.push(value);
         max_.push(value);
+        history_.push(value);
         if (!fillna_ && !min_.full()) {
             return nan();
         }
@@ -3747,13 +4719,51 @@ public:
     nb::object batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
-        batch_kernels::midpoint(input.data(), size, min_, max_, fillna_, output.data());
+        if (window_ <= SMALL_SCAN_WINDOW_LIMIT) {
+            const std::size_t prior_size = history_.size();
+            std::vector<double> prior(prior_size);
+            for (std::size_t i = 0; i < prior_size; ++i) {
+                prior[i] = history_.at(i);
+            }
+            batch_kernels::midprice_small_window_scan(
+                input.data(),
+                input.data(),
+                size,
+                prior.data(),
+                prior.data(),
+                prior_size,
+                window_,
+                fillna_,
+                output.data());
+            rebuild_state(input.data(), size, prior);
+        } else {
+            batch_kernels::midpoint(input.data(), size, min_, max_, fillna_, output.data());
+        }
         return make_array(std::move(output));
     }
 
 private:
+    template <typename Value>
+    void rebuild_state(const Value *values, std::size_t size, const std::vector<double> &prior) {
+        const std::size_t prior_size = prior.size();
+        const std::size_t total = prior_size + size;
+        const std::size_t start = total > window_ ? total - window_ : 0;
+
+        min_.reset();
+        max_.reset();
+        history_.reset();
+        for (std::size_t index = start; index < total; ++index) {
+            const double value = index < prior_size ? prior[index] : static_cast<double>(values[index - prior_size]);
+            min_.push(value);
+            max_.push(value);
+            history_.push(value);
+        }
+    }
+
+    std::size_t window_;
     RollingExtreme min_;
     RollingExtreme max_;
+    RollingBuffer history_;
     bool fillna_;
 };
 
@@ -3855,9 +4865,24 @@ public:
           lows_(window, false),
           close_(window),
           close_sum_(0.0),
-          fillna_(fillna) {}
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan(), nan()} {}
 
     DonchianChannelResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const DonchianChannelResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
         highs_.push(high);
         lows_.push(low);
         if (close_.full()) {
@@ -3867,14 +4892,15 @@ public:
         close_sum_ += close;
 
         if (!fillna_ && !highs_.full()) {
-            return {nan(), nan(), nan(), nan(), nan()};
+            last_ = {nan(), nan(), nan(), nan(), nan()};
+            return;
         }
 
         const double upper = highs_.value();
         const double lower = lows_.value();
         const double middle = (upper + lower) * 0.5;
         const double close_mean = close_sum_ / close_.size();
-        return {
+        last_ = {
             upper,
             lower,
             middle,
@@ -3883,6 +4909,7 @@ public:
         };
     }
 
+public:
     DonchianChannelBatchResult batch(const InputArray &close, const InputArray &high, const InputArray &low) {
         const std::size_t size = close.shape(0);
         std::vector<double> upper(size);
@@ -3915,6 +4942,7 @@ private:
     RollingBuffer close_;
     double close_sum_;
     bool fillna_;
+    DonchianChannelResult last_;
 };
 
 class UlcerIndex {
@@ -3967,32 +4995,67 @@ public:
         : highs_(window + 1, true),
           lows_(window + 1, false),
           window_(window),
-          fillna_(fillna) {}
+          fillna_(fillna),
+          last_{nan(), nan()} {}
 
     AroonResult update(double high, double low) {
+        update_core(high, low);
+        return last_;
+    }
+
+    void advance(double high, double low) {
+        update_core(high, low);
+    }
+
+    inline const AroonResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low) {
         highs_.push(high);
         lows_.push(low);
         if (!fillna_ && !highs_.full()) {
-            return {nan(), nan()};
+            last_ = {nan(), nan()};
+            return;
         }
 
         const double denom = static_cast<double>(std::max<std::size_t>(highs_.size() - 1, 1));
         const double periods_since_high = denom - static_cast<double>(highs_.offset());
         const double periods_since_low = denom - static_cast<double>(lows_.offset());
 
-        return {
+        last_ = {
             100.0 * (denom - periods_since_low) / denom,
             100.0 * (denom - periods_since_high) / denom,
         };
     }
 
+public:
     template <typename Array0, typename Array1>
     AroonBatchResult batch_array(const Array0 &high, const Array1 &low) {
         const std::size_t size = high.shape(0);
         require_same_size(size, low.shape(0));
         std::vector<double> down(size);
         std::vector<double> up(size);
-        batch_kernels::aroon(high.data(), low.data(), size, highs_, lows_, fillna_, down.data(), up.data());
+        if (highs_.size() == 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_INDEX_SCAN_WINDOW_LIMIT) {
+            batch_kernels::aroon_small_window_scan(
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                down.data(),
+                up.data());
+            batch_kernels::rebuild_pair_extreme_state(
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)) + 1,
+                highs_,
+                lows_);
+        } else {
+            batch_kernels::aroon(high.data(), low.data(), size, highs_, lows_, fillna_, down.data(), up.data());
+        }
         return {make_array(std::move(down)), make_array(std::move(up))};
     }
 
@@ -4001,7 +5064,29 @@ public:
         const std::size_t size = high.shape(0);
         require_same_size(size, low.shape(0));
         std::vector<double> output(size);
-        batch_kernels::aroon_oscillator(high.data(), low.data(), size, highs_, lows_, fillna_, output.data());
+        if (highs_.size() == 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_INDEX_SCAN_WINDOW_LIMIT) {
+            std::vector<double> down(size);
+            batch_kernels::aroon_small_window_scan(
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                down.data(),
+                output.data());
+            for (std::size_t i = 0; i < size; ++i) {
+                output[i] = (std::isnan(output[i]) || std::isnan(down[i])) ? nan() : output[i] - down[i];
+            }
+            batch_kernels::rebuild_pair_extreme_state(
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)) + 1,
+                highs_,
+                lows_);
+        } else {
+            batch_kernels::aroon_oscillator(high.data(), low.data(), size, highs_, lows_, fillna_, output.data());
+        }
         return make_array(std::move(output));
     }
 
@@ -4010,6 +5095,7 @@ private:
     RollingExtreme lows_;
     int window_;
     bool fillna_;
+    AroonResult last_;
 };
 
 class AroonOscillator {
@@ -4020,6 +5106,10 @@ public:
     double update(double high, double low) {
         const AroonResult out = aroon_.update(high, low);
         return out.up - out.down;
+    }
+
+    void advance(double high, double low) {
+        aroon_.advance(high, low);
     }
 
     template <typename Array0, typename Array1>
@@ -4041,9 +5131,24 @@ public:
           previous_low_(0.0),
           previous_close_(0.0),
           first_(true),
-          fillna_(fillna) {}
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
 
     VortexResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const VortexResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
         const double tr = first_ ? high - low : true_range(close, high, low, previous_close_);
         const double positive = first_ ? 0.0 : std::abs(high - previous_low_);
         const double negative = first_ ? 0.0 : std::abs(low - previous_high_);
@@ -4058,14 +5163,17 @@ public:
         negative_movement_.push(negative);
 
         if (!fillna_ && !true_range_.full()) {
-            return {nan(), nan(), nan()};
+            last_ = {nan(), nan(), nan()};
+            return;
         }
 
-        const double positive_indicator = safe_divide(positive_movement_.sum(), true_range_.sum(), 1.0);
-        const double negative_indicator = safe_divide(negative_movement_.sum(), true_range_.sum(), 1.0);
-        return {positive_indicator, negative_indicator, positive_indicator - negative_indicator};
+        const double true_range_sum = true_range_.sum();
+        const double positive_indicator = safe_divide(positive_movement_.sum(), true_range_sum, 1.0);
+        const double negative_indicator = safe_divide(negative_movement_.sum(), true_range_sum, 1.0);
+        last_ = {positive_indicator, negative_indicator, positive_indicator - negative_indicator};
     }
 
+public:
     VortexBatchResult batch(const InputArray &close, const InputArray &high, const InputArray &low) {
         const std::size_t size = close.shape(0);
         std::vector<double> positive(size);
@@ -4083,14 +5191,15 @@ public:
     }
 
 private:
-    RollingWindow true_range_;
-    RollingWindow positive_movement_;
-    RollingWindow negative_movement_;
+    RollingSumWindow true_range_;
+    RollingSumWindow positive_movement_;
+    RollingSumWindow negative_movement_;
     double previous_high_;
     double previous_low_;
     double previous_close_;
     bool first_;
     bool fillna_;
+    VortexResult last_;
 };
 
 class DetrendedPriceOscillator {
@@ -4153,9 +5262,24 @@ public:
           signal_(signal, fillna),
           ready_(std::max({roc1 + window1, roc2 + window2, roc3 + window3, roc4 + window4, signal})),
           fillna_(fillna),
-          counter_(0) {}
+          counter_(0),
+          last_{nan(), nan(), nan()} {}
 
     KSTOscillatorResult update(double close) {
+        update_core(close);
+        return last_;
+    }
+
+    void advance(double close) {
+        update_core(close);
+    }
+
+    inline const KSTOscillatorResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close) {
         const double roc1 = roc(delay1_.update(close), close);
         const double roc2 = roc(delay2_.update(close), close);
         const double roc3 = roc(delay3_.update(close), close);
@@ -4166,13 +5290,14 @@ public:
         const bool return_nan = !fillna_ && counter_ < ready_;
         ++counter_;
 
-        return {
+        last_ = {
             return_nan ? nan() : kst,
             return_nan ? nan() : signal,
             return_nan ? nan() : kst - signal,
         };
     }
 
+public:
     KSTOscillatorBatchResult batch(const InputArray &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> kst(size);
@@ -4205,6 +5330,7 @@ private:
     int ready_;
     bool fillna_;
     long counter_;
+    KSTOscillatorResult last_;
 };
 
 class Ichimoku {
@@ -4216,9 +5342,24 @@ public:
           lows2_(window2, false),
           highs3_(window3, true),
           lows3_(window3, false),
-          fillna_(fillna) {}
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan()} {}
 
     IchimokuResult update(double high, double low) {
+        update_core(high, low);
+        return last_;
+    }
+
+    void advance(double high, double low) {
+        update_core(high, low);
+    }
+
+    inline const IchimokuResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low) {
         highs1_.push(high);
         lows1_.push(low);
         highs2_.push(high);
@@ -4231,9 +5372,10 @@ public:
         const double span_a = (std::isnan(conversion) || std::isnan(base)) ? nan() : (conversion + base) * 0.5;
         const double span_b = (!fillna_ && !highs3_.full()) ? nan() : (highs3_.value() + lows3_.value()) * 0.5;
 
-        return {conversion, base, span_a, span_b};
+        last_ = {conversion, base, span_a, span_b};
     }
 
+public:
     IchimokuBatchResult batch(const InputArray &high, const InputArray &low) {
         const std::size_t size = high.shape(0);
         std::vector<double> conversion(size);
@@ -4264,6 +5406,7 @@ private:
     RollingExtreme highs3_;
     RollingExtreme lows3_;
     bool fillna_;
+    IchimokuResult last_;
 };
 
 struct DirectionalValues {
@@ -4314,6 +5457,74 @@ public:
         return {smoothed_plus, smoothed_minus, smoothed_tr, plus_di, minus_di, dx};
     }
 
+    template <typename Close, typename High, typename Low>
+    void batch_indicator(
+        const Close *close,
+        const High *high,
+        const Low *low,
+        std::size_t size,
+        int selector,
+        double *output) {
+        const int window = tr_.window();
+        double plus_value = plus_dm_.value();
+        double minus_value = minus_dm_.value();
+        double tr_value = tr_.value();
+        long plus_count = plus_dm_.count();
+        long minus_count = minus_dm_.count();
+        long tr_count = tr_.count();
+        double previous_high = previous_high_;
+        double previous_low = previous_low_;
+        double previous_close = previous_close_;
+        bool first = first_;
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const double close_value = static_cast<double>(close[i]);
+            const double high_value = static_cast<double>(high[i]);
+            const double low_value = static_cast<double>(low[i]);
+            double plus = 0.0;
+            double minus = 0.0;
+            double tr = high_value - low_value;
+
+            if (!first) {
+                const double up_move = high_value - previous_high;
+                const double down_move = previous_low - low_value;
+                plus = (up_move > down_move && up_move > 0.0) ? up_move : 0.0;
+                minus = (down_move > up_move && down_move > 0.0) ? down_move : 0.0;
+                tr = true_range(close_value, high_value, low_value, previous_close);
+            }
+
+            previous_high = high_value;
+            previous_low = low_value;
+            previous_close = close_value;
+            first = false;
+
+            plus_value = (plus_value * (window - 1.0) + plus) / window;
+            minus_value = (minus_value * (window - 1.0) + minus) / window;
+            tr_value = (tr_value * (window - 1.0) + tr) / window;
+            ++plus_count;
+            ++minus_count;
+            ++tr_count;
+
+            const double plus_di = safe_divide(100.0 * plus_value, tr_value);
+            const double minus_di = safe_divide(100.0 * minus_value, tr_value);
+            if (selector == 0) {
+                output[i] = plus_di;
+            } else if (selector == 1) {
+                output[i] = minus_di;
+            } else {
+                output[i] = safe_divide(100.0 * std::abs(plus_di - minus_di), plus_di + minus_di);
+            }
+        }
+
+        previous_high_ = previous_high;
+        previous_low_ = previous_low;
+        previous_close_ = previous_close;
+        first_ = first;
+        plus_dm_.set_state(plus_value, plus_count);
+        minus_dm_.set_state(minus_value, minus_count);
+        tr_.set_state(tr_value, tr_count);
+    }
+
 private:
     WilderSmoothing plus_dm_;
     WilderSmoothing minus_dm_;
@@ -4337,14 +5548,13 @@ void plus_directional_indicator(
     bool fillna,
     long &counter,
     double *output) {
+    core.batch_indicator(close, high, low, size, 0, output);
     for (std::size_t i = 0; i < size; ++i) {
-        const double value = core.update(
-            static_cast<double>(close[i]),
-            static_cast<double>(high[i]),
-            static_cast<double>(low[i])).plus_di;
         const bool return_nan = !fillna && counter < window;
         ++counter;
-        output[i] = return_nan ? nan() : value;
+        if (return_nan) {
+            output[i] = nan();
+        }
     }
 }
 
@@ -4359,14 +5569,34 @@ void minus_directional_indicator(
     bool fillna,
     long &counter,
     double *output) {
+    core.batch_indicator(close, high, low, size, 1, output);
     for (std::size_t i = 0; i < size; ++i) {
-        const double value = core.update(
-            static_cast<double>(close[i]),
-            static_cast<double>(high[i]),
-            static_cast<double>(low[i])).minus_di;
         const bool return_nan = !fillna && counter < window;
         ++counter;
-        output[i] = return_nan ? nan() : value;
+        if (return_nan) {
+            output[i] = nan();
+        }
+    }
+}
+
+template <typename Close, typename High, typename Low>
+void directional_movement_index(
+    const Close *close,
+    const High *high,
+    const Low *low,
+    std::size_t size,
+    DirectionalMovementCore &core,
+    int window,
+    bool fillna,
+    long &counter,
+    double *output) {
+    core.batch_indicator(close, high, low, size, 2, output);
+    for (std::size_t i = 0; i < size; ++i) {
+        const bool return_nan = !fillna && counter < window;
+        ++counter;
+        if (return_nan) {
+            output[i] = nan();
+        }
     }
 }
 
@@ -4397,6 +5627,48 @@ public:
         const bool return_nan = !fillna_ && counter_ < window_;
         ++counter_;
         return return_nan ? nan() : retval;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const int window = smoothing_.window();
+        double smoothed = smoothing_.value();
+        long smooth_count = smoothing_.count();
+        double previous_high = previous_high_;
+        double previous_low = previous_low_;
+        bool first = first_;
+        long counter = counter_;
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const double high_value = static_cast<double>(high_values[i]);
+            const double low_value = static_cast<double>(low_values[i]);
+            double plus = 0.0;
+            if (!first) {
+                const double up_move = high_value - previous_high;
+                const double down_move = previous_low - low_value;
+                plus = (up_move > down_move && up_move > 0.0) ? up_move : 0.0;
+            }
+            previous_high = high_value;
+            previous_low = low_value;
+            first = false;
+            smoothed = (smoothed * (window - 1.0) + plus) / window;
+            ++smooth_count;
+            const bool return_nan = !fillna_ && counter < window_;
+            ++counter;
+            output[i] = return_nan ? nan() : smoothed;
+        }
+
+        previous_high_ = previous_high;
+        previous_low_ = previous_low;
+        first_ = first;
+        counter_ = counter;
+        smoothing_.set_state(smoothed, smooth_count);
+        return make_array(std::move(output));
     }
 
 private:
@@ -4434,6 +5706,48 @@ public:
         const bool return_nan = !fillna_ && counter_ < window_;
         ++counter_;
         return return_nan ? nan() : retval;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const int window = smoothing_.window();
+        double smoothed = smoothing_.value();
+        long smooth_count = smoothing_.count();
+        double previous_high = previous_high_;
+        double previous_low = previous_low_;
+        bool first = first_;
+        long counter = counter_;
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const double high_value = static_cast<double>(high_values[i]);
+            const double low_value = static_cast<double>(low_values[i]);
+            double minus = 0.0;
+            if (!first) {
+                const double up_move = high_value - previous_high;
+                const double down_move = previous_low - low_value;
+                minus = (down_move > up_move && down_move > 0.0) ? down_move : 0.0;
+            }
+            previous_high = high_value;
+            previous_low = low_value;
+            first = false;
+            smoothed = (smoothed * (window - 1.0) + minus) / window;
+            ++smooth_count;
+            const bool return_nan = !fillna_ && counter < window_;
+            ++counter;
+            output[i] = return_nan ? nan() : smoothed;
+        }
+
+        previous_high_ = previous_high;
+        previous_low_ = previous_low;
+        first_ = first;
+        counter_ = counter;
+        smoothing_.set_state(smoothed, smooth_count);
+        return make_array(std::move(output));
     }
 
 private:
@@ -4543,6 +5857,25 @@ public:
         return return_nan ? nan() : retval;
     }
 
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        batch_kernels::directional_movement_index(
+            close.data(),
+            high.data(),
+            low.data(),
+            size,
+            core_,
+            window_,
+            fillna_,
+            counter_,
+            output.data());
+        return make_array(std::move(output));
+    }
+
 private:
     DirectionalMovementCore core_;
     int window_;
@@ -4564,6 +5897,31 @@ public:
         const bool return_nan = !fillna_ && counter_ < window_ * 2;
         ++counter_;
         return return_nan ? nan() : retval;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        core_.batch_indicator(close.data(), high.data(), low.data(), size, 2, output.data());
+
+        const int window = adx_.window();
+        double adx_value = adx_.value();
+        long adx_count = adx_.count();
+        long counter = counter_;
+        for (std::size_t i = 0; i < size; ++i) {
+            adx_value = (adx_value * (window - 1.0) + output[i]) / window;
+            ++adx_count;
+            const bool return_nan = !fillna_ && counter < window_ * 2;
+            ++counter;
+            output[i] = return_nan ? nan() : adx_value;
+        }
+
+        adx_.set_state(adx_value, adx_count);
+        counter_ = counter;
+        return make_array(std::move(output));
     }
 
 private:
@@ -4606,10 +5964,19 @@ public:
           oscillator_2_(window_2, true),
           oscillator_3_(window_3, true),
           window_(fillna ? 0 : static_cast<int>(std::max({window_1, window_2, window_3}))),
-          counter_(0) {}
+          counter_(0),
+          last_{nan(), nan(), nan()} {}
 
     PercentagePriceResult update(double close) {
         return update_value(close);
+    }
+
+    void advance(double close) {
+        update_core(close);
+    }
+
+    inline const PercentagePriceResult &last() const {
+        return last_;
     }
 
     PercentagePriceBatchResult batch(const InputArray &close) {
@@ -4709,6 +6076,11 @@ public:
 
 private:
     PercentagePriceResult update_value(double close) {
+        update_core(close);
+        return last_;
+    }
+
+    inline void update_core(double close) {
         ++counter_;
 
         const double o26 = oscillator_2_.update(close);
@@ -4716,7 +6088,7 @@ private:
         const double signal = oscillator_3_.update(ppo);
         const double histogram = ppo - signal;
 
-        return {ppo, signal, histogram};
+        last_ = {ppo, signal, histogram};
     }
 
     EMA oscillator_1_;
@@ -4724,6 +6096,7 @@ private:
     EMA oscillator_3_;
     int window_;
     long counter_;
+    PercentagePriceResult last_;
 };
 
 class PercentageVolume {
@@ -4732,9 +6105,24 @@ public:
         : oscillator_1_(window_1, true),
           oscillator_2_(window_2, true),
           signal_(signal, true),
-          counter_(fillna ? 0 : -static_cast<long>(std::max(window_1, window_2))) {}
+          counter_(fillna ? 0 : -static_cast<long>(std::max(window_1, window_2))),
+          last_{nan(), nan(), nan()} {}
 
     PercentageVolumeResult update(double volume) {
+        update_core(volume);
+        return last_;
+    }
+
+    void advance(double volume) {
+        update_core(volume);
+    }
+
+    inline const PercentageVolumeResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double volume) {
         ++counter_;
 
         const double ema_2 = oscillator_2_.update(volume);
@@ -4743,12 +6131,13 @@ public:
         const double histogram = pvo - signal;
 
         if (counter_ < 0) {
-            return {nan(), nan(), nan()};
+            last_ = {nan(), nan(), nan()};
         } else {
-            return {pvo, signal, histogram};
+            last_ = {pvo, signal, histogram};
         }
     }
 
+public:
     PercentageVolumeBatchResult batch(const InputArray &volume) {
         const std::size_t size = volume.shape(0);
         std::vector<double> pvos(size);
@@ -4780,6 +6169,7 @@ private:
     EMA oscillator_2_;
     EMA signal_;
     long counter_;
+    PercentageVolumeResult last_;
 };
 
 class ROC {
@@ -4924,7 +6314,19 @@ public:
     nb::object batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
-        batch_kernels::rolling_extreme_value(input.data(), size, values_, window_, fillna_, counter_, output.data());
+        if (counter_ == 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_SCAN_WINDOW_LIMIT) {
+            batch_kernels::rolling_high_small_window_scan(
+                input.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                true,
+                output.data());
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), values_);
+            counter_ = static_cast<long>(size);
+        } else {
+            batch_kernels::rolling_extreme_value(input.data(), size, values_, window_, fillna_, counter_, output.data());
+        }
         return make_array(std::move(output));
     }
 
@@ -4954,7 +6356,19 @@ public:
     nb::object batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
-        batch_kernels::rolling_extreme_value(input.data(), size, values_, window_, fillna_, counter_, output.data());
+        if (counter_ == 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_SCAN_WINDOW_LIMIT) {
+            batch_kernels::rolling_low_small_window_scan(
+                input.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                true,
+                output.data());
+            batch_kernels::rebuild_extreme_state(input.data(), size, static_cast<std::size_t>(std::max(window_, 1)), values_);
+            counter_ = static_cast<long>(size);
+        } else {
+            batch_kernels::rolling_extreme_value(input.data(), size, values_, window_, fillna_, counter_, output.data());
+        }
         return make_array(std::move(output));
     }
 
@@ -4998,18 +6412,34 @@ public:
         : highs_(fastk, true),
           lows_(fastk, false),
           fastd_(fastd, fillna),
-          fillna_(fillna) {}
+          fastk_window_(fastk),
+          fillna_(fillna),
+          last_{nan(), nan()} {}
 
     FastStochasticResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const FastStochasticResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
         highs_.push(high);
         lows_.push(low);
         const double fastk = (!fillna_ && !highs_.full()) ? nan() :
             safe_divide(100.0 * (close - lows_.value()), highs_.value() - lows_.value());
         const double fastd = fastd_.update(fastk);
-
-        return {fastk, fastd};
+        last_ = {fastk, fastd};
     }
 
+public:
     template <typename Array0, typename Array1, typename Array2>
     FastStochasticBatchResult batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
         const std::size_t size = close.shape(0);
@@ -5017,17 +6447,38 @@ public:
         require_same_size(size, low.shape(0));
         std::vector<double> fastk(size);
         std::vector<double> fastd(size);
-        batch_kernels::fast_stochastic(
-            close.data(),
-            high.data(),
-            low.data(),
-            size,
-            highs_,
-            lows_,
-            fastd_,
-            fillna_,
-            fastk.data(),
-            fastd.data());
+        if (highs_.size() == 0 && static_cast<std::size_t>(std::max(fastk_window_, 1)) <= SMALL_SCAN_WINDOW_LIMIT) {
+            batch_kernels::stochastic_fastk_small_window_scan(
+                close.data(),
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(fastk_window_, 1)),
+                fillna_,
+                fastk.data());
+            for (std::size_t i = 0; i < size; ++i) {
+                fastd[i] = fastd_.update(fastk[i]);
+            }
+            batch_kernels::rebuild_pair_extreme_state(
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(fastk_window_, 1)),
+                highs_,
+                lows_);
+        } else {
+            batch_kernels::fast_stochastic(
+                close.data(),
+                high.data(),
+                low.data(),
+                size,
+                highs_,
+                lows_,
+                fastd_,
+                fillna_,
+                fastk.data(),
+                fastd.data());
+        }
         return {make_array(std::move(fastk)), make_array(std::move(fastd))};
     }
 
@@ -5035,7 +6486,9 @@ private:
     RollingExtreme highs_;
     RollingExtreme lows_;
     SMA fastd_;
+    int fastk_window_;
     bool fillna_;
+    FastStochasticResult last_;
 };
 
 class Stochastic {
@@ -5045,19 +6498,35 @@ public:
           lows_(fastk, false),
           slowk_(slowk, fillna),
           slowd_(slowd, fillna),
-          fillna_(fillna) {}
+          fastk_window_(fastk),
+          fillna_(fillna),
+          last_{nan(), nan()} {}
 
     StochasticResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const StochasticResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
         highs_.push(high);
         lows_.push(low);
         const double fastk = (!fillna_ && !highs_.full()) ? nan() :
             safe_divide(100.0 * (close - lows_.value()), highs_.value() - lows_.value());
         const double slowk = slowk_.update(fastk);
         const double slowd = slowd_.update(slowk);
-
-        return {slowk, slowd};
+        last_ = {slowk, slowd};
     }
 
+public:
     template <typename Array0, typename Array1, typename Array2>
     StochasticBatchResult batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
         const std::size_t size = close.shape(0);
@@ -5065,18 +6534,41 @@ public:
         require_same_size(size, low.shape(0));
         std::vector<double> slowk(size);
         std::vector<double> slowd(size);
-        batch_kernels::stochastic(
-            close.data(),
-            high.data(),
-            low.data(),
-            size,
-            highs_,
-            lows_,
-            slowk_,
-            slowd_,
-            fillna_,
-            slowk.data(),
-            slowd.data());
+        if (highs_.size() == 0 && static_cast<std::size_t>(std::max(fastk_window_, 1)) <= SMALL_SCAN_WINDOW_LIMIT) {
+            std::vector<double> fastk(size);
+            batch_kernels::stochastic_fastk_small_window_scan(
+                close.data(),
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(fastk_window_, 1)),
+                fillna_,
+                fastk.data());
+            for (std::size_t i = 0; i < size; ++i) {
+                slowk[i] = slowk_.update(fastk[i]);
+                slowd[i] = slowd_.update(slowk[i]);
+            }
+            batch_kernels::rebuild_pair_extreme_state(
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(fastk_window_, 1)),
+                highs_,
+                lows_);
+        } else {
+            batch_kernels::stochastic(
+                close.data(),
+                high.data(),
+                low.data(),
+                size,
+                highs_,
+                lows_,
+                slowk_,
+                slowd_,
+                fillna_,
+                slowk.data(),
+                slowd.data());
+        }
         return {make_array(std::move(slowk)), make_array(std::move(slowd))};
     }
 
@@ -5085,7 +6577,9 @@ private:
     RollingExtreme lows_;
     SMA slowk_;
     SMA slowd_;
+    int fastk_window_;
     bool fillna_;
+    StochasticResult last_;
 };
 
 class WilliamsR {
@@ -5093,6 +6587,7 @@ public:
     WilliamsR(int window = 14, bool fillna = true)
         : highs_(window, true),
           lows_(window, false),
+          window_(window),
           fillna_(fillna) {}
 
     double update(double close, double high, double low) {
@@ -5112,13 +6607,32 @@ public:
         require_same_size(size, high.shape(0));
         require_same_size(size, low.shape(0));
         std::vector<double> output(size);
-        batch_kernels::williams_r(close.data(), high.data(), low.data(), size, highs_, lows_, fillna_, output.data());
+        if (highs_.size() == 0 && static_cast<std::size_t>(std::max(window_, 1)) <= SMALL_SCAN_WINDOW_LIMIT) {
+            batch_kernels::williams_r_small_window_scan(
+                close.data(),
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                fillna_,
+                output.data());
+            batch_kernels::rebuild_pair_extreme_state(
+                high.data(),
+                low.data(),
+                size,
+                static_cast<std::size_t>(std::max(window_, 1)),
+                highs_,
+                lows_);
+        } else {
+            batch_kernels::williams_r(close.data(), high.data(), low.data(), size, highs_, lows_, fillna_, output.data());
+        }
         return make_array(std::move(output));
     }
 
 private:
     RollingExtreme highs_;
     RollingExtreme lows_;
+    int window_;
     bool fillna_;
 };
 
@@ -5446,7 +6960,14 @@ public:
     nb::object batch_array(const Array &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
-        batch_kernels::rolling_stddev(input.data(), size, values_, fillna_, window_size_, counter_, sum_, sum2_, output.data());
+        if (counter_ == 0 && values_.size() == 0) {
+            const std::size_t window = values_.capacity();
+            batch_kernels::rolling_stddev_fresh(input.data(), size, window, fillna_, window_size_, output.data());
+            batch_kernels::rebuild_buffer_sum(input.data(), size, window, values_, sum_, sum2_);
+            counter_ = static_cast<long>(size);
+        } else {
+            batch_kernels::rolling_stddev(input.data(), size, values_, fillna_, window_size_, counter_, sum_, sum2_, output.data());
+        }
         return make_array(std::move(output));
     }
 
@@ -5463,18 +6984,32 @@ class BollingerBands {
 public:
     BollingerBands(int window = 20, bool fillna = true)
         : sma_(window, fillna),
-          stddev_(window, fillna) {}
+          stddev_(window, fillna),
+          last_{nan(), nan(), nan()} {}
 
     BollingerBandsResult update(double value) {
-        const double stddev = stddev_.update(value);
-        const double middle = sma_.update(value);
+        update_core(value);
+        return last_;
+    }
 
-        return {middle, middle + stddev * 2.0, middle - stddev * 2.0};
+    void advance(double value) {
+        update_core(value);
+    }
+
+    inline const BollingerBandsResult &last() const {
+        return last_;
     }
 
 private:
+    inline void update_core(double value) {
+        const double stddev = stddev_.update(value);
+        const double middle = sma_.update(value);
+        last_ = {middle, middle + stddev * 2.0, middle - stddev * 2.0};
+    }
+
     SMA sma_;
     StdDev stddev_;
+    BollingerBandsResult last_;
 };
 
 LinearRegressionBatchResult batch_linear_regression(LinearRegressionCore &indicator, const InputArray &input) {
@@ -5720,6 +7255,334 @@ VortexBatchResult batch_vortex(Vortex &indicator, const Array0 &close, const Arr
     return {make_array(std::move(positive)), make_array(std::move(negative)), make_array(std::move(difference))};
 }
 
+template <typename Indicator>
+inline double call_update_checksum(Indicator &self, double arg0) {
+    return result_checksum(self.update(arg0));
+}
+
+template <typename Indicator>
+inline double call_update_checksum(Indicator &self, double arg0, double arg1) {
+    return result_checksum(self.update(arg0, arg1));
+}
+
+template <typename Indicator>
+inline double call_update_checksum(Indicator &self, double arg0, double arg1, double arg2) {
+    return result_checksum(self.update(arg0, arg1, arg2));
+}
+
+template <typename Indicator>
+inline double call_update_checksum(Indicator &self, double arg0, double arg1, double arg2, double arg3) {
+    return result_checksum(self.update(arg0, arg1, arg2, arg3));
+}
+
+template <typename Indicator>
+inline void call_advance_discard(Indicator &self, double arg0) {
+    if constexpr (requires { self.advance(arg0); }) {
+        self.advance(arg0);
+    } else {
+        (void) self.update(arg0);
+    }
+}
+
+template <typename Indicator>
+inline void call_advance_discard(Indicator &self, double arg0, double arg1) {
+    if constexpr (requires { self.advance(arg0, arg1); }) {
+        self.advance(arg0, arg1);
+    } else {
+        (void) self.update(arg0, arg1);
+    }
+}
+
+template <typename Indicator>
+inline void call_advance_discard(Indicator &self, double arg0, double arg1, double arg2) {
+    if constexpr (requires { self.advance(arg0, arg1, arg2); }) {
+        self.advance(arg0, arg1, arg2);
+    } else {
+        (void) self.update(arg0, arg1, arg2);
+    }
+}
+
+template <typename Indicator>
+inline void call_advance_discard(Indicator &self, double arg0, double arg1, double arg2, double arg3) {
+    if constexpr (requires { self.advance(arg0, arg1, arg2, arg3); }) {
+        self.advance(arg0, arg1, arg2, arg3);
+    } else {
+        (void) self.update(arg0, arg1, arg2, arg3);
+    }
+}
+
+template <typename Indicator>
+inline double call_advance_checksum(Indicator &self, double arg0) {
+    if constexpr (requires { self.advance(arg0); }) {
+        self.advance(arg0);
+        if constexpr (requires { self.last(); }) {
+            return result_checksum(self.last());
+        }
+        return 0.0;
+    } else {
+        return result_checksum(self.update(arg0));
+    }
+}
+
+template <typename Indicator>
+inline double call_advance_checksum(Indicator &self, double arg0, double arg1) {
+    if constexpr (requires { self.advance(arg0, arg1); }) {
+        self.advance(arg0, arg1);
+        if constexpr (requires { self.last(); }) {
+            return result_checksum(self.last());
+        }
+        return 0.0;
+    } else {
+        return result_checksum(self.update(arg0, arg1));
+    }
+}
+
+template <typename Indicator>
+inline double call_advance_checksum(Indicator &self, double arg0, double arg1, double arg2) {
+    if constexpr (requires { self.advance(arg0, arg1, arg2); }) {
+        self.advance(arg0, arg1, arg2);
+        if constexpr (requires { self.last(); }) {
+            return result_checksum(self.last());
+        }
+        return 0.0;
+    } else {
+        return result_checksum(self.update(arg0, arg1, arg2));
+    }
+}
+
+template <typename Indicator>
+inline double call_advance_checksum(Indicator &self, double arg0, double arg1, double arg2, double arg3) {
+    if constexpr (requires { self.advance(arg0, arg1, arg2, arg3); }) {
+        self.advance(arg0, arg1, arg2, arg3);
+        if constexpr (requires { self.last(); }) {
+            return result_checksum(self.last());
+        }
+        return 0.0;
+    } else {
+        return result_checksum(self.update(arg0, arg1, arg2, arg3));
+    }
+}
+
+#define RTTA_ADVANCE1(TYPE, ARG0) \
+    .def("advance", [](TYPE &self, double ARG0) { \
+        call_advance_discard(self, ARG0); \
+    }, nb::arg(#ARG0))
+
+#define RTTA_ADVANCE2(TYPE, ARG0, ARG1) \
+    .def("advance", [](TYPE &self, double ARG0, double ARG1) { \
+        call_advance_discard(self, ARG0, ARG1); \
+    }, nb::arg(#ARG0), nb::arg(#ARG1))
+
+#define RTTA_ADVANCE3(TYPE, ARG0, ARG1, ARG2) \
+    .def("advance", [](TYPE &self, double ARG0, double ARG1, double ARG2) { \
+        call_advance_discard(self, ARG0, ARG1, ARG2); \
+    }, nb::arg(#ARG0), nb::arg(#ARG1), nb::arg(#ARG2))
+
+#define RTTA_ADVANCE4(TYPE, ARG0, ARG1, ARG2, ARG3) \
+    .def("advance", [](TYPE &self, double ARG0, double ARG1, double ARG2, double ARG3) { \
+        call_advance_discard(self, ARG0, ARG1, ARG2, ARG3); \
+    }, nb::arg(#ARG0), nb::arg(#ARG1), nb::arg(#ARG2), nb::arg(#ARG3))
+
+#define RTTA_REPLAY1(TYPE, ARG0) \
+    .def("replay_update", [](TYPE &self, const InputArray &ARG0) { \
+        const std::size_t size = ARG0.shape(0); \
+        const auto *values0 = ARG0.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0)) \
+    .def("replay_update", [](TYPE &self, const FloatInputArray &ARG0) { \
+        const std::size_t size = ARG0.shape(0); \
+        const auto *values0 = ARG0.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0)) \
+    .def("replay_advance", [](TYPE &self, const InputArray &ARG0) { \
+        const std::size_t size = ARG0.shape(0); \
+        const auto *values0 = ARG0.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0)) \
+    .def("replay_advance", [](TYPE &self, const FloatInputArray &ARG0) { \
+        const std::size_t size = ARG0.shape(0); \
+        const auto *values0 = ARG0.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0))
+
+#define RTTA_REPLAY2(TYPE, ARG0, ARG1) \
+    .def("replay_update", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1)) \
+    .def("replay_update", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1)) \
+    .def("replay_advance", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1)) \
+    .def("replay_advance", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1))
+
+#define RTTA_REPLAY3(TYPE, ARG0, ARG1, ARG2) \
+    .def("replay_update", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2)) \
+    .def("replay_update", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2)) \
+    .def("replay_advance", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2)) \
+    .def("replay_advance", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2))
+
+#define RTTA_REPLAY4(TYPE, ARG0, ARG1, ARG2, ARG3) \
+    .def("replay_update", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2, const InputArray &ARG3) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        require_same_size(size, ARG3.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        const auto *values3 = ARG3.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i]), static_cast<double>(values3[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3)) \
+    .def("replay_update", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2, const FloatInputArray &ARG3) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        require_same_size(size, ARG3.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        const auto *values3 = ARG3.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_update_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i]), static_cast<double>(values3[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3)) \
+    .def("replay_advance", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2, const InputArray &ARG3) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        require_same_size(size, ARG3.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        const auto *values3 = ARG3.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i]), static_cast<double>(values3[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3)) \
+    .def("replay_advance", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2, const FloatInputArray &ARG3) { \
+        const std::size_t size = ARG0.shape(0); \
+        require_same_size(size, ARG1.shape(0)); \
+        require_same_size(size, ARG2.shape(0)); \
+        require_same_size(size, ARG3.shape(0)); \
+        const auto *values0 = ARG0.data(); \
+        const auto *values1 = ARG1.data(); \
+        const auto *values2 = ARG2.data(); \
+        const auto *values3 = ARG3.data(); \
+        double checksum = 0.0; \
+        for (std::size_t i = 0; i < size; ++i) { \
+            checksum += call_advance_checksum(self, static_cast<double>(values0[i]), static_cast<double>(values1[i]), static_cast<double>(values2[i]), static_cast<double>(values3[i])); \
+        } \
+        return checksum; \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3))
+
 #define RTTA_BATCH1(TYPE, ARG0, FIELD0) \
     .def("batch", [](TYPE &self, const InputArray &ARG0) { \
         return batch_update1(self, ARG0); \
@@ -5956,6 +7819,8 @@ NB_MODULE(indicator, m) {
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        RTTA_ADVANCE4(AccumulationDistribution, close, high, low, volume)
+        RTTA_REPLAY4(AccumulationDistribution, close, high, low, volume)
         .def("batch", [](AccumulationDistribution &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume) {
             return batch_update4(self, close, high, low, volume);
         }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
@@ -5969,6 +7834,8 @@ NB_MODULE(indicator, m) {
     nb::class_<ChaikinOscillator>(m, "ChaikinOscillator")
         .def(nb::init<int, int>(), nb::arg("fast") = 3, nb::arg("slow") = 10)
         .def("update", &ChaikinOscillator::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        RTTA_ADVANCE4(ChaikinOscillator, close, high, low, volume)
+        RTTA_REPLAY4(ChaikinOscillator, close, high, low, volume)
         .def("batch", [](ChaikinOscillator &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume) {
             return batch_update4(self, close, high, low, volume);
         }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
@@ -5982,19 +7849,15 @@ NB_MODULE(indicator, m) {
     nb::class_<AverageDirectionalMovementIndex>(m, "AverageDirectionalMovementIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &AverageDirectionalMovementIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
-        .def("batch", [](AverageDirectionalMovementIndex &self, const InputArray &close, const InputArray &high, const InputArray &low) {
-            return batch_update3(self, close, high, low);
-        }, array_arg("close"), array_arg("high"), array_arg("low"))
-        .def("batch", [](AverageDirectionalMovementIndex &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
-            return batch_update3(self, close, high, low);
-        }, array_arg("close"), array_arg("high"), array_arg("low"))
-        .def("batch", [](AverageDirectionalMovementIndex &self, nb::iterable records) {
-            return batch_records_three(self, records, "close", "high", "low");
-        }, nb::arg("records"));
+        RTTA_ADVANCE3(AverageDirectionalMovementIndex, close, high, low)
+        RTTA_REPLAY3(AverageDirectionalMovementIndex, close, high, low)
+        RTTA_BATCH3_ARRAY(AverageDirectionalMovementIndex, close, high, low, "close", "high", "low");
 
     nb::class_<AverageDirectionalMovementIndexRating>(m, "AverageDirectionalMovementIndexRating")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &AverageDirectionalMovementIndexRating::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(AverageDirectionalMovementIndexRating, close, high, low)
+        RTTA_REPLAY3(AverageDirectionalMovementIndexRating, close, high, low)
         .def("batch", [](AverageDirectionalMovementIndexRating &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_update3(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -6008,6 +7871,8 @@ NB_MODULE(indicator, m) {
     nb::class_<AbsolutePriceOscillator>(m, "AbsolutePriceOscillator")
         .def(nb::init<double, double>(), nb::arg("fast") = 12.0, nb::arg("slow") = 26.0)
         .def("update", &AbsolutePriceOscillator::update, nb::arg("close"))
+        RTTA_ADVANCE1(AbsolutePriceOscillator, close)
+        RTTA_REPLAY1(AbsolutePriceOscillator, close)
         .def("batch", [](AbsolutePriceOscillator &self, const InputArray &close) {
             return batch_update1(self, close);
         }, array_arg("close"))
@@ -6021,6 +7886,8 @@ NB_MODULE(indicator, m) {
     nb::class_<Aroon>(m, "Aroon")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &Aroon::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(Aroon, high, low)
+        RTTA_REPLAY2(Aroon, high, low)
         .def("batch", [](Aroon &self, const InputArray &high, const InputArray &low) {
             return batch_aroon(self, high, low);
         }, array_arg("high"), array_arg("low"))
@@ -6048,6 +7915,8 @@ NB_MODULE(indicator, m) {
     nb::class_<AroonOscillator>(m, "AroonOscillator")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &AroonOscillator::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(AroonOscillator, high, low)
+        RTTA_REPLAY2(AroonOscillator, high, low)
         .def("batch", [](AroonOscillator &self, const InputArray &high, const InputArray &low) {
             return self.batch_array(high, low);
         }, array_arg("high"), array_arg("low"))
@@ -6066,32 +7935,22 @@ NB_MODULE(indicator, m) {
     nb::class_<ATR>(m, "ATR")
         .def(nb::init<double, bool>(), nb::arg("window") = 14.0, nb::arg("fillna") = true)
         .def("update", &ATR::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
-        .def("batch", [](ATR &self, const InputArray &close, const InputArray &high, const InputArray &low) {
-            return batch_update3(self, close, high, low);
-        }, array_arg("close"), array_arg("high"), array_arg("low"))
-        .def("batch", [](ATR &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
-            return batch_update3(self, close, high, low);
-        }, array_arg("close"), array_arg("high"), array_arg("low"))
-        .def("batch", [](ATR &self, nb::iterable records) {
-            return batch_records_three(self, records, "close", "high", "low");
-        }, nb::arg("records"));
+        RTTA_ADVANCE3(ATR, close, high, low)
+        RTTA_REPLAY3(ATR, close, high, low)
+        RTTA_BATCH3_ARRAY(ATR, close, high, low, "close", "high", "low");
 
     nb::class_<ATRP>(m, "ATRP")
         .def(nb::init<double, bool>(), nb::arg("window") = 14.0, nb::arg("fillna") = true)
         .def("update", &ATRP::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
-        .def("batch", [](ATRP &self, const InputArray &close, const InputArray &high, const InputArray &low) {
-            return batch_update3(self, close, high, low);
-        }, array_arg("close"), array_arg("high"), array_arg("low"))
-        .def("batch", [](ATRP &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
-            return batch_update3(self, close, high, low);
-        }, array_arg("close"), array_arg("high"), array_arg("low"))
-        .def("batch", [](ATRP &self, nb::iterable records) {
-            return batch_records_three(self, records, "close", "high", "low");
-        }, nb::arg("records"));
+        RTTA_ADVANCE3(ATRP, close, high, low)
+        RTTA_REPLAY3(ATRP, close, high, low)
+        RTTA_BATCH3_ARRAY(ATRP, close, high, low, "close", "high", "low");
 
     nb::class_<AveragePrice>(m, "AveragePrice")
         .def(nb::init<>())
         .def("update", &AveragePrice::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE4(AveragePrice, open, high, low, close)
+        RTTA_REPLAY4(AveragePrice, open, high, low, close)
         .def("batch", [](AveragePrice &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
             return batch_update4(self, open, high, low, close);
         }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
@@ -6105,6 +7964,8 @@ NB_MODULE(indicator, m) {
     nb::class_<AwesomeOscillator>(m, "AwesomeOscillator")
         .def(nb::init<int, int, bool>(), nb::arg("window_1") = 34, nb::arg("window_2") = 5, nb::arg("fillna") = true)
         .def("update", &AwesomeOscillator::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(AwesomeOscillator, high, low)
+        RTTA_REPLAY2(AwesomeOscillator, high, low)
         .def("batch", &AwesomeOscillator::batch, array_arg("high"), array_arg("low"))
         .def("batch", [](AwesomeOscillator &self, const FloatInputArray &high, const FloatInputArray &low) {
             return batch_update2(self, high, low);
@@ -6116,19 +7977,15 @@ NB_MODULE(indicator, m) {
     nb::class_<Beta>(m, "Beta")
         .def(nb::init<int, bool>(), nb::arg("window") = 5, nb::arg("fillna") = true)
         .def("update", &Beta::update, nb::arg("real0"), nb::arg("real1"))
-        .def("batch", [](Beta &self, const InputArray &real0, const InputArray &real1) {
-            return batch_update2(self, real0, real1);
-        }, array_arg("real0"), array_arg("real1"))
-        .def("batch", [](Beta &self, const FloatInputArray &real0, const FloatInputArray &real1) {
-            return batch_update2(self, real0, real1);
-        }, array_arg("real0"), array_arg("real1"))
-        .def("batch", [](Beta &self, nb::iterable records) {
-            return batch_records_two(self, records, "real0", "real1");
-        }, nb::arg("records"));
+        RTTA_ADVANCE2(Beta, real0, real1)
+        RTTA_REPLAY2(Beta, real0, real1)
+        RTTA_BATCH2_ARRAY(Beta, real0, real1, "real0", "real1");
 
     nb::class_<BalanceOfPower>(m, "BalanceOfPower")
         .def(nb::init<>())
         .def("update", &BalanceOfPower::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE4(BalanceOfPower, open, high, low, close)
+        RTTA_REPLAY4(BalanceOfPower, open, high, low, close)
         .def("batch", [](BalanceOfPower &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
             return batch_update4(self, open, high, low, close);
         }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
@@ -6142,11 +7999,15 @@ NB_MODULE(indicator, m) {
     nb::class_<CommodityChannelIndex>(m, "CommodityChannelIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &CommodityChannelIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(CommodityChannelIndex, close, high, low)
+        RTTA_REPLAY3(CommodityChannelIndex, close, high, low)
         RTTA_BATCH3(CommodityChannelIndex, close, high, low, "close", "high", "low");
 
     nb::class_<ChandeMomentumOscillator>(m, "ChandeMomentumOscillator")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &ChandeMomentumOscillator::update, nb::arg("close"))
+        RTTA_ADVANCE1(ChandeMomentumOscillator, close)
+        RTTA_REPLAY1(ChandeMomentumOscillator, close)
         .def("batch", [](ChandeMomentumOscillator &self, const InputArray &close) {
             return self.batch_array(close);
         }, array_arg("close"))
@@ -6165,11 +8026,15 @@ NB_MODULE(indicator, m) {
     nb::class_<Correlation>(m, "Correlation")
         .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
         .def("update", &Correlation::update, nb::arg("real0"), nb::arg("real1"))
-        RTTA_BATCH2(Correlation, real0, real1, "real0", "real1");
+        RTTA_ADVANCE2(Correlation, real0, real1)
+        RTTA_REPLAY2(Correlation, real0, real1)
+        RTTA_BATCH2_ARRAY(Correlation, real0, real1, "real0", "real1");
 
     nb::class_<CumulativeReturn>(m, "CumulativeReturn")
         .def(nb::init<>())
         .def("update", &CumulativeReturn::update, nb::arg("close"))
+        RTTA_ADVANCE1(CumulativeReturn, close)
+        RTTA_REPLAY1(CumulativeReturn, close)
         .def("batch", &CumulativeReturn::batch, array_arg("close"))
         .def("batch", [](CumulativeReturn &self, const FloatInputArray &close) {
             return batch_update1(self, close);
@@ -6181,6 +8046,8 @@ NB_MODULE(indicator, m) {
     nb::class_<DailyLogReturn>(m, "DailyLogReturn")
         .def(nb::init<bool>(), nb::arg("fillna") = true)
         .def("update", &DailyLogReturn::update, nb::arg("close"))
+        RTTA_ADVANCE1(DailyLogReturn, close)
+        RTTA_REPLAY1(DailyLogReturn, close)
         .def("batch", &DailyLogReturn::batch, array_arg("close"))
         .def("batch", [](DailyLogReturn &self, const FloatInputArray &close) {
             return batch_update1(self, close);
@@ -6192,6 +8059,8 @@ NB_MODULE(indicator, m) {
     nb::class_<DailyReturn>(m, "DailyReturn")
         .def(nb::init<bool>(), nb::arg("fillna") = true)
         .def("update", &DailyReturn::update, nb::arg("close"))
+        RTTA_ADVANCE1(DailyReturn, close)
+        RTTA_REPLAY1(DailyReturn, close)
         .def("batch", &DailyReturn::batch, array_arg("close"))
         .def("batch", [](DailyReturn &self, const FloatInputArray &close) {
             return batch_update1(self, close);
@@ -6203,12 +8072,16 @@ NB_MODULE(indicator, m) {
     nb::class_<Delay>(m, "Delay")
         .def(nb::init<int, bool>(), nb::arg("window") = 1, nb::arg("fillna") = true)
         .def("update", &Delay::update, nb::arg("value"))
+        RTTA_ADVANCE1(Delay, value)
+        RTTA_REPLAY1(Delay, value)
         .def("peek", &Delay::peek)
         RTTA_BATCH1(Delay, value, "value");
 
     nb::class_<DetrendedPriceOscillator>(m, "DetrendedPriceOscillator")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
         .def("update", &DetrendedPriceOscillator::update, nb::arg("close"))
+        RTTA_ADVANCE1(DetrendedPriceOscillator, close)
+        RTTA_REPLAY1(DetrendedPriceOscillator, close)
         .def("batch", &DetrendedPriceOscillator::batch, array_arg("close"))
         .def("batch", [](DetrendedPriceOscillator &self, const FloatInputArray &close) {
             return batch_update1(self, close);
@@ -6220,11 +8093,15 @@ NB_MODULE(indicator, m) {
     nb::class_<DoubleEMA>(m, "DoubleEMA")
         .def(nb::init<double, bool>(), nb::arg("window") = 30.0, nb::arg("fillna") = true)
         .def("update", &DoubleEMA::update, nb::arg("value"))
+        RTTA_ADVANCE1(DoubleEMA, value)
+        RTTA_REPLAY1(DoubleEMA, value)
         RTTA_BATCH1(DoubleEMA, value, "value");
 
     nb::class_<DonchianChannel>(m, "DonchianChannel")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
         .def("update", &DonchianChannel::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(DonchianChannel, close, high, low)
+        RTTA_REPLAY3(DonchianChannel, close, high, low)
         .def("batch", &DonchianChannel::batch, array_arg("close"), array_arg("high"), array_arg("low"))
         .def("batch", [](DonchianChannel &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
             return batch_donchian(self, close, high, low);
@@ -6268,11 +8145,15 @@ NB_MODULE(indicator, m) {
     nb::class_<DirectionalMovementIndex>(m, "DirectionalMovementIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &DirectionalMovementIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
-        RTTA_BATCH3(DirectionalMovementIndex, close, high, low, "close", "high", "low");
+        RTTA_ADVANCE3(DirectionalMovementIndex, close, high, low)
+        RTTA_REPLAY3(DirectionalMovementIndex, close, high, low)
+        RTTA_BATCH3_ARRAY(DirectionalMovementIndex, close, high, low, "close", "high", "low");
 
     nb::class_<EMA>(m, "EMA")
         .def(nb::init<double, bool>(), nb::arg("window"), nb::arg("fillna") = false)
         .def("update", &EMA::update, nb::arg("value"))
+        RTTA_ADVANCE1(EMA, value)
+        RTTA_REPLAY1(EMA, value)
         .def("batch", &EMA::batch, array_arg("input"))
         .def("batch", [](EMA &self, const FloatInputArray &input) {
             return batch_update1(self, input);
@@ -6288,11 +8169,15 @@ NB_MODULE(indicator, m) {
              nb::arg("com") = nb::none(),
              nb::arg("fillna") = false)
         .def("update", &EWMA::update, nb::arg("value"))
+        RTTA_ADVANCE1(EWMA, value)
+        RTTA_REPLAY1(EWMA, value)
         RTTA_BATCH1(EWMA, value, "value");
 
     nb::class_<EaseOfMovement>(m, "EaseOfMovement")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &EaseOfMovement::update, nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        RTTA_ADVANCE3(EaseOfMovement, high, low, volume)
+        RTTA_REPLAY3(EaseOfMovement, high, low, volume)
         .def("batch", &EaseOfMovement::batch, array_arg("high"), array_arg("low"), array_arg("volume"))
         .def("batch", [](EaseOfMovement &self, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume) {
             return batch_ease_of_movement(self, high, low, volume);
@@ -6321,6 +8206,8 @@ NB_MODULE(indicator, m) {
     nb::class_<ForceIndex>(m, "ForceIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 13, nb::arg("fillna") = true)
         .def("update", &ForceIndex::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(ForceIndex, close, volume)
+        RTTA_REPLAY2(ForceIndex, close, volume)
         .def("batch", &ForceIndex::batch, array_arg("close"), array_arg("volume"))
         .def("batch", [](ForceIndex &self, const FloatInputArray &close, const FloatInputArray &volume) {
             return batch_update2(self, close, volume);
@@ -6336,6 +8223,8 @@ NB_MODULE(indicator, m) {
              nb::arg("window3") = 52,
              nb::arg("fillna") = true)
         .def("update", &Ichimoku::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(Ichimoku, high, low)
+        RTTA_REPLAY2(Ichimoku, high, low)
         .def("batch", &Ichimoku::batch, array_arg("high"), array_arg("low"))
         .def("batch", [](Ichimoku &self, const FloatInputArray &high, const FloatInputArray &low) {
             return batch_ichimoku(self, high, low);
@@ -6376,6 +8265,8 @@ NB_MODULE(indicator, m) {
              nb::arg("slow_ema") = 30,
              nb::arg("fillna") = true)
         .def("update", &Kama::update, nb::arg("close"))
+        RTTA_ADVANCE1(Kama, close)
+        RTTA_REPLAY1(Kama, close)
         .def("batch", &Kama::batch, array_arg("input"))
         .def("batch", [](Kama &self, const FloatInputArray &input) {
             return batch_update1(self, input);
@@ -6391,6 +8282,8 @@ NB_MODULE(indicator, m) {
              nb::arg("fillna") = false,
              nb::arg("multiplier") = 2.0)
         .def("update", &KeltnerChannel::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(KeltnerChannel, close, high, low)
+        RTTA_REPLAY3(KeltnerChannel, close, high, low)
         .def("batch", [](KeltnerChannel &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_keltner(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -6428,6 +8321,8 @@ NB_MODULE(indicator, m) {
     nb::class_<KeltnerChannelOriginal>(m, "KeltnerChannelOriginal")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = false)
         .def("update", &KeltnerChannelOriginal::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(KeltnerChannelOriginal, close, high, low)
+        RTTA_REPLAY3(KeltnerChannelOriginal, close, high, low)
         .def("batch", [](KeltnerChannelOriginal &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_keltner(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -6475,6 +8370,8 @@ NB_MODULE(indicator, m) {
              nb::arg("signal") = 9,
              nb::arg("fillna") = true)
         .def("update", &KSTOscillator::update, nb::arg("close"))
+        RTTA_ADVANCE1(KSTOscillator, close)
+        RTTA_REPLAY1(KSTOscillator, close)
         .def("batch", &KSTOscillator::batch, array_arg("close"))
         .def("batch", [](KSTOscillator &self, const FloatInputArray &close) {
             return batch_kst(self, close);
@@ -6507,26 +8404,36 @@ NB_MODULE(indicator, m) {
     nb::class_<LinearRegression>(m, "LinearRegression")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &LinearRegression::update, nb::arg("value"))
+        RTTA_ADVANCE1(LinearRegression, value)
+        RTTA_REPLAY1(LinearRegression, value)
         RTTA_BATCH1(LinearRegression, value, "value");
 
     nb::class_<LinearRegressionAngle>(m, "LinearRegressionAngle")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &LinearRegressionAngle::update, nb::arg("value"))
+        RTTA_ADVANCE1(LinearRegressionAngle, value)
+        RTTA_REPLAY1(LinearRegressionAngle, value)
         RTTA_BATCH1(LinearRegressionAngle, value, "value");
 
     nb::class_<LinearRegressionIntercept>(m, "LinearRegressionIntercept")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &LinearRegressionIntercept::update, nb::arg("value"))
+        RTTA_ADVANCE1(LinearRegressionIntercept, value)
+        RTTA_REPLAY1(LinearRegressionIntercept, value)
         RTTA_BATCH1(LinearRegressionIntercept, value, "value");
 
     nb::class_<LinearRegressionSlope>(m, "LinearRegressionSlope")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &LinearRegressionSlope::update, nb::arg("value"))
+        RTTA_ADVANCE1(LinearRegressionSlope, value)
+        RTTA_REPLAY1(LinearRegressionSlope, value)
         RTTA_BATCH1(LinearRegressionSlope, value, "value");
 
     nb::class_<MACD>(m, "MACD")
         .def(nb::init<int, int, int, bool>(), nb::arg("a") = 12, nb::arg("b") = 26, nb::arg("c") = 9, nb::arg("fillna") = false)
         .def("update", &MACD::update, nb::arg("value"))
+        RTTA_ADVANCE1(MACD, value)
+        RTTA_REPLAY1(MACD, value)
         .def("batch", &MACD::batch, array_arg("input"))
         .def("batch", [](MACD &self, const FloatInputArray &input) {
             return batch_update1(self, input);
@@ -6538,6 +8445,8 @@ NB_MODULE(indicator, m) {
     nb::class_<MACDFix>(m, "MACDFix")
         .def(nb::init<int, bool>(), nb::arg("signal") = 9, nb::arg("fillna") = false)
         .def("update", &MACDFix::update, nb::arg("close"))
+        RTTA_ADVANCE1(MACDFix, close)
+        RTTA_REPLAY1(MACDFix, close)
         RTTA_BATCH1(MACDFix, close, "close");
 
     nb::class_<MassIndex>(m, "MassIndex")
@@ -6547,21 +8456,29 @@ NB_MODULE(indicator, m) {
              nb::arg("summation") = 25,
              nb::arg("fillna") = false)
         .def("update", &MassIndex::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(MassIndex, high, low)
+        RTTA_REPLAY2(MassIndex, high, low)
         RTTA_BATCH2(MassIndex, high, low, "high", "low");
 
     nb::class_<HighIndex>(m, "HighIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
         .def("update", &HighIndex::update, nb::arg("value"))
+        RTTA_ADVANCE1(HighIndex, value)
+        RTTA_REPLAY1(HighIndex, value)
         RTTA_BATCH1_ARRAY(HighIndex, value, "value");
 
     nb::class_<MedianPrice>(m, "MedianPrice")
         .def(nb::init<>())
         .def("update", &MedianPrice::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(MedianPrice, high, low)
+        RTTA_REPLAY2(MedianPrice, high, low)
         RTTA_BATCH2(MedianPrice, high, low, "high", "low");
 
     nb::class_<MoneyFlowIndex>(m, "MoneyFlowIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &MoneyFlowIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        RTTA_ADVANCE4(MoneyFlowIndex, close, high, low, volume)
+        RTTA_REPLAY4(MoneyFlowIndex, close, high, low, volume)
         .def("batch", [](MoneyFlowIndex &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume) {
             return self.batch_array(close, high, low, volume);
         }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
@@ -6580,21 +8497,29 @@ NB_MODULE(indicator, m) {
     nb::class_<MidPoint>(m, "MidPoint")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &MidPoint::update, nb::arg("value"))
+        RTTA_ADVANCE1(MidPoint, value)
+        RTTA_REPLAY1(MidPoint, value)
         RTTA_BATCH1_ARRAY(MidPoint, value, "value");
 
     nb::class_<MidPrice>(m, "MidPrice")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &MidPrice::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(MidPrice, high, low)
+        RTTA_REPLAY2(MidPrice, high, low)
         RTTA_BATCH2_ARRAY(MidPrice, high, low, "high", "low");
 
     nb::class_<LowIndex>(m, "LowIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
         .def("update", &LowIndex::update, nb::arg("value"))
+        RTTA_ADVANCE1(LowIndex, value)
+        RTTA_REPLAY1(LowIndex, value)
         RTTA_BATCH1_ARRAY(LowIndex, value, "value");
 
     nb::class_<HighLow>(m, "HighLow")
         .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
         .def("update", &HighLow::update, nb::arg("value"))
+        RTTA_ADVANCE1(HighLow, value)
+        RTTA_REPLAY1(HighLow, value)
         .def("batch", [](HighLow &self, const InputArray &value) {
             return batch_high_low(self, value);
         }, array_arg("value"))
@@ -6622,6 +8547,8 @@ NB_MODULE(indicator, m) {
     nb::class_<HighLowIndex>(m, "HighLowIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
         .def("update", &HighLowIndex::update, nb::arg("value"))
+        RTTA_ADVANCE1(HighLowIndex, value)
+        RTTA_REPLAY1(HighLowIndex, value)
         .def("batch", [](HighLowIndex &self, const InputArray &value) {
             return batch_high_low_index(self, value);
         }, array_arg("value"))
@@ -6649,16 +8576,22 @@ NB_MODULE(indicator, m) {
     nb::class_<MinusDirectionalIndicator>(m, "MinusDirectionalIndicator")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &MinusDirectionalIndicator::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(MinusDirectionalIndicator, close, high, low)
+        RTTA_REPLAY3(MinusDirectionalIndicator, close, high, low)
         RTTA_BATCH3_ARRAY(MinusDirectionalIndicator, close, high, low, "close", "high", "low");
 
     nb::class_<MinusDirectionalMovement>(m, "MinusDirectionalMovement")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &MinusDirectionalMovement::update, nb::arg("high"), nb::arg("low"))
-        RTTA_BATCH2(MinusDirectionalMovement, high, low, "high", "low");
+        RTTA_ADVANCE2(MinusDirectionalMovement, high, low)
+        RTTA_REPLAY2(MinusDirectionalMovement, high, low)
+        RTTA_BATCH2_ARRAY(MinusDirectionalMovement, high, low, "high", "low");
 
     nb::class_<Momentum>(m, "Momentum")
         .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
         .def("update", &Momentum::update, nb::arg("close"))
+        RTTA_ADVANCE1(Momentum, close)
+        RTTA_REPLAY1(Momentum, close)
         .def("batch", [](Momentum &self, const InputArray &close) {
             return self.batch_array(close);
         }, array_arg("close"))
@@ -6677,16 +8610,22 @@ NB_MODULE(indicator, m) {
     nb::class_<NormalizedATR>(m, "NormalizedATR")
         .def(nb::init<double, bool>(), nb::arg("window") = 14.0, nb::arg("fillna") = true)
         .def("update", &NormalizedATR::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
-        RTTA_BATCH3(NormalizedATR, close, high, low, "close", "high", "low");
+        RTTA_ADVANCE3(NormalizedATR, close, high, low)
+        RTTA_REPLAY3(NormalizedATR, close, high, low)
+        RTTA_BATCH3_ARRAY(NormalizedATR, close, high, low, "close", "high", "low");
 
     nb::class_<OnBalanceVolume>(m, "OnBalanceVolume")
         .def(nb::init<>())
         .def("update", &OnBalanceVolume::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(OnBalanceVolume, close, volume)
+        RTTA_REPLAY2(OnBalanceVolume, close, volume)
         RTTA_BATCH2(OnBalanceVolume, close, volume, "close", "volume");
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
         .def("update", &ChaikinMoneyFlow::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        RTTA_ADVANCE4(ChaikinMoneyFlow, close, high, low, volume)
+        RTTA_REPLAY4(ChaikinMoneyFlow, close, high, low, volume)
         .def("batch", &ChaikinMoneyFlow::batch, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
         .def("batch", [](ChaikinMoneyFlow &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume) {
             return batch_update4(self, close, high, low, volume);
@@ -6700,6 +8639,8 @@ NB_MODULE(indicator, m) {
         .def("length", &SMA::length)
         .def("mean", &SMA::mean)
         .def("update", &SMA::update, nb::arg("value"))
+        RTTA_ADVANCE1(SMA, value)
+        RTTA_REPLAY1(SMA, value)
         .def("batch", &SMA::batch, array_arg("input"))
         .def("batch", [](SMA &self, const FloatInputArray &input) {
             return batch_update1(self, input);
@@ -6715,6 +8656,8 @@ NB_MODULE(indicator, m) {
              nb::arg("window_3") = 9.0,
              nb::arg("fillna") = false)
         .def("update", &PercentagePrice::update, nb::arg("close"))
+        RTTA_ADVANCE1(PercentagePrice, close)
+        RTTA_REPLAY1(PercentagePrice, close)
         .def("batch", &PercentagePrice::batch, array_arg("close"))
         .def("batch", [](PercentagePrice &self, const FloatInputArray &close) {
             const std::size_t size = close.shape(0);
@@ -6754,6 +8697,8 @@ NB_MODULE(indicator, m) {
              nb::arg("signal") = 9.0,
              nb::arg("fillna") = true)
         .def("update", &PercentageVolume::update, nb::arg("volume"))
+        RTTA_ADVANCE1(PercentageVolume, volume)
+        RTTA_REPLAY1(PercentageVolume, volume)
         .def("batch", &PercentageVolume::batch, array_arg("volume"))
         .def("batch", [](PercentageVolume &self, const FloatInputArray &volume) {
             const std::size_t size = volume.shape(0);
@@ -6822,16 +8767,22 @@ NB_MODULE(indicator, m) {
     nb::class_<PlusDirectionalIndicator>(m, "PlusDirectionalIndicator")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &PlusDirectionalIndicator::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(PlusDirectionalIndicator, close, high, low)
+        RTTA_REPLAY3(PlusDirectionalIndicator, close, high, low)
         RTTA_BATCH3_ARRAY(PlusDirectionalIndicator, close, high, low, "close", "high", "low");
 
     nb::class_<PlusDirectionalMovement>(m, "PlusDirectionalMovement")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &PlusDirectionalMovement::update, nb::arg("high"), nb::arg("low"))
-        RTTA_BATCH2(PlusDirectionalMovement, high, low, "high", "low");
+        RTTA_ADVANCE2(PlusDirectionalMovement, high, low)
+        RTTA_REPLAY2(PlusDirectionalMovement, high, low)
+        RTTA_BATCH2_ARRAY(PlusDirectionalMovement, high, low, "high", "low");
 
     nb::class_<ROC>(m, "ROC")
         .def(nb::init<int, bool>(), nb::arg("window"), nb::arg("fillna") = true)
         .def("update", &ROC::update, nb::arg("close"))
+        RTTA_ADVANCE1(ROC, close)
+        RTTA_REPLAY1(ROC, close)
         .def("batch", &ROC::batch, array_arg("close"))
         .def("batch", [](ROC &self, const FloatInputArray &close) {
             return batch_update1(self, close);
@@ -6843,26 +8794,36 @@ NB_MODULE(indicator, m) {
     nb::class_<RateOfChangePercentage>(m, "RateOfChangePercentage")
         .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
         .def("update", &RateOfChangePercentage::update, nb::arg("close"))
+        RTTA_ADVANCE1(RateOfChangePercentage, close)
+        RTTA_REPLAY1(RateOfChangePercentage, close)
         RTTA_BATCH1_ARRAY(RateOfChangePercentage, close, "close");
 
     nb::class_<RateOfChangeRatio>(m, "RateOfChangeRatio")
         .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
         .def("update", &RateOfChangeRatio::update, nb::arg("close"))
+        RTTA_ADVANCE1(RateOfChangeRatio, close)
+        RTTA_REPLAY1(RateOfChangeRatio, close)
         RTTA_BATCH1_ARRAY(RateOfChangeRatio, close, "close");
 
     nb::class_<RateOfChangeRatio100>(m, "RateOfChangeRatio100")
         .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
         .def("update", &RateOfChangeRatio100::update, nb::arg("close"))
+        RTTA_ADVANCE1(RateOfChangeRatio100, close)
+        RTTA_REPLAY1(RateOfChangeRatio100, close)
         RTTA_BATCH1_ARRAY(RateOfChangeRatio100, close, "close");
 
     nb::class_<RSI>(m, "RSI")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &RSI::update, nb::arg("value"))
+        RTTA_ADVANCE1(RSI, value)
+        RTTA_REPLAY1(RSI, value)
         RTTA_BATCH1(RSI, value, "value");
 
     nb::class_<ParabolicSAR>(m, "ParabolicSAR")
         .def(nb::init<double, double>(), nb::arg("acceleration") = 0.02, nb::arg("maximum") = 0.2)
         .def("update", &ParabolicSAR::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(ParabolicSAR, high, low)
+        RTTA_REPLAY2(ParabolicSAR, high, low)
         RTTA_BATCH2(ParabolicSAR, high, low, "high", "low");
 
     nb::class_<SchaffTrendCycle>(m, "SchaffTrendCycle")
@@ -6874,6 +8835,8 @@ NB_MODULE(indicator, m) {
              nb::arg("smooth2") = 3,
              nb::arg("fillna") = true)
         .def("update", &SchaffTrendCycle::update, nb::arg("close"))
+        RTTA_ADVANCE1(SchaffTrendCycle, close)
+        RTTA_REPLAY1(SchaffTrendCycle, close)
         .def("batch", &SchaffTrendCycle::batch, array_arg("close"))
         .def("batch", [](SchaffTrendCycle &self, const FloatInputArray &close) {
             return batch_update1(self, close);
@@ -6885,6 +8848,8 @@ NB_MODULE(indicator, m) {
     nb::class_<Summation>(m, "Summation")
         .def(nb::init<int, bool>(), nb::arg("window"), nb::arg("fillna") = true)
         .def("update", &Summation::update, nb::arg("value"))
+        RTTA_ADVANCE1(Summation, value)
+        RTTA_REPLAY1(Summation, value)
         .def("batch", &Summation::batch, array_arg("input"))
         .def("batch", [](Summation &self, const FloatInputArray &input) {
             return batch_update1(self, input);
@@ -6900,6 +8865,8 @@ NB_MODULE(indicator, m) {
              nb::arg("slowd") = 3,
              nb::arg("fillna") = true)
         .def("update", &Stochastic::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(Stochastic, close, high, low)
+        RTTA_REPLAY3(Stochastic, close, high, low)
         .def("batch", [](Stochastic &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_stochastic(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -6930,6 +8897,8 @@ NB_MODULE(indicator, m) {
     nb::class_<FastStochastic>(m, "FastStochastic")
         .def(nb::init<int, int, bool>(), nb::arg("fastk") = 5, nb::arg("fastd") = 3, nb::arg("fillna") = true)
         .def("update", &FastStochastic::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(FastStochastic, close, high, low)
+        RTTA_REPLAY3(FastStochastic, close, high, low)
         .def("batch", [](FastStochastic &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_fast_stochastic(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -6960,36 +8929,50 @@ NB_MODULE(indicator, m) {
     nb::class_<High>(m, "High")
         .def(nb::init<int, bool>(), nb::arg("window"), nb::arg("fillna") = true)
         .def("update", &High::update, nb::arg("value"))
+        RTTA_ADVANCE1(High, value)
+        RTTA_REPLAY1(High, value)
         RTTA_BATCH1_ARRAY(High, value, "value");
 
     nb::class_<Low>(m, "Low")
         .def(nb::init<int, bool>(), nb::arg("window"), nb::arg("fillna") = true)
         .def("update", &Low::update, nb::arg("value"))
+        RTTA_ADVANCE1(Low, value)
+        RTTA_REPLAY1(Low, value)
         RTTA_BATCH1_ARRAY(Low, value, "value");
 
     nb::class_<StochRSI>(m, "StochRSI")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &StochRSI::update, nb::arg("value"))
+        RTTA_ADVANCE1(StochRSI, value)
+        RTTA_REPLAY1(StochRSI, value)
         RTTA_BATCH1(StochRSI, value, "value");
 
     nb::class_<T3MovingAverage>(m, "T3MovingAverage")
         .def(nb::init<double, double, bool>(), nb::arg("window") = 5.0, nb::arg("vfactor") = 0.7, nb::arg("fillna") = true)
         .def("update", &T3MovingAverage::update, nb::arg("value"))
+        RTTA_ADVANCE1(T3MovingAverage, value)
+        RTTA_REPLAY1(T3MovingAverage, value)
         RTTA_BATCH1_ARRAY(T3MovingAverage, value, "value");
 
     nb::class_<TripleEMA>(m, "TripleEMA")
         .def(nb::init<double, bool>(), nb::arg("window") = 30.0, nb::arg("fillna") = true)
         .def("update", &TripleEMA::update, nb::arg("value"))
+        RTTA_ADVANCE1(TripleEMA, value)
+        RTTA_REPLAY1(TripleEMA, value)
         RTTA_BATCH1(TripleEMA, value, "value");
 
     nb::class_<TSI>(m, "TSI")
         .def(nb::init<int, int>(), nb::arg("window_1") = 25, nb::arg("window_2") = 13)
         .def("update", &TSI::update, nb::arg("x"))
+        RTTA_ADVANCE1(TSI, x)
+        RTTA_REPLAY1(TSI, x)
         RTTA_BATCH1(TSI, x, "x");
 
     nb::class_<TrueRange>(m, "TrueRange")
         .def(nb::init<>())
         .def("update", &TrueRange::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(TrueRange, close, high, low)
+        RTTA_REPLAY3(TrueRange, close, high, low)
         .def("batch", [](TrueRange &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return self.batch_array(close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -7008,21 +8991,29 @@ NB_MODULE(indicator, m) {
     nb::class_<TriangularMovingAverage>(m, "TriangularMovingAverage")
         .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
         .def("update", &TriangularMovingAverage::update, nb::arg("value"))
+        RTTA_ADVANCE1(TriangularMovingAverage, value)
+        RTTA_REPLAY1(TriangularMovingAverage, value)
         RTTA_BATCH1(TriangularMovingAverage, value, "value");
 
     nb::class_<Trix>(m, "Trix")
         .def(nb::init<double, bool>(), nb::arg("window") = 30.0, nb::arg("fillna") = true)
         .def("update", &Trix::update, nb::arg("value"))
+        RTTA_ADVANCE1(Trix, value)
+        RTTA_REPLAY1(Trix, value)
         RTTA_BATCH1(Trix, value, "value");
 
     nb::class_<TimeSeriesForecast>(m, "TimeSeriesForecast")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &TimeSeriesForecast::update, nb::arg("value"))
+        RTTA_ADVANCE1(TimeSeriesForecast, value)
+        RTTA_REPLAY1(TimeSeriesForecast, value)
         RTTA_BATCH1(TimeSeriesForecast, value, "value");
 
     nb::class_<TypicalPrice>(m, "TypicalPrice")
         .def(nb::init<>())
         .def("update", &TypicalPrice::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(TypicalPrice, close, high, low)
+        RTTA_REPLAY3(TypicalPrice, close, high, low)
         RTTA_BATCH3(TypicalPrice, close, high, low, "close", "high", "low");
 
     nb::class_<UltimateOscillator>(m, "UltimateOscillator")
@@ -7032,6 +9023,8 @@ NB_MODULE(indicator, m) {
              nb::arg("long_window") = 28,
              nb::arg("fillna") = true)
         .def("update", &UltimateOscillator::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(UltimateOscillator, close, high, low)
+        RTTA_REPLAY3(UltimateOscillator, close, high, low)
         .def("batch", [](UltimateOscillator &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return self.batch_array(close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -7050,6 +9043,8 @@ NB_MODULE(indicator, m) {
     nb::class_<UlcerIndex>(m, "UlcerIndex")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &UlcerIndex::update, nb::arg("close"))
+        RTTA_ADVANCE1(UlcerIndex, close)
+        RTTA_REPLAY1(UlcerIndex, close)
         .def("batch", &UlcerIndex::batch, array_arg("close"))
         .def("batch", [](UlcerIndex &self, const FloatInputArray &close) {
             return batch_update1(self, close);
@@ -7061,11 +9056,15 @@ NB_MODULE(indicator, m) {
     nb::class_<Variance>(m, "Variance")
         .def(nb::init<int, bool>(), nb::arg("window") = 5, nb::arg("fillna") = true)
         .def("update", &Variance::update, nb::arg("value"))
+        RTTA_ADVANCE1(Variance, value)
+        RTTA_REPLAY1(Variance, value)
         RTTA_BATCH1_ARRAY(Variance, value, "value");
 
     nb::class_<VolumePriceTrend>(m, "VolumePriceTrend")
         .def(nb::init<int, bool>(), nb::arg("smoothing_window") = 0, nb::arg("fillna") = true)
         .def("update", &VolumePriceTrend::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(VolumePriceTrend, close, volume)
+        RTTA_REPLAY2(VolumePriceTrend, close, volume)
         .def("batch", &VolumePriceTrend::batch, array_arg("close"), array_arg("volume"))
         .def("batch", [](VolumePriceTrend &self, const FloatInputArray &close, const FloatInputArray &volume) {
             return batch_update2(self, close, volume);
@@ -7077,6 +9076,8 @@ NB_MODULE(indicator, m) {
     nb::class_<NegativeVolumeIndex>(m, "NegativeVolumeIndex")
         .def(nb::init<>())
         .def("update", &NegativeVolumeIndex::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(NegativeVolumeIndex, close, volume)
+        RTTA_REPLAY2(NegativeVolumeIndex, close, volume)
         .def("batch", &NegativeVolumeIndex::batch, array_arg("close"), array_arg("volume"))
         .def("batch", [](NegativeVolumeIndex &self, const FloatInputArray &close, const FloatInputArray &volume) {
             return batch_update2(self, close, volume);
@@ -7088,6 +9089,8 @@ NB_MODULE(indicator, m) {
     nb::class_<VolumeWeightedAveragePrice>(m, "VolumeWeightedAveragePrice")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &VolumeWeightedAveragePrice::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        RTTA_ADVANCE4(VolumeWeightedAveragePrice, close, high, low, volume)
+        RTTA_REPLAY4(VolumeWeightedAveragePrice, close, high, low, volume)
         .def("batch", &VolumeWeightedAveragePrice::batch, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
         .def("batch", [](VolumeWeightedAveragePrice &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume) {
             return batch_update4(self, close, high, low, volume);
@@ -7099,6 +9102,8 @@ NB_MODULE(indicator, m) {
     nb::class_<Vortex>(m, "Vortex")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &Vortex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(Vortex, close, high, low)
+        RTTA_REPLAY3(Vortex, close, high, low)
         .def("batch", &Vortex::batch, array_arg("close"), array_arg("high"), array_arg("low"))
         .def("batch", [](Vortex &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
             return batch_vortex(self, close, high, low);
@@ -7134,26 +9139,36 @@ NB_MODULE(indicator, m) {
     nb::class_<WeightedClosePrice>(m, "WeightedClosePrice")
         .def(nb::init<>())
         .def("update", &WeightedClosePrice::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(WeightedClosePrice, close, high, low)
+        RTTA_REPLAY3(WeightedClosePrice, close, high, low)
         RTTA_BATCH3(WeightedClosePrice, close, high, low, "close", "high", "low");
 
     nb::class_<WilliamsR>(m, "WilliamsR")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
         .def("update", &WilliamsR::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(WilliamsR, close, high, low)
+        RTTA_REPLAY3(WilliamsR, close, high, low)
         RTTA_BATCH3_ARRAY(WilliamsR, close, high, low, "close", "high", "low");
 
     nb::class_<WeightedMovingAverage>(m, "WeightedMovingAverage")
         .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
         .def("update", &WeightedMovingAverage::update, nb::arg("value"))
+        RTTA_ADVANCE1(WeightedMovingAverage, value)
+        RTTA_REPLAY1(WeightedMovingAverage, value)
         RTTA_BATCH1_ARRAY(WeightedMovingAverage, value, "value");
 
     nb::class_<StdDev>(m, "StdDev")
         .def(nb::init<int, bool>(), nb::arg("window"), nb::arg("fillna") = true)
         .def("update", &StdDev::update, nb::arg("value"))
+        RTTA_ADVANCE1(StdDev, value)
+        RTTA_REPLAY1(StdDev, value)
         RTTA_BATCH1_ARRAY(StdDev, value, "value");
 
     nb::class_<BollingerBands>(m, "BollingerBands")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
         .def("update", &BollingerBands::update, nb::arg("value"))
+        RTTA_ADVANCE1(BollingerBands, value)
+        RTTA_REPLAY1(BollingerBands, value)
         .def("batch", [](BollingerBands &self, const InputArray &value) {
             return batch_bollinger_bands(self, value);
         }, array_arg("value"))
