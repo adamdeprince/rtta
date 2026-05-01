@@ -31,6 +31,11 @@
 - Added an explicit `batch_kernels` section in `indicator.cpp` and migrated
   the largest remaining TA-Lib benchmark gaps to raw-loop batch kernels while
   preserving the existing object-oriented `update()` and `batch()` APIs.
+- Replaced deque-backed rolling min/max queues with fixed-capacity vector ring
+  buffers and explicitly inlined the hot rolling helper accessors.
+- Added a dedicated small-window raw-scan batch kernel for `MidPrice`, with
+  state rebuild logic so `batch()` remains compatible with subsequent
+  incremental `update()` calls.
 - Specialized EMA, SMA, Summation, ROC, and Kama batch loops to avoid
   per-sample nanobind indexing and unnecessary `update()` dispatch inside
   batch runs.

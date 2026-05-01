@@ -732,6 +732,7 @@ public:
     RollingExtremeQueue(std::size_t capacity, bool maximum)
         : values_(std::max<std::size_t>(capacity, 1)),
           head_(0),
+          tail_(0),
           count_(0),
           maximum_(maximum) {}
 
@@ -762,6 +763,12 @@ public:
         return front().index;
     }
 
+    inline void reset() {
+        head_ = 0;
+        tail_ = 0;
+        count_ = 0;
+    }
+
 private:
     struct Entry {
         double value;
@@ -772,8 +779,11 @@ private:
         return count_ == 0;
     }
 
-    inline std::size_t physical_index(std::size_t offset) const {
-        return (head_ + offset) % values_.size();
+    inline void advance(std::size_t &index) const {
+        ++index;
+        if (index == values_.size()) {
+            index = 0;
+        }
     }
 
     inline Entry &front() {
@@ -785,28 +795,31 @@ private:
     }
 
     inline Entry &back() {
-        return values_[physical_index(count_ - 1)];
+        return values_[tail_ == 0 ? values_.size() - 1 : tail_ - 1];
     }
 
     inline void push_back(Entry entry) {
         if (count_ == values_.size()) {
             pop_front();
         }
-        values_[physical_index(count_)] = entry;
+        values_[tail_] = entry;
+        advance(tail_);
         ++count_;
     }
 
     inline void pop_front() {
-        head_ = (head_ + 1) % values_.size();
+        advance(head_);
         --count_;
     }
 
     inline void pop_back() {
+        tail_ = tail_ == 0 ? values_.size() - 1 : tail_ - 1;
         --count_;
     }
 
     std::vector<Entry> values_;
     std::size_t head_;
+    std::size_t tail_;
     std::size_t count_;
     bool maximum_;
 };
@@ -946,6 +959,11 @@ public:
         return values_[(start + oldest_offset) % values_.size()];
     }
 
+    inline void reset() {
+        next_ = 0;
+        count_ = 0;
+    }
+
 private:
     std::vector<double> values_;
     std::size_t next_;
@@ -964,10 +982,9 @@ class RollingExtreme {
 public:
     RollingExtreme(int window, bool maximum)
         : window_(static_cast<std::size_t>(std::max(window, 1))),
-          maximum_(maximum),
           count_(0),
           sequence_(0),
-          values_(window_ + 1, maximum_) {}
+          values_(window_ + 1, maximum) {}
 
     inline void push(double value) {
         if (count_ < window_) {
@@ -995,6 +1012,12 @@ public:
         return values_.index() - oldest_index();
     }
 
+    inline void reset() {
+        count_ = 0;
+        sequence_ = 0;
+        values_.reset();
+    }
+
 private:
     inline std::size_t oldest_index() const {
         return sequence_ - count_;
@@ -1006,7 +1029,6 @@ private:
     }
 
     std::size_t window_;
-    bool maximum_;
     std::size_t count_;
     std::size_t sequence_;
     RollingExtremeQueue values_;
@@ -1331,6 +1353,58 @@ void midprice(
         highs.push(static_cast<double>(high[i]));
         lows.push(static_cast<double>(low[i]));
         output[i] = (!fillna && !highs.full()) ? nan() : (highs.value() + lows.value()) * 0.5;
+    }
+}
+
+template <typename High, typename Low>
+void midprice_small_window_scan(
+    const High *high,
+    const Low *low,
+    std::size_t size,
+    const double *prior_high,
+    const double *prior_low,
+    std::size_t prior_size,
+    std::size_t window,
+    bool fillna,
+    double *output) {
+    if (prior_size == 0) {
+        for (std::size_t i = 0; i < size; ++i) {
+            const std::size_t count = std::min(window, i + 1);
+            if (!fillna && count < window) {
+                output[i] = nan();
+                continue;
+            }
+
+            const std::size_t start = i + 1 - count;
+            double highest = static_cast<double>(high[start]);
+            double lowest = static_cast<double>(low[start]);
+            for (std::size_t j = start + 1; j <= i; ++j) {
+                highest = std::max(highest, static_cast<double>(high[j]));
+                lowest = std::min(lowest, static_cast<double>(low[j]));
+            }
+            output[i] = (highest + lowest) * 0.5;
+        }
+        return;
+    }
+
+    for (std::size_t i = 0; i < size; ++i) {
+        const std::size_t current = prior_size + i;
+        const std::size_t count = std::min(window, current + 1);
+        if (!fillna && count < window) {
+            output[i] = nan();
+            continue;
+        }
+
+        const std::size_t start = current + 1 - count;
+        double highest = -std::numeric_limits<double>::infinity();
+        double lowest = std::numeric_limits<double>::infinity();
+        for (std::size_t j = start; j <= current; ++j) {
+            const double high_value = j < prior_size ? prior_high[j] : static_cast<double>(high[j - prior_size]);
+            const double low_value = j < prior_size ? prior_low[j] : static_cast<double>(low[j - prior_size]);
+            highest = std::max(highest, high_value);
+            lowest = std::min(lowest, low_value);
+        }
+        output[i] = (highest + lowest) * 0.5;
     }
 }
 
@@ -3686,13 +3760,18 @@ private:
 class MidPrice {
 public:
     MidPrice(int window = 14, bool fillna = true)
-        : highs_(window, true),
+        : window_(static_cast<std::size_t>(std::max(window, 1))),
+          highs_(window, true),
           lows_(window, false),
+          high_history_(window),
+          low_history_(window),
           fillna_(fillna) {}
 
     double update(double high, double low) {
         highs_.push(high);
         lows_.push(low);
+        high_history_.push(high);
+        low_history_.push(low);
         if (!fillna_ && !highs_.full()) {
             return nan();
         }
@@ -3704,13 +3783,68 @@ public:
         const std::size_t size = high.shape(0);
         require_same_size(size, low.shape(0));
         std::vector<double> output(size);
-        batch_kernels::midprice(high.data(), low.data(), size, highs_, lows_, fillna_, output.data());
+        if (window_ <= small_scan_window_limit_) {
+            const std::size_t prior_size = high_history_.size();
+            std::vector<double> prior_high(prior_size);
+            std::vector<double> prior_low(prior_size);
+            for (std::size_t i = 0; i < prior_size; ++i) {
+                prior_high[i] = high_history_.at(i);
+                prior_low[i] = low_history_.at(i);
+            }
+
+            batch_kernels::midprice_small_window_scan(
+                high.data(),
+                low.data(),
+                size,
+                prior_high.data(),
+                prior_low.data(),
+                prior_size,
+                window_,
+                fillna_,
+                output.data());
+            rebuild_state(high.data(), low.data(), size, prior_high, prior_low);
+        } else {
+            batch_kernels::midprice(high.data(), low.data(), size, highs_, lows_, fillna_, output.data());
+            for (std::size_t i = 0; i < size; ++i) {
+                high_history_.push(static_cast<double>(high.data()[i]));
+                low_history_.push(static_cast<double>(low.data()[i]));
+            }
+        }
         return make_array(std::move(output));
     }
 
 private:
+    template <typename High, typename Low>
+    void rebuild_state(
+        const High *high,
+        const Low *low,
+        std::size_t size,
+        const std::vector<double> &prior_high,
+        const std::vector<double> &prior_low) {
+        const std::size_t prior_size = prior_high.size();
+        const std::size_t total = prior_size + size;
+        const std::size_t start = total > window_ ? total - window_ : 0;
+
+        highs_.reset();
+        lows_.reset();
+        high_history_.reset();
+        low_history_.reset();
+        for (std::size_t index = start; index < total; ++index) {
+            const double high_value = index < prior_size ? prior_high[index] : static_cast<double>(high[index - prior_size]);
+            const double low_value = index < prior_size ? prior_low[index] : static_cast<double>(low[index - prior_size]);
+            highs_.push(high_value);
+            lows_.push(low_value);
+            high_history_.push(high_value);
+            low_history_.push(low_value);
+        }
+    }
+
+    static constexpr std::size_t small_scan_window_limit_ = 64;
+    std::size_t window_;
     RollingExtreme highs_;
     RollingExtreme lows_;
+    RollingBuffer high_history_;
+    RollingBuffer low_history_;
     bool fillna_;
 };
 
