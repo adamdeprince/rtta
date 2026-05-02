@@ -130,6 +130,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("HighIndex", ("value",)),
     IndicatorSpec("HighLow", ("value",)),
     IndicatorSpec("HighLowIndex", ("value",)),
+    IndicatorSpec("HullMovingAverage", ("value",), ctor_kwargs={"window": 30}, batch_inputs=("input",)),
     IndicatorSpec("Ichimoku", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("KSTOscillator", ("close",), batch_inputs=("close",)),
     IndicatorSpec("Kama", ("close",), batch_inputs=("input",)),

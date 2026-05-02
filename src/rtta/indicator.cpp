@@ -4068,6 +4068,43 @@ private:
     double sum_;
 };
 
+class HullMovingAverage {
+public:
+    HullMovingAverage(int window = 30, bool fillna = true)
+        : half_(std::max(window / 2, 1), true),
+          full_(std::max(window, 1), true),
+          hull_(std::max(static_cast<int>(std::sqrt(static_cast<double>(std::max(window, 1)))), 1), true),
+          warmup_(std::max(window, 1) + std::max(static_cast<int>(std::sqrt(static_cast<double>(std::max(window, 1)))), 1) - 1),
+          fillna_(fillna),
+          count_(0) {}
+
+    double update(double value) {
+        const double transformed = 2.0 * half_.update(value) - full_.update(value);
+        const double output = hull_.update(transformed);
+        ++count_;
+        return (!fillna_ && count_ < warmup_) ? nan() : output;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    WeightedMovingAverage half_;
+    WeightedMovingAverage full_;
+    WeightedMovingAverage hull_;
+    int warmup_;
+    bool fillna_;
+    long count_;
+};
+
 class TriangularMovingAverage {
 public:
     TriangularMovingAverage(int window = 30, bool fillna = true)
@@ -9017,6 +9054,13 @@ NB_MODULE(indicator, m) {
             }
             return HighLowIndexBatchResult{make_array(std::move(min_index)), make_array(std::move(max_index))};
         }, nb::arg("records"));
+
+    nb::class_<HullMovingAverage>(m, "HullMovingAverage")
+        .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
+        .def("update", &HullMovingAverage::update, nb::arg("value"))
+        RTTA_ADVANCE1(HullMovingAverage, value)
+        RTTA_REPLAY1(HullMovingAverage, value)
+        RTTA_BATCH1_ARRAY(HullMovingAverage, value, "value");
 
     nb::class_<MinusDirectionalIndicator>(m, "MinusDirectionalIndicator")
         .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)

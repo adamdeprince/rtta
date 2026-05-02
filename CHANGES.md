@@ -78,6 +78,9 @@
 - Added `ChoppinessIndex`, implementing CHOP from rolling true-range sums and
   rolling high/low range, with incremental `update()`/`advance()` and
   array/table/record batch support.
+- Added `HullMovingAverage`, implementing HMA as
+  `WMA(2*WMA(n/2) - WMA(n), sqrt(n))` with incremental `update()`/`advance()`
+  and array/table/record batch support.
 - Corrected ATR/ATRP/NormalizedATR to use incremental Wilder smoothing that
   matches TA-Lib after warmup.
 - Updated affected tests for the typed result API.
