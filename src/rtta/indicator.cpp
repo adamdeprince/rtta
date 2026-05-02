@@ -604,8 +604,28 @@ struct HighLowIndexBatchResult {
     nb::object max_index;
 };
 
+struct KeltnerChannelResult {
+    double middle;
+    double upper;
+    double lower;
+};
+
 struct KeltnerChannelBatchResult {
     nb::object middle;
+    nb::object upper;
+    nb::object lower;
+};
+
+struct SuperTrendResult {
+    double value;
+    double direction;
+    double upper;
+    double lower;
+};
+
+struct SuperTrendBatchResult {
+    nb::object value;
+    nb::object direction;
     nb::object upper;
     nb::object lower;
 };
@@ -766,6 +786,14 @@ inline double result_checksum(const HighLowResult &value) {
 
 inline double result_checksum(const HighLowIndexResult &value) {
     return value.min_index + value.max_index;
+}
+
+inline double result_checksum(const KeltnerChannelResult &value) {
+    return value.middle + value.upper + value.lower;
+}
+
+inline double result_checksum(const SuperTrendResult &value) {
+    return value.value + value.direction + value.upper + value.lower;
 }
 
 inline double result_checksum(const DonchianChannelResult &value) {
@@ -1073,6 +1101,10 @@ public:
 
     inline bool full() const {
         return count_ == values_.size();
+    }
+
+    inline std::size_t size() const {
+        return count_;
     }
 
     inline double sum() const {
@@ -2366,6 +2398,113 @@ private:
     ATR atr_;
 };
 
+class SuperTrend {
+public:
+    SuperTrend(int window = 10, double multiplier = 3.0, bool fillna = true)
+        : atr_(window, fillna),
+          multiplier_(multiplier),
+          previous_close_(0.0),
+          upper_(nan()),
+          lower_(nan()),
+          first_(true),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    SuperTrendResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const SuperTrendResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    SuperTrendBatchResult batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        std::vector<double> value(size);
+        std::vector<double> direction(size);
+        std::vector<double> upper(size);
+        std::vector<double> lower(size);
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const SuperTrendResult out = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]));
+            value[i] = out.value;
+            direction[i] = out.direction;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+        }
+
+        return {
+            make_array(std::move(value)),
+            make_array(std::move(direction)),
+            make_array(std::move(upper)),
+            make_array(std::move(lower)),
+        };
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
+        const double atr = atr_.update(close, high, low);
+        const double midpoint = (high + low) * 0.5;
+        const double basic_upper = midpoint + multiplier_ * atr;
+        const double basic_lower = midpoint - multiplier_ * atr;
+
+        if (!fillna_ && std::isnan(atr)) {
+            previous_close_ = close;
+            last_ = {nan(), nan(), nan(), nan()};
+            return;
+        }
+
+        if (first_) {
+            upper_ = basic_upper;
+            lower_ = basic_lower;
+            const bool uptrend = close >= midpoint;
+            last_ = {uptrend ? lower_ : upper_, uptrend ? 1.0 : -1.0, upper_, lower_};
+            previous_close_ = close;
+            first_ = false;
+            return;
+        }
+
+        const double previous_upper = upper_;
+        const double previous_lower = lower_;
+        const double previous_value = last_.value;
+        upper_ = (basic_upper < previous_upper || previous_close_ > previous_upper) ? basic_upper : previous_upper;
+        lower_ = (basic_lower > previous_lower || previous_close_ < previous_lower) ? basic_lower : previous_lower;
+
+        bool uptrend;
+        if (previous_value == previous_upper) {
+            uptrend = close > upper_;
+        } else {
+            uptrend = close >= lower_;
+        }
+
+        last_ = {uptrend ? lower_ : upper_, uptrend ? 1.0 : -1.0, upper_, lower_};
+        previous_close_ = close;
+    }
+
+    ATR atr_;
+    double multiplier_;
+    double previous_close_;
+    double upper_;
+    double lower_;
+    bool first_;
+    bool fillna_;
+    SuperTrendResult last_;
+};
+
 class EMA {
 public:
     explicit EMA(double window = 1.0, bool fillna = false)
@@ -2905,21 +3044,36 @@ public:
         : middle_(nb::none(), nb::float_(span), nb::none(), false),
           atr_(window_atr, true),
           multiplier_(multiplier),
-          start_(true) {
+          start_(true),
+          last_{nan(), nan(), nan()} {
         static_cast<void>(fillna);
     }
 
-    nb::tuple update(double close, double high, double low) {
-        const double atr = atr_.update(close, high, low);
-        const double tp = middle_.update(close);
-        return nb::make_tuple(tp, tp + multiplier_ * atr, tp - multiplier_ * atr);
+    KeltnerChannelResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const KeltnerChannelResult &last() const {
+        return last_;
     }
 
 private:
+    inline void update_core(double close, double high, double low) {
+        const double atr = atr_.update(close, high, low);
+        const double tp = middle_.update(close);
+        last_ = {tp, tp + multiplier_ * atr, tp - multiplier_ * atr};
+    }
+
     EWMA middle_;
     ATR atr_;
     double multiplier_;
     bool start_;
+    KeltnerChannelResult last_;
 };
 
 class KeltnerChannelOriginal {
@@ -2930,22 +3084,38 @@ public:
           multiplier_(2.0),
           high_(window, fillna),
           middle_(window, fillna),
-          low_(window, fillna) {}
+          low_(window, fillna),
+          last_{nan(), nan(), nan()} {}
 
-    nb::tuple update(double close, double high, double low) {
-        return nb::make_tuple(
-            middle_.update((high + close + low) / 3.0),
-            high_.update((high * 4.0 + close - 2.0 * low) / 3.0),
-            low_.update((close + 4.0 * low - 2.0 * high) / 3.0));
+    KeltnerChannelResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const KeltnerChannelResult &last() const {
+        return last_;
     }
 
 private:
+    inline void update_core(double close, double high, double low) {
+        last_ = {
+            middle_.update((high + close + low) / 3.0),
+            high_.update((high * 4.0 + close - 2.0 * low) / 3.0),
+            low_.update((close + 4.0 * low - 2.0 * high) / 3.0),
+        };
+    }
+
     int window_;
     bool fillna_;
     double multiplier_;
     SMA high_;
     SMA middle_;
     SMA low_;
+    KeltnerChannelResult last_;
 };
 
 class MACD {
@@ -3115,6 +3285,72 @@ public:
 private:
     double previous_close_;
     bool first_;
+};
+
+class ChoppinessIndex {
+public:
+    ChoppinessIndex(int window = 14, bool fillna = true)
+        : window_(std::max(window, 1)),
+          true_ranges_(window_),
+          highs_(window_, true),
+          lows_(window_, false),
+          previous_close_(0.0),
+          first_(true),
+          fillna_(fillna) {}
+
+    double update(double close, double high, double low) {
+        const double tr = first_ ? high - low : true_range(close, high, low, previous_close_);
+        previous_close_ = close;
+        first_ = false;
+
+        true_ranges_.push(tr);
+        highs_.push(high);
+        lows_.push(low);
+
+        if (!fillna_ && !true_ranges_.full()) {
+            return nan();
+        }
+
+        const double range = highs_.value() - lows_.value();
+        const double tr_sum = true_ranges_.sum();
+        if (range <= 0.0 || tr_sum <= 0.0) {
+            return 100.0;
+        }
+
+        const std::size_t periods = fillna_
+            ? std::max<std::size_t>(true_ranges_.size(), 2)
+            : static_cast<std::size_t>(window_);
+        return 100.0 * std::log10(tr_sum / range) / std::log10(static_cast<double>(periods));
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]));
+        }
+
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    RollingSumWindow true_ranges_;
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    double previous_close_;
+    bool first_;
+    bool fillna_;
 };
 
 class NormalizedATR {
@@ -7107,16 +7343,57 @@ KeltnerChannelBatchResult batch_keltner(
     const auto *low_values = low.data();
 
     for (std::size_t i = 0; i < size; ++i) {
-        const nb::tuple out = indicator.update(
+        const KeltnerChannelResult out = indicator.update(
             static_cast<double>(close_values[i]),
             static_cast<double>(high_values[i]),
             static_cast<double>(low_values[i]));
-        middle[i] = nb::cast<double>(out[0]);
-        upper[i] = nb::cast<double>(out[1]);
-        lower[i] = nb::cast<double>(out[2]);
+        middle[i] = out.middle;
+        upper[i] = out.upper;
+        lower[i] = out.lower;
     }
 
     return {make_array(std::move(middle)), make_array(std::move(upper)), make_array(std::move(lower))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+SuperTrendBatchResult batch_super_trend(SuperTrend &indicator, const Array0 &close, const Array1 &high, const Array2 &low) {
+    return indicator.batch_array(close, high, low);
+}
+
+template <typename Array>
+PercentagePriceBatchResult batch_percentage_price(PercentagePrice &indicator, const Array &close) {
+    const std::size_t size = close.shape(0);
+    std::vector<double> ppo(size);
+    std::vector<double> signal(size);
+    std::vector<double> histogram(size);
+    const auto *values = close.data();
+
+    for (std::size_t i = 0; i < size; ++i) {
+        const PercentagePriceResult out = indicator.update(static_cast<double>(values[i]));
+        ppo[i] = out.ppo;
+        signal[i] = out.signal;
+        histogram[i] = out.histogram;
+    }
+
+    return {make_array(std::move(ppo)), make_array(std::move(signal)), make_array(std::move(histogram))};
+}
+
+template <typename Array>
+PercentageVolumeBatchResult batch_percentage_volume(PercentageVolume &indicator, const Array &volume) {
+    const std::size_t size = volume.shape(0);
+    std::vector<double> pvo(size);
+    std::vector<double> signal(size);
+    std::vector<double> histogram(size);
+    const auto *values = volume.data();
+
+    for (std::size_t i = 0; i < size; ++i) {
+        const PercentageVolumeResult out = indicator.update(static_cast<double>(values[i]));
+        pvo[i] = out.pvo;
+        signal[i] = out.signal;
+        histogram[i] = out.histogram;
+    }
+
+    return {make_array(std::move(pvo)), make_array(std::move(signal)), make_array(std::move(histogram))};
 }
 
 template <typename Array0, typename Array1, typename Array2>
@@ -7583,6 +7860,54 @@ inline double call_advance_checksum(Indicator &self, double arg0, double arg1, d
         return checksum; \
     }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3))
 
+#define RTTA_FIELD1(TYPE, FIELD, ARG0) \
+    .def("update_" #FIELD, [](TYPE &self, double ARG0) { \
+        return self.update(ARG0).FIELD; \
+    }, nb::arg(#ARG0)) \
+    .def("last_" #FIELD, [](const TYPE &self) { \
+        return self.last().FIELD; \
+    })
+
+#define RTTA_FIELD2(TYPE, FIELD, ARG0, ARG1) \
+    .def("update_" #FIELD, [](TYPE &self, double ARG0, double ARG1) { \
+        return self.update(ARG0, ARG1).FIELD; \
+    }, nb::arg(#ARG0), nb::arg(#ARG1)) \
+    .def("last_" #FIELD, [](const TYPE &self) { \
+        return self.last().FIELD; \
+    })
+
+#define RTTA_FIELD3(TYPE, FIELD, ARG0, ARG1, ARG2) \
+    .def("update_" #FIELD, [](TYPE &self, double ARG0, double ARG1, double ARG2) { \
+        return self.update(ARG0, ARG1, ARG2).FIELD; \
+    }, nb::arg(#ARG0), nb::arg(#ARG1), nb::arg(#ARG2)) \
+    .def("last_" #FIELD, [](const TYPE &self) { \
+        return self.last().FIELD; \
+    })
+
+#define RTTA_REPLAY_OUTPUTS1(TYPE, ARG0, BATCH_FUNC) \
+    .def("replay_update_outputs", [](TYPE &self, const InputArray &ARG0) { \
+        return BATCH_FUNC(self, ARG0); \
+    }, array_arg(#ARG0)) \
+    .def("replay_update_outputs", [](TYPE &self, const FloatInputArray &ARG0) { \
+        return BATCH_FUNC(self, ARG0); \
+    }, array_arg(#ARG0))
+
+#define RTTA_REPLAY_OUTPUTS2(TYPE, ARG0, ARG1, BATCH_FUNC) \
+    .def("replay_update_outputs", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1) { \
+        return BATCH_FUNC(self, ARG0, ARG1); \
+    }, array_arg(#ARG0), array_arg(#ARG1)) \
+    .def("replay_update_outputs", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1) { \
+        return BATCH_FUNC(self, ARG0, ARG1); \
+    }, array_arg(#ARG0), array_arg(#ARG1))
+
+#define RTTA_REPLAY_OUTPUTS3(TYPE, ARG0, ARG1, ARG2, BATCH_FUNC) \
+    .def("replay_update_outputs", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2) { \
+        return BATCH_FUNC(self, ARG0, ARG1, ARG2); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2)) \
+    .def("replay_update_outputs", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2) { \
+        return BATCH_FUNC(self, ARG0, ARG1, ARG2); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2))
+
 #define RTTA_BATCH1(TYPE, ARG0, FIELD0) \
     .def("batch", [](TYPE &self, const InputArray &ARG0) { \
         return batch_update1(self, ARG0); \
@@ -7711,10 +8036,27 @@ NB_MODULE(indicator, m) {
         .def_ro("min_index", &HighLowIndexBatchResult::min_index)
         .def_ro("max_index", &HighLowIndexBatchResult::max_index);
 
+    nb::class_<KeltnerChannelResult>(m, "KeltnerChannelResult")
+        .def_ro("middle", &KeltnerChannelResult::middle)
+        .def_ro("upper", &KeltnerChannelResult::upper)
+        .def_ro("lower", &KeltnerChannelResult::lower);
+
     nb::class_<KeltnerChannelBatchResult>(m, "KeltnerChannelBatchResult")
         .def_ro("middle", &KeltnerChannelBatchResult::middle)
         .def_ro("upper", &KeltnerChannelBatchResult::upper)
         .def_ro("lower", &KeltnerChannelBatchResult::lower);
+
+    nb::class_<SuperTrendResult>(m, "SuperTrendResult")
+        .def_ro("value", &SuperTrendResult::value)
+        .def_ro("direction", &SuperTrendResult::direction)
+        .def_ro("upper", &SuperTrendResult::upper)
+        .def_ro("lower", &SuperTrendResult::lower);
+
+    nb::class_<SuperTrendBatchResult>(m, "SuperTrendBatchResult")
+        .def_ro("value", &SuperTrendBatchResult::value)
+        .def_ro("direction", &SuperTrendBatchResult::direction)
+        .def_ro("upper", &SuperTrendBatchResult::upper)
+        .def_ro("lower", &SuperTrendBatchResult::lower);
 
     nb::class_<DonchianChannelResult>(m, "DonchianChannelResult")
         .def_ro("upper", &DonchianChannelResult::upper)
@@ -7888,6 +8230,9 @@ NB_MODULE(indicator, m) {
         .def("update", &Aroon::update, nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE2(Aroon, high, low)
         RTTA_REPLAY2(Aroon, high, low)
+        RTTA_FIELD2(Aroon, down, high, low)
+        RTTA_FIELD2(Aroon, up, high, low)
+        RTTA_REPLAY_OUTPUTS2(Aroon, high, low, batch_aroon)
         .def("batch", [](Aroon &self, const InputArray &high, const InputArray &low) {
             return batch_aroon(self, high, low);
         }, array_arg("high"), array_arg("low"))
@@ -7945,6 +8290,54 @@ NB_MODULE(indicator, m) {
         RTTA_ADVANCE3(ATRP, close, high, low)
         RTTA_REPLAY3(ATRP, close, high, low)
         RTTA_BATCH3_ARRAY(ATRP, close, high, low, "close", "high", "low");
+
+    nb::class_<SuperTrend>(m, "SuperTrend")
+        .def(nb::init<int, double, bool>(), nb::arg("window") = 10, nb::arg("multiplier") = 3.0, nb::arg("fillna") = true)
+        .def("update", &SuperTrend::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(SuperTrend, close, high, low)
+        RTTA_REPLAY3(SuperTrend, close, high, low)
+        RTTA_FIELD3(SuperTrend, value, close, high, low)
+        RTTA_FIELD3(SuperTrend, direction, close, high, low)
+        RTTA_FIELD3(SuperTrend, upper, close, high, low)
+        RTTA_FIELD3(SuperTrend, lower, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(SuperTrend, close, high, low, batch_super_trend)
+        .def("batch", [](SuperTrend &self, const InputArray &close, const InputArray &high, const InputArray &low) {
+            return batch_super_trend(self, close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](SuperTrend &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
+            return batch_super_trend(self, close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](SuperTrend &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table3(self, records, "close", "high", "low", [](auto &indicator, const auto &close, const auto &high, const auto &low) {
+                    return batch_super_trend(indicator, close, high, low);
+                });
+            }
+
+            std::vector<double> value = make_record_output(records);
+            std::vector<double> direction;
+            std::vector<double> upper;
+            std::vector<double> lower;
+            direction.reserve(value.capacity());
+            upper.reserve(value.capacity());
+            lower.reserve(value.capacity());
+            for (nb::handle record : records) {
+                const SuperTrendResult out = self.update(
+                    record_value(record, "close", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2));
+                value.push_back(out.value);
+                direction.push_back(out.direction);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
+            }
+            return SuperTrendBatchResult{
+                make_array(std::move(value)),
+                make_array(std::move(direction)),
+                make_array(std::move(upper)),
+                make_array(std::move(lower)),
+            };
+        }, nb::arg("records"));
 
     nb::class_<AveragePrice>(m, "AveragePrice")
         .def(nb::init<>())
@@ -8021,6 +8414,26 @@ NB_MODULE(indicator, m) {
                 });
             }
             return batch_records_one(self, records, "close");
+        }, nb::arg("records"));
+
+    nb::class_<ChoppinessIndex>(m, "ChoppinessIndex")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &ChoppinessIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(ChoppinessIndex, close, high, low)
+        RTTA_REPLAY3(ChoppinessIndex, close, high, low)
+        .def("batch", [](ChoppinessIndex &self, const InputArray &close, const InputArray &high, const InputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](ChoppinessIndex &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](ChoppinessIndex &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table3(self, records, "close", "high", "low", [](auto &indicator, const auto &close, const auto &high, const auto &low) {
+                    return indicator.batch_array(close, high, low);
+                });
+            }
+            return batch_records_three(self, records, "close", "high", "low");
         }, nb::arg("records"));
 
     nb::class_<Correlation>(m, "Correlation")
@@ -8102,6 +8515,12 @@ NB_MODULE(indicator, m) {
         .def("update", &DonchianChannel::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE3(DonchianChannel, close, high, low)
         RTTA_REPLAY3(DonchianChannel, close, high, low)
+        RTTA_FIELD3(DonchianChannel, upper, close, high, low)
+        RTTA_FIELD3(DonchianChannel, lower, close, high, low)
+        RTTA_FIELD3(DonchianChannel, middle, close, high, low)
+        RTTA_FIELD3(DonchianChannel, width, close, high, low)
+        RTTA_FIELD3(DonchianChannel, percent, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(DonchianChannel, close, high, low, batch_donchian)
         .def("batch", &DonchianChannel::batch, array_arg("close"), array_arg("high"), array_arg("low"))
         .def("batch", [](DonchianChannel &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
             return batch_donchian(self, close, high, low);
@@ -8178,6 +8597,9 @@ NB_MODULE(indicator, m) {
         .def("update", &EaseOfMovement::update, nb::arg("high"), nb::arg("low"), nb::arg("volume"))
         RTTA_ADVANCE3(EaseOfMovement, high, low, volume)
         RTTA_REPLAY3(EaseOfMovement, high, low, volume)
+        RTTA_FIELD3(EaseOfMovement, ease_of_movement, high, low, volume)
+        RTTA_FIELD3(EaseOfMovement, sma, high, low, volume)
+        RTTA_REPLAY_OUTPUTS3(EaseOfMovement, high, low, volume, batch_ease_of_movement)
         .def("batch", &EaseOfMovement::batch, array_arg("high"), array_arg("low"), array_arg("volume"))
         .def("batch", [](EaseOfMovement &self, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume) {
             return batch_ease_of_movement(self, high, low, volume);
@@ -8225,6 +8647,11 @@ NB_MODULE(indicator, m) {
         .def("update", &Ichimoku::update, nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE2(Ichimoku, high, low)
         RTTA_REPLAY2(Ichimoku, high, low)
+        RTTA_FIELD2(Ichimoku, conversion, high, low)
+        RTTA_FIELD2(Ichimoku, base, high, low)
+        RTTA_FIELD2(Ichimoku, span_a, high, low)
+        RTTA_FIELD2(Ichimoku, span_b, high, low)
+        RTTA_REPLAY_OUTPUTS2(Ichimoku, high, low, batch_ichimoku)
         .def("batch", &Ichimoku::batch, array_arg("high"), array_arg("low"))
         .def("batch", [](Ichimoku &self, const FloatInputArray &high, const FloatInputArray &low) {
             return batch_ichimoku(self, high, low);
@@ -8284,6 +8711,10 @@ NB_MODULE(indicator, m) {
         .def("update", &KeltnerChannel::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE3(KeltnerChannel, close, high, low)
         RTTA_REPLAY3(KeltnerChannel, close, high, low)
+        RTTA_FIELD3(KeltnerChannel, middle, close, high, low)
+        RTTA_FIELD3(KeltnerChannel, upper, close, high, low)
+        RTTA_FIELD3(KeltnerChannel, lower, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(KeltnerChannel, close, high, low, batch_keltner)
         .def("batch", [](KeltnerChannel &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_keltner(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -8303,13 +8734,13 @@ NB_MODULE(indicator, m) {
             upper.reserve(middle.capacity());
             lower.reserve(middle.capacity());
             for (nb::handle record : records) {
-                const nb::tuple out = self.update(
+                const KeltnerChannelResult out = self.update(
                     record_value(record, "close", 0),
                     record_value(record, "high", 1),
                     record_value(record, "low", 2));
-                middle.push_back(nb::cast<double>(out[0]));
-                upper.push_back(nb::cast<double>(out[1]));
-                lower.push_back(nb::cast<double>(out[2]));
+                middle.push_back(out.middle);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
             }
             return KeltnerChannelBatchResult{
                 make_array(std::move(middle)),
@@ -8323,6 +8754,10 @@ NB_MODULE(indicator, m) {
         .def("update", &KeltnerChannelOriginal::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE3(KeltnerChannelOriginal, close, high, low)
         RTTA_REPLAY3(KeltnerChannelOriginal, close, high, low)
+        RTTA_FIELD3(KeltnerChannelOriginal, middle, close, high, low)
+        RTTA_FIELD3(KeltnerChannelOriginal, upper, close, high, low)
+        RTTA_FIELD3(KeltnerChannelOriginal, lower, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(KeltnerChannelOriginal, close, high, low, batch_keltner)
         .def("batch", [](KeltnerChannelOriginal &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_keltner(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -8342,13 +8777,13 @@ NB_MODULE(indicator, m) {
             upper.reserve(middle.capacity());
             lower.reserve(middle.capacity());
             for (nb::handle record : records) {
-                const nb::tuple out = self.update(
+                const KeltnerChannelResult out = self.update(
                     record_value(record, "close", 0),
                     record_value(record, "high", 1),
                     record_value(record, "low", 2));
-                middle.push_back(nb::cast<double>(out[0]));
-                upper.push_back(nb::cast<double>(out[1]));
-                lower.push_back(nb::cast<double>(out[2]));
+                middle.push_back(out.middle);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
             }
             return KeltnerChannelBatchResult{
                 make_array(std::move(middle)),
@@ -8372,6 +8807,10 @@ NB_MODULE(indicator, m) {
         .def("update", &KSTOscillator::update, nb::arg("close"))
         RTTA_ADVANCE1(KSTOscillator, close)
         RTTA_REPLAY1(KSTOscillator, close)
+        RTTA_FIELD1(KSTOscillator, kst, close)
+        RTTA_FIELD1(KSTOscillator, signal, close)
+        RTTA_FIELD1(KSTOscillator, difference, close)
+        RTTA_REPLAY_OUTPUTS1(KSTOscillator, close, batch_kst)
         .def("batch", &KSTOscillator::batch, array_arg("close"))
         .def("batch", [](KSTOscillator &self, const FloatInputArray &close) {
             return batch_kst(self, close);
@@ -8520,6 +8959,9 @@ NB_MODULE(indicator, m) {
         .def("update", &HighLow::update, nb::arg("value"))
         RTTA_ADVANCE1(HighLow, value)
         RTTA_REPLAY1(HighLow, value)
+        RTTA_FIELD1(HighLow, min, value)
+        RTTA_FIELD1(HighLow, max, value)
+        RTTA_REPLAY_OUTPUTS1(HighLow, value, batch_high_low)
         .def("batch", [](HighLow &self, const InputArray &value) {
             return batch_high_low(self, value);
         }, array_arg("value"))
@@ -8549,6 +8991,9 @@ NB_MODULE(indicator, m) {
         .def("update", &HighLowIndex::update, nb::arg("value"))
         RTTA_ADVANCE1(HighLowIndex, value)
         RTTA_REPLAY1(HighLowIndex, value)
+        RTTA_FIELD1(HighLowIndex, min_index, value)
+        RTTA_FIELD1(HighLowIndex, max_index, value)
+        RTTA_REPLAY_OUTPUTS1(HighLowIndex, value, batch_high_low_index)
         .def("batch", [](HighLowIndex &self, const InputArray &value) {
             return batch_high_low_index(self, value);
         }, array_arg("value"))
@@ -8658,6 +9103,10 @@ NB_MODULE(indicator, m) {
         .def("update", &PercentagePrice::update, nb::arg("close"))
         RTTA_ADVANCE1(PercentagePrice, close)
         RTTA_REPLAY1(PercentagePrice, close)
+        RTTA_FIELD1(PercentagePrice, ppo, close)
+        RTTA_FIELD1(PercentagePrice, signal, close)
+        RTTA_FIELD1(PercentagePrice, histogram, close)
+        RTTA_REPLAY_OUTPUTS1(PercentagePrice, close, batch_percentage_price)
         .def("batch", &PercentagePrice::batch, array_arg("close"))
         .def("batch", [](PercentagePrice &self, const FloatInputArray &close) {
             const std::size_t size = close.shape(0);
@@ -8699,6 +9148,10 @@ NB_MODULE(indicator, m) {
         .def("update", &PercentageVolume::update, nb::arg("volume"))
         RTTA_ADVANCE1(PercentageVolume, volume)
         RTTA_REPLAY1(PercentageVolume, volume)
+        RTTA_FIELD1(PercentageVolume, pvo, volume)
+        RTTA_FIELD1(PercentageVolume, signal, volume)
+        RTTA_FIELD1(PercentageVolume, histogram, volume)
+        RTTA_REPLAY_OUTPUTS1(PercentageVolume, volume, batch_percentage_volume)
         .def("batch", &PercentageVolume::batch, array_arg("volume"))
         .def("batch", [](PercentageVolume &self, const FloatInputArray &volume) {
             const std::size_t size = volume.shape(0);
@@ -8867,6 +9320,9 @@ NB_MODULE(indicator, m) {
         .def("update", &Stochastic::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE3(Stochastic, close, high, low)
         RTTA_REPLAY3(Stochastic, close, high, low)
+        RTTA_FIELD3(Stochastic, slowk, close, high, low)
+        RTTA_FIELD3(Stochastic, slowd, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(Stochastic, close, high, low, batch_stochastic)
         .def("batch", [](Stochastic &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_stochastic(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -8899,6 +9355,9 @@ NB_MODULE(indicator, m) {
         .def("update", &FastStochastic::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE3(FastStochastic, close, high, low)
         RTTA_REPLAY3(FastStochastic, close, high, low)
+        RTTA_FIELD3(FastStochastic, fastk, close, high, low)
+        RTTA_FIELD3(FastStochastic, fastd, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(FastStochastic, close, high, low, batch_fast_stochastic)
         .def("batch", [](FastStochastic &self, const InputArray &close, const InputArray &high, const InputArray &low) {
             return batch_fast_stochastic(self, close, high, low);
         }, array_arg("close"), array_arg("high"), array_arg("low"))
@@ -9104,6 +9563,10 @@ NB_MODULE(indicator, m) {
         .def("update", &Vortex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
         RTTA_ADVANCE3(Vortex, close, high, low)
         RTTA_REPLAY3(Vortex, close, high, low)
+        RTTA_FIELD3(Vortex, positive, close, high, low)
+        RTTA_FIELD3(Vortex, negative, close, high, low)
+        RTTA_FIELD3(Vortex, difference, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(Vortex, close, high, low, batch_vortex)
         .def("batch", &Vortex::batch, array_arg("close"), array_arg("high"), array_arg("low"))
         .def("batch", [](Vortex &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
             return batch_vortex(self, close, high, low);
@@ -9169,6 +9632,10 @@ NB_MODULE(indicator, m) {
         .def("update", &BollingerBands::update, nb::arg("value"))
         RTTA_ADVANCE1(BollingerBands, value)
         RTTA_REPLAY1(BollingerBands, value)
+        RTTA_FIELD1(BollingerBands, middle, value)
+        RTTA_FIELD1(BollingerBands, upper, value)
+        RTTA_FIELD1(BollingerBands, lower, value)
+        RTTA_REPLAY_OUTPUTS1(BollingerBands, value, batch_bollinger_bands)
         .def("batch", [](BollingerBands &self, const InputArray &value) {
             return batch_bollinger_bands(self, value);
         }, array_arg("value"))

@@ -64,6 +64,20 @@
   min/max offset lookups.
 - Replaced Python `dict` result objects with typed C++ result structs exposed
   through read-only nanobind fields for multi-output indicators.
+- Added scalar `update_<field>()` and `last_<field>()` accessors for
+  multi-output indicators so callers can avoid allocating immutable result
+  objects when they only need one output.
+- Added `replay_update_outputs()` for multi-output indicators, returning the
+  same batch-result shape as `batch()` while iterating the incremental update
+  kernel in C++.
+- Documented the indicator API conventions for `update()`, `advance()`,
+  immutable multi-output result structs, scalar field accessors, checksum
+  replay methods, and replay-output batches in `README.md`.
+- Added `SuperTrend`, with incremental `update()`/`advance()`, scalar field
+  accessors, C++ replay-output batches, and array/table/record batch support.
+- Added `ChoppinessIndex`, implementing CHOP from rolling true-range sums and
+  rolling high/low range, with incremental `update()`/`advance()` and
+  array/table/record batch support.
 - Corrected ATR/ATRP/NormalizedATR to use incremental Wilder smoothing that
   matches TA-Lib after warmup.
 - Updated affected tests for the typed result API.

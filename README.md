@@ -65,6 +65,36 @@ So for example, the simple moving average works sort of like this:
 2.25
 ```
 
+Indicator API conventions
+-------------------------
+
+New indicators should follow the same surface area as the existing C++
+nanobind indicators:
+
+- `update(...)` advances state by one sample and returns the current result.
+- `advance(...)` advances state by one sample and returns `None`; it is for
+  callers that do not need a Python result object for that sample.
+- Single-output indicators return a Python float from `update(...)`.
+- Multi-output indicators return an immutable C++ result struct with read-only
+  fields, for example `VortexResult.positive`.
+- Multi-output indicators also expose scalar field updates named
+  `update_<field>(...)`, such as `update_positive(...)`. These advance state and
+  return only that field as a Python float.
+- Multi-output indicators expose `last_<field>()`, such as `last_positive()`,
+  to read one field from the most recent state without advancing.
+- If more than one field is needed for the same sample, call `update(...)` once
+  and read the immutable result fields, or call one `update_<field>(...)` and
+  then read the other fields through `last_<field>()`. Calling multiple
+  `update_<field>(...)` methods advances multiple samples.
+- Incremental C++ replay methods use NumPy float64 or float32 arrays:
+  `replay_update(...)` and `replay_advance(...)` return checksum floats for
+  latency benchmarking, while `replay_update_outputs(...)` returns the same
+  immutable batch-result shape as `batch(...)` after iterating the incremental
+  update kernel in C++.
+- `batch(...)` remains the normal array/table/record-list bulk API. It may use
+  specialized batch kernels when that is algorithmically better, but it must
+  leave object state compatible with subsequent incremental `update(...)` calls.
+
 Performance
 -----------
 
