@@ -125,6 +125,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("DonchianChannel", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
     IndicatorSpec("EaseOfMovement", ("high", "low", "volume"), batch_inputs=("high", "low", "volume")),
     IndicatorSpec("FastStochastic", ("close", "high", "low")),
+    IndicatorSpec("FibonacciRetracementLevels", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("ForceIndex", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("High", ("value",), ctor_kwargs={"window": 30}),
     IndicatorSpec("HighIndex", ("value",)),

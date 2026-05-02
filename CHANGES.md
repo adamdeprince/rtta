@@ -84,6 +84,10 @@
 - Added `VolumeWeightedMovingAverage`, implementing VWMA as rolling
   `sum(close * volume) / sum(volume)` with incremental `update()`/`advance()`
   and array/table/record batch support.
+- Added `FibonacciRetracementLevels`, exposing rolling 0%, 23.6%, 38.2%,
+  50%, 61.8%, and 100% retracement levels for uptrend or downtrend anchors,
+  with immutable multi-output results, scalar field accessors, replay-output
+  batches, and array/table/record batch support.
 - Corrected ATR/ATRP/NormalizedATR to use incremental Wilder smoothing that
   matches TA-Lib after warmup.
 - Updated affected tests for the typed result API.

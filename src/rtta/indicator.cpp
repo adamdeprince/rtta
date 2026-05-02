@@ -646,6 +646,24 @@ struct DonchianChannelBatchResult {
     nb::object percent;
 };
 
+struct FibonacciRetracementLevelsResult {
+    double level0;
+    double level236;
+    double level382;
+    double level500;
+    double level618;
+    double level100;
+};
+
+struct FibonacciRetracementLevelsBatchResult {
+    nb::object level0;
+    nb::object level236;
+    nb::object level382;
+    nb::object level500;
+    nb::object level618;
+    nb::object level100;
+};
+
 struct AroonResult {
     double down;
     double up;
@@ -798,6 +816,10 @@ inline double result_checksum(const SuperTrendResult &value) {
 
 inline double result_checksum(const DonchianChannelResult &value) {
     return value.upper + value.lower + value.middle + value.width + value.percent;
+}
+
+inline double result_checksum(const FibonacciRetracementLevelsResult &value) {
+    return value.level0 + value.level236 + value.level382 + value.level500 + value.level618 + value.level100;
 }
 
 inline double result_checksum(const AroonResult &value) {
@@ -5256,6 +5278,104 @@ private:
     DonchianChannelResult last_;
 };
 
+class FibonacciRetracementLevels {
+public:
+    FibonacciRetracementLevels(int window = 30, bool uptrend = true, bool fillna = true)
+        : highs_(window, true),
+          lows_(window, false),
+          fillna_(fillna),
+          uptrend_(uptrend),
+          last_{nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    FibonacciRetracementLevelsResult update(double high, double low) {
+        update_core(high, low);
+        return last_;
+    }
+
+    void advance(double high, double low) {
+        update_core(high, low);
+    }
+
+    inline const FibonacciRetracementLevelsResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    FibonacciRetracementLevelsBatchResult batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> level0(size);
+        std::vector<double> level236(size);
+        std::vector<double> level382(size);
+        std::vector<double> level500(size);
+        std::vector<double> level618(size);
+        std::vector<double> level100(size);
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const FibonacciRetracementLevelsResult out = update(
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]));
+            level0[i] = out.level0;
+            level236[i] = out.level236;
+            level382[i] = out.level382;
+            level500[i] = out.level500;
+            level618[i] = out.level618;
+            level100[i] = out.level100;
+        }
+
+        return {
+            make_array(std::move(level0)),
+            make_array(std::move(level236)),
+            make_array(std::move(level382)),
+            make_array(std::move(level500)),
+            make_array(std::move(level618)),
+            make_array(std::move(level100)),
+        };
+    }
+
+private:
+    inline void update_core(double high, double low) {
+        highs_.push(high);
+        lows_.push(low);
+
+        if (!fillna_ && !highs_.full()) {
+            last_ = {nan(), nan(), nan(), nan(), nan(), nan()};
+            return;
+        }
+
+        const double highest = highs_.value();
+        const double lowest = lows_.value();
+        const double range = highest - lowest;
+        if (uptrend_) {
+            last_ = {
+                highest,
+                highest - 0.236 * range,
+                highest - 0.382 * range,
+                highest - 0.5 * range,
+                highest - 0.618 * range,
+                lowest,
+            };
+        } else {
+            last_ = {
+                lowest,
+                lowest + 0.236 * range,
+                lowest + 0.382 * range,
+                lowest + 0.5 * range,
+                lowest + 0.618 * range,
+                highest,
+            };
+        }
+    }
+
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    bool fillna_;
+    bool uptrend_;
+    FibonacciRetracementLevelsResult last_;
+};
+
 class UlcerIndex {
 public:
     UlcerIndex(int window = 14, bool fillna = true)
@@ -7582,6 +7702,14 @@ IchimokuBatchResult batch_ichimoku(Ichimoku &indicator, const Array0 &high, cons
     };
 }
 
+template <typename Array0, typename Array1>
+FibonacciRetracementLevelsBatchResult batch_fibonacci_retracement_levels(
+    FibonacciRetracementLevels &indicator,
+    const Array0 &high,
+    const Array1 &low) {
+    return indicator.batch_array(high, low);
+}
+
 template <typename Array0, typename Array1, typename Array2>
 VortexBatchResult batch_vortex(Vortex &indicator, const Array0 &close, const Array1 &high, const Array2 &low) {
     const std::size_t size = close.shape(0);
@@ -8147,6 +8275,22 @@ NB_MODULE(indicator, m) {
         .def_ro("width", &DonchianChannelBatchResult::width)
         .def_ro("percent", &DonchianChannelBatchResult::percent);
 
+    nb::class_<FibonacciRetracementLevelsResult>(m, "FibonacciRetracementLevelsResult")
+        .def_ro("level0", &FibonacciRetracementLevelsResult::level0)
+        .def_ro("level236", &FibonacciRetracementLevelsResult::level236)
+        .def_ro("level382", &FibonacciRetracementLevelsResult::level382)
+        .def_ro("level500", &FibonacciRetracementLevelsResult::level500)
+        .def_ro("level618", &FibonacciRetracementLevelsResult::level618)
+        .def_ro("level100", &FibonacciRetracementLevelsResult::level100);
+
+    nb::class_<FibonacciRetracementLevelsBatchResult>(m, "FibonacciRetracementLevelsBatchResult")
+        .def_ro("level0", &FibonacciRetracementLevelsBatchResult::level0)
+        .def_ro("level236", &FibonacciRetracementLevelsBatchResult::level236)
+        .def_ro("level382", &FibonacciRetracementLevelsBatchResult::level382)
+        .def_ro("level500", &FibonacciRetracementLevelsBatchResult::level500)
+        .def_ro("level618", &FibonacciRetracementLevelsBatchResult::level618)
+        .def_ro("level100", &FibonacciRetracementLevelsBatchResult::level100);
+
     nb::class_<AroonResult>(m, "AroonResult")
         .def_ro("down", &AroonResult::down)
         .def_ro("up", &AroonResult::up);
@@ -8711,6 +8855,61 @@ NB_MODULE(indicator, m) {
         }, array_arg("close"), array_arg("volume"))
         .def("batch", [](ForceIndex &self, nb::iterable records) {
             return batch_records_two(self, records, "close", "volume");
+        }, nb::arg("records"));
+
+    nb::class_<FibonacciRetracementLevels>(m, "FibonacciRetracementLevels")
+        .def(nb::init<int, bool, bool>(), nb::arg("window") = 30, nb::arg("uptrend") = true, nb::arg("fillna") = true)
+        .def("update", &FibonacciRetracementLevels::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(FibonacciRetracementLevels, high, low)
+        RTTA_REPLAY2(FibonacciRetracementLevels, high, low)
+        RTTA_FIELD2(FibonacciRetracementLevels, level0, high, low)
+        RTTA_FIELD2(FibonacciRetracementLevels, level236, high, low)
+        RTTA_FIELD2(FibonacciRetracementLevels, level382, high, low)
+        RTTA_FIELD2(FibonacciRetracementLevels, level500, high, low)
+        RTTA_FIELD2(FibonacciRetracementLevels, level618, high, low)
+        RTTA_FIELD2(FibonacciRetracementLevels, level100, high, low)
+        RTTA_REPLAY_OUTPUTS2(FibonacciRetracementLevels, high, low, batch_fibonacci_retracement_levels)
+        .def("batch", [](FibonacciRetracementLevels &self, const InputArray &high, const InputArray &low) {
+            return self.batch_array(high, low);
+        }, array_arg("high"), array_arg("low"))
+        .def("batch", [](FibonacciRetracementLevels &self, const FloatInputArray &high, const FloatInputArray &low) {
+            return self.batch_array(high, low);
+        }, array_arg("high"), array_arg("low"))
+        .def("batch", [](FibonacciRetracementLevels &self, nb::iterable records) {
+            if (table_has_column(records, "high")) {
+                return dispatch_table2(self, records, "high", "low", [](auto &indicator, const auto &high, const auto &low) {
+                    return indicator.batch_array(high, low);
+                });
+            }
+
+            std::vector<double> level0 = make_record_output(records);
+            std::vector<double> level236;
+            std::vector<double> level382;
+            std::vector<double> level500;
+            std::vector<double> level618;
+            std::vector<double> level100;
+            level236.reserve(level0.capacity());
+            level382.reserve(level0.capacity());
+            level500.reserve(level0.capacity());
+            level618.reserve(level0.capacity());
+            level100.reserve(level0.capacity());
+            for (nb::handle record : records) {
+                const FibonacciRetracementLevelsResult out = self.update(record_value(record, "high", 0), record_value(record, "low", 1));
+                level0.push_back(out.level0);
+                level236.push_back(out.level236);
+                level382.push_back(out.level382);
+                level500.push_back(out.level500);
+                level618.push_back(out.level618);
+                level100.push_back(out.level100);
+            }
+            return FibonacciRetracementLevelsBatchResult{
+                make_array(std::move(level0)),
+                make_array(std::move(level236)),
+                make_array(std::move(level382)),
+                make_array(std::move(level500)),
+                make_array(std::move(level618)),
+                make_array(std::move(level100)),
+            };
         }, nb::arg("records"));
 
     nb::class_<Ichimoku>(m, "Ichimoku")
