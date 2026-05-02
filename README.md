@@ -27,10 +27,13 @@ Development
 -----------
 
 This project is built as a C++23 nanobind extension with CMake through
-`scikit-build-core`. Poetry is used for dependency management.
+`scikit-build-core`. Poetry is used for dependency management. The Kalman
+indicators use `fast-kalman` directly through the `third_party/fast-kalman`
+submodule, so source checkouts should initialize submodules before building.
 
 ```bash
 poetry install --with build,dev --no-root
+git submodule update --init --recursive
 poetry run python -m pip install --no-build-isolation -e .
 poetry run pytest
 ```
@@ -67,6 +70,13 @@ So for example, the simple moving average works sort of like this:
 
 Indicator API conventions
 -------------------------
+
+Kalman indicators expose algorithm-specific tuning helpers. For example,
+`KalmanMovingAverage.tune(close)` estimates the price-filter noise and state
+variance parameters for that indicator and returns an immutable
+`KalmanMovingAverageTuning` object. Pass that object back to
+`KalmanMovingAverage(...)` to build an indicator with the recommended
+parameters for the data.
 
 New indicators should follow the same surface area as the existing C++
 nanobind indicators:

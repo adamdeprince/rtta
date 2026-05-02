@@ -17,6 +17,7 @@ authors = [
     { name = "Adam DePrince", email = "adam.deprince@gmail.com" },
 ]
 dependencies = [
+    "fast-kalman==0.2.2",
     "numpy>=2.0.2",
 ]
 classifiers = [
@@ -36,6 +37,12 @@ minimum-version = "0.12"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/rtta"]
 wheel.exclude = ["**/*.cpp"]
+sdist.include = [
+    "third_party/fast-kalman/CMakeLists.txt",
+    "third_party/fast-kalman/LICENSE",
+    "third_party/fast-kalman/include/**",
+    "third_party/fast-kalman/src/kalman.cpp",
+]
 sdist.exclude = [".codex"]
 
 [tool.scikit-build.cmake]
@@ -47,6 +54,7 @@ requires-poetry = ">=2.0"
 
 [tool.poetry.dependencies]
 python = ">=3.9.8,<4.0"
+fast-kalman = "0.2.2"
 
 [tool.poetry.group.build.dependencies]
 build = ">=1.2"

@@ -4,6 +4,11 @@
 
 - Renamed the Python distribution to `pyrtta` while preserving `rtta` as the
   import package name.
+- Added `fast-kalman` as a Python dependency and C++ submodule-backed include
+  dependency for Kalman filter indicators.
+- Added `KalmanMovingAverage`, a constant-velocity Kalman price filter with
+  update, advance, replay, batch, pandas-table batch, record-list batch, and
+  indicator-specific immutable tuning output.
 - Added `VariableIndexDynamicAverage`, implementing VIDYA with CMO-modulated
   EMA smoothing for update, advance, replay, array batch, record-list batch,
   pandas-table batch, benchmarks, and correctness tests.

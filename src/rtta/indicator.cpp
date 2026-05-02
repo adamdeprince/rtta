@@ -1,6 +1,8 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 
+#include <kalman/kalman.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -86,6 +88,15 @@ double record_value(nb::handle record, const char *field, std::size_t index) {
     PyErr_Clear();
 
     throw nb::type_error("record batch items must expose attributes, mapping keys, or sequence values");
+}
+
+double scalar_or_record_value(nb::handle record, const char *field, std::size_t index) {
+    const double scalar = PyFloat_AsDouble(record.ptr());
+    if (PyErr_Occurred() == nullptr) {
+        return scalar;
+    }
+    PyErr_Clear();
+    return record_value(record, field, index);
 }
 
 void require_same_size(std::size_t expected, std::size_t actual);
@@ -3126,6 +3137,275 @@ private:
     double previous_;
     double value_;
     bool first_;
+    bool fillna_;
+};
+
+struct KalmanMovingAverageTuning {
+    double initial_price;
+    double initial_velocity;
+    double dt;
+    double position_variance;
+    double velocity_variance;
+    double process_position_variance;
+    double process_velocity_variance;
+    double measurement_variance;
+};
+
+class KalmanMovingAverage {
+public:
+    KalmanMovingAverage(double initial_price = nan(),
+                        double initial_velocity = 0.0,
+                        double dt = 1.0,
+                        double position_variance = 1.0,
+                        double velocity_variance = 1.0,
+                        double process_position_variance = 1.0e-4,
+                        double process_velocity_variance = 1.0e-3,
+                        double measurement_variance = 0.25,
+                        bool fillna = true)
+        : initial_price_(initial_price),
+          initial_velocity_(initial_velocity),
+          dt_(dt > 0.0 ? dt : 1.0),
+          position_variance_(variance_floor(position_variance)),
+          velocity_variance_(variance_floor(velocity_variance)),
+          process_position_variance_(variance_floor(process_position_variance)),
+          process_velocity_variance_(variance_floor(process_velocity_variance)),
+          measurement_variance_(variance_floor(measurement_variance)),
+          initialized_(false),
+          count_(0),
+          last_(nan()),
+          fillna_(fillna) {}
+
+    KalmanMovingAverage(const KalmanMovingAverageTuning &tuning, bool fillna = true)
+        : KalmanMovingAverage(
+              tuning.initial_price,
+              tuning.initial_velocity,
+              tuning.dt,
+              tuning.position_variance,
+              tuning.velocity_variance,
+              tuning.process_position_variance,
+              tuning.process_velocity_variance,
+              tuning.measurement_variance,
+              fillna) {}
+
+    double update(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
+            if (!std::isfinite(initial_price_)) {
+                last_ = close;
+                ++count_;
+                return (!fillna_ && count_ < 2) ? nan() : last_;
+            }
+        }
+
+        (void) filter_.update(kalman::Vec<1>{close});
+        last_ = filter_.x[0];
+        ++count_;
+        return (!fillna_ && count_ < 2) ? nan() : last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+    template <typename Array>
+    static KalmanMovingAverageTuning tune_array(const Array &close, double dt = 1.0, double min_variance = 1.0e-12) {
+        const std::size_t size = close.shape(0);
+        const auto *values = close.data();
+        std::vector<double> prices;
+        prices.reserve(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            const double value = static_cast<double>(values[i]);
+            if (std::isfinite(value)) {
+                prices.push_back(value);
+            }
+        }
+        return tune_vector(prices, dt, min_variance);
+    }
+
+    static KalmanMovingAverageTuning tune_records(nb::iterable records, double dt = 1.0, double min_variance = 1.0e-12) {
+        std::vector<double> prices = make_record_output(records);
+        for (nb::handle record : records) {
+            const double value = scalar_or_record_value(record, "close", 0);
+            if (std::isfinite(value)) {
+                prices.push_back(value);
+            }
+        }
+        return tune_vector(prices, dt, min_variance);
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        if (!std::isfinite(value) || value < minimum) {
+            return minimum;
+        }
+        return value;
+    }
+
+    static double median(std::vector<double> values) {
+        if (values.empty()) {
+            return 0.0;
+        }
+        std::sort(values.begin(), values.end());
+        const std::size_t middle = values.size() / 2;
+        if ((values.size() % 2) != 0) {
+            return values[middle];
+        }
+        return 0.5 * (values[middle - 1] + values[middle]);
+    }
+
+    static double sample_variance(const std::vector<double> &values) {
+        if (values.size() < 2) {
+            return 0.0;
+        }
+        double sum = 0.0;
+        for (double value : values) {
+            sum += value;
+        }
+        const double mean = sum / static_cast<double>(values.size());
+        double squared = 0.0;
+        for (double value : values) {
+            const double diff = value - mean;
+            squared += diff * diff;
+        }
+        return squared / static_cast<double>(values.size() - 1);
+    }
+
+    static double robust_variance(const std::vector<double> &values) {
+        if (values.size() < 2) {
+            return 0.0;
+        }
+        const double center = median(values);
+        std::vector<double> deviations;
+        deviations.reserve(values.size());
+        for (double value : values) {
+            deviations.push_back(std::abs(value - center));
+        }
+        const double mad = median(std::move(deviations));
+        const double sigma = 1.4826 * mad;
+        if (sigma > 0.0 && std::isfinite(sigma)) {
+            return sigma * sigma;
+        }
+        return sample_variance(values);
+    }
+
+    static std::vector<double> difference(const std::vector<double> &values, int order = 1) {
+        std::vector<double> out(values);
+        for (int level = 0; level < order; ++level) {
+            if (out.size() < 2) {
+                out.clear();
+                return out;
+            }
+            std::vector<double> next;
+            next.reserve(out.size() - 1);
+            for (std::size_t i = 1; i < out.size(); ++i) {
+                next.push_back(out[i] - out[i - 1]);
+            }
+            out = std::move(next);
+        }
+        return out;
+    }
+
+    static KalmanMovingAverageTuning tune_vector(const std::vector<double> &prices, double dt, double min_variance) {
+        if (prices.empty()) {
+            throw nb::value_error("close must contain at least one finite value");
+        }
+        const double safe_dt = dt > 0.0 ? dt : 1.0;
+        const double floor = min_variance > 0.0 ? min_variance : 1.0e-12;
+        const std::vector<double> first_diff = difference(prices, 1);
+        const std::vector<double> second_diff = difference(prices, 2);
+
+        double measurement_variance = 0.0;
+        if (second_diff.size() >= 2) {
+            measurement_variance = robust_variance(second_diff) / 6.0;
+        } else if (!first_diff.empty()) {
+            measurement_variance = robust_variance(first_diff) / 2.0;
+        }
+        const double signal_variance = variance_floor(robust_variance(prices), floor);
+        const double upper_measurement = std::max(signal_variance * 0.5, floor);
+        measurement_variance = variance_floor(std::min(measurement_variance, upper_measurement), floor);
+
+        std::vector<double> velocity;
+        velocity.reserve(first_diff.size());
+        for (double value : first_diff) {
+            velocity.push_back(value / safe_dt);
+        }
+
+        const std::size_t velocity_seed_size = std::min<std::size_t>(8, velocity.size());
+        const std::vector<double> velocity_seed(velocity.begin(), velocity.begin() + static_cast<std::ptrdiff_t>(velocity_seed_size));
+        const double initial_velocity = velocity_seed.empty() ? 0.0 : median(velocity_seed);
+        const double velocity_variance = variance_floor(
+            robust_variance(velocity),
+            std::max(measurement_variance / (safe_dt * safe_dt), floor));
+
+        std::vector<double> acceleration;
+        acceleration.reserve(second_diff.size());
+        for (double value : second_diff) {
+            acceleration.push_back(value / (safe_dt * safe_dt));
+        }
+
+        const double drive_variance = variance_floor(
+            robust_variance(acceleration) - 6.0 * measurement_variance / (safe_dt * safe_dt * safe_dt * safe_dt),
+            floor);
+        const double process_position_variance = variance_floor(
+            0.25 * drive_variance * safe_dt * safe_dt * safe_dt * safe_dt,
+            std::max(measurement_variance * 0.01, floor));
+        const double process_velocity_variance = variance_floor(
+            drive_variance * safe_dt * safe_dt,
+            std::max(velocity_variance * 0.001, floor));
+
+        return KalmanMovingAverageTuning{
+            prices.front(),
+            initial_velocity,
+            safe_dt,
+            std::max(signal_variance, std::max(measurement_variance * 10.0, floor)),
+            velocity_variance,
+            process_position_variance,
+            process_velocity_variance,
+            measurement_variance,
+        };
+    }
+
+    void initialize(double price) {
+        filter_ = kalman::make_constant_velocity_1d(
+            price,
+            initial_velocity_,
+            dt_,
+            position_variance_,
+            velocity_variance_,
+            process_position_variance_,
+            process_velocity_variance_,
+            measurement_variance_);
+        initialized_ = true;
+        last_ = price;
+    }
+
+    double initial_price_;
+    double initial_velocity_;
+    double dt_;
+    double position_variance_;
+    double velocity_variance_;
+    double process_position_variance_;
+    double process_velocity_variance_;
+    double measurement_variance_;
+    kalman::LocalLinearTrendFilter filter_;
+    bool initialized_;
+    std::size_t count_;
+    double last_;
     bool fillna_;
 };
 
@@ -9043,6 +9323,72 @@ NB_MODULE(indicator, m) {
         }, array_arg("input"))
         .def("batch", [](Kama &self, nb::iterable records) {
             return batch_records_one(self, records, "input");
+        }, nb::arg("records"));
+
+    nb::class_<KalmanMovingAverageTuning>(m, "KalmanMovingAverageTuning")
+        .def_ro("initial_price", &KalmanMovingAverageTuning::initial_price)
+        .def_ro("initial_velocity", &KalmanMovingAverageTuning::initial_velocity)
+        .def_ro("dt", &KalmanMovingAverageTuning::dt)
+        .def_ro("position_variance", &KalmanMovingAverageTuning::position_variance)
+        .def_ro("velocity_variance", &KalmanMovingAverageTuning::velocity_variance)
+        .def_ro("process_position_variance", &KalmanMovingAverageTuning::process_position_variance)
+        .def_ro("process_velocity_variance", &KalmanMovingAverageTuning::process_velocity_variance)
+        .def_ro("measurement_variance", &KalmanMovingAverageTuning::measurement_variance);
+
+    nb::class_<KalmanMovingAverage>(m, "KalmanMovingAverage")
+        .def(nb::init<double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("position_variance") = 1.0,
+             nb::arg("velocity_variance") = 1.0,
+             nb::arg("process_position_variance") = 1.0e-4,
+             nb::arg("process_velocity_variance") = 1.0e-3,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def(nb::init<const KalmanMovingAverageTuning &, bool>(),
+             nb::arg("tuning"),
+             nb::arg("fillna") = true)
+        .def_static("tune", [](const InputArray &close, double dt, double min_variance) {
+            return KalmanMovingAverage::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](const FloatInputArray &close, double dt, double min_variance) {
+            return KalmanMovingAverage::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](nb::iterable records, double dt, double min_variance) {
+            if (table_has_column(records, "close")) {
+                nb::object close = table_column_array(records, "close");
+                switch (array_dtype(close)) {
+                    case InputDType::Float32:
+                        return KalmanMovingAverage::tune_array(nb::cast<FloatInputArray>(close), dt, min_variance);
+                    case InputDType::Float64:
+                        return KalmanMovingAverage::tune_array(nb::cast<InputArray>(close), dt, min_variance);
+                }
+                throw nb::type_error("unsupported pandas table column dtype");
+            }
+            return KalmanMovingAverage::tune_records(records, dt, min_variance);
+        }, nb::arg("records"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def("update", &KalmanMovingAverage::update, nb::arg("close"))
+        .def("last", &KalmanMovingAverage::last)
+        RTTA_ADVANCE1(KalmanMovingAverage, close)
+        RTTA_REPLAY1(KalmanMovingAverage, close)
+        .def("batch", [](KalmanMovingAverage &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanMovingAverage &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanMovingAverage &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> output = make_record_output(records);
+            for (nb::handle record : records) {
+                output.push_back(self.update(scalar_or_record_value(record, "close", 0)));
+            }
+            return make_array(std::move(output));
         }, nb::arg("records"));
 
     nb::class_<VariableIndexDynamicAverage>(m, "VariableIndexDynamicAverage")
