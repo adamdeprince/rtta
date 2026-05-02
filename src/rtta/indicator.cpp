@@ -3060,6 +3060,75 @@ private:
     double previous_kama_;
 };
 
+class VariableIndexDynamicAverage {
+public:
+    VariableIndexDynamicAverage(int cmo_window = 9, int ema_window = 12, bool fillna = true)
+        : gains_(cmo_window),
+          losses_(cmo_window),
+          smoothing_factor_(2.0 / (static_cast<double>(std::max(ema_window, 1)) + 1.0)),
+          gain_sum_(0.0),
+          loss_sum_(0.0),
+          previous_(0.0),
+          value_(0.0),
+          first_(true),
+          fillna_(fillna) {}
+
+    double update(double close) {
+        double gain = 0.0;
+        double loss = 0.0;
+        if (!first_) {
+            const double change = close - previous_;
+            if (change > 0.0) {
+                gain = change;
+            } else {
+                loss = -change;
+            }
+        }
+
+        rolling_sum_push(gains_, gain_sum_, gain);
+        rolling_sum_push(losses_, loss_sum_, loss);
+
+        if (first_) {
+            value_ = close;
+            previous_ = close;
+            first_ = false;
+            return (!fillna_ && !gains_.full()) ? nan() : value_;
+        }
+
+        const double cmo = std::abs(safe_divide(gain_sum_ - loss_sum_, gain_sum_ + loss_sum_));
+        const double alpha = smoothing_factor_ * cmo;
+        value_ = close * alpha + value_ * (1.0 - alpha);
+        previous_ = close;
+
+        if (!fillna_ && !gains_.full()) {
+            return nan();
+        }
+        return value_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingBuffer gains_;
+    RollingBuffer losses_;
+    double smoothing_factor_;
+    double gain_sum_;
+    double loss_sum_;
+    double previous_;
+    double value_;
+    bool first_;
+    bool fillna_;
+};
+
 class KeltnerChannel {
 public:
     KeltnerChannel(double span = 20.0, double window_atr = 20.0, bool fillna = false, double multiplier = 2.0)
@@ -8974,6 +9043,29 @@ NB_MODULE(indicator, m) {
         }, array_arg("input"))
         .def("batch", [](Kama &self, nb::iterable records) {
             return batch_records_one(self, records, "input");
+        }, nb::arg("records"));
+
+    nb::class_<VariableIndexDynamicAverage>(m, "VariableIndexDynamicAverage")
+        .def(nb::init<int, int, bool>(),
+             nb::arg("cmo_window") = 9,
+             nb::arg("ema_window") = 12,
+             nb::arg("fillna") = true)
+        .def("update", &VariableIndexDynamicAverage::update, nb::arg("close"))
+        RTTA_ADVANCE1(VariableIndexDynamicAverage, close)
+        RTTA_REPLAY1(VariableIndexDynamicAverage, close)
+        .def("batch", [](VariableIndexDynamicAverage &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](VariableIndexDynamicAverage &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](VariableIndexDynamicAverage &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            return batch_records_one(self, records, "close");
         }, nb::arg("records"));
 
     nb::class_<KeltnerChannel>(m, "KeltnerChannel")

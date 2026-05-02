@@ -6,7 +6,7 @@ requires = [
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "rtta"
+name = "pyrtta"
 version = "0.2.0"
 description = "Low latency incremental technical analysis"
 readme = "README.md"

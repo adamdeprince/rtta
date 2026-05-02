@@ -2,6 +2,11 @@
 
 ## 0.2.0
 
+- Renamed the Python distribution to `pyrtta` while preserving `rtta` as the
+  import package name.
+- Added `VariableIndexDynamicAverage`, implementing VIDYA with CMO-modulated
+  EMA smoothing for update, advance, replay, array batch, record-list batch,
+  pandas-table batch, benchmarks, and correctness tests.
 - Added a standalone benchmark utility at `benchmarks/benchmark_indicators.py`.
   It reports nanoseconds per sample with batch-vs-batch comparisons separated
   from RTTA `update()` latency.

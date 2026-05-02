@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21...4.0)
 
 if (NOT DEFINED SKBUILD_PROJECT_NAME)
-  set(SKBUILD_PROJECT_NAME rtta)
+  set(SKBUILD_PROJECT_NAME pyrtta)
 endif()
 
 if (NOT DEFINED SKBUILD_PROJECT_VERSION)

@@ -20,7 +20,7 @@ Installation
 ------------
 
 ```bash
-pip install rtta
+pip install pyrtta
 ```
 
 Development
