@@ -81,6 +81,9 @@
 - Added `HullMovingAverage`, implementing HMA as
   `WMA(2*WMA(n/2) - WMA(n), sqrt(n))` with incremental `update()`/`advance()`
   and array/table/record batch support.
+- Added `VolumeWeightedMovingAverage`, implementing VWMA as rolling
+  `sum(close * volume) / sum(volume)` with incremental `update()`/`advance()`
+  and array/table/record batch support.
 - Corrected ATR/ATRP/NormalizedATR to use incremental Wilder smoothing that
   matches TA-Lib after warmup.
 - Updated affected tests for the typed result API.

@@ -180,6 +180,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("Variance", ("value",)),
     IndicatorSpec("VolumePriceTrend", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("VolumeWeightedAveragePrice", ("close", "high", "low", "volume"), batch_inputs=("close", "high", "low", "volume")),
+    IndicatorSpec("VolumeWeightedMovingAverage", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("Vortex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
     IndicatorSpec("WeightedClosePrice", ("close", "high", "low")),
     IndicatorSpec("WeightedMovingAverage", ("value",)),

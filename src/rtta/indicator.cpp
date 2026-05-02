@@ -3641,6 +3641,44 @@ private:
     bool fillna_;
 };
 
+class VolumeWeightedMovingAverage {
+public:
+    VolumeWeightedMovingAverage(int window = 20, bool fillna = true)
+        : price_volume_(window),
+          volume_(window),
+          fillna_(fillna) {}
+
+    double update(double close, double volume) {
+        price_volume_.push(close * volume);
+        volume_.push(volume);
+
+        if (!fillna_ && !price_volume_.full()) {
+            return nan();
+        }
+        return safe_divide(price_volume_.sum(), volume_.sum());
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &close, const Array1 &volume) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
+        std::vector<double> output(size);
+        const auto *close_values = close.data();
+        const auto *volume_values = volume.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(close_values[i]), static_cast<double>(volume_values[i]));
+        }
+
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingSumWindow price_volume_;
+    RollingSumWindow volume_;
+    bool fillna_;
+};
+
 class Momentum {
 public:
     Momentum(int window = 10, bool fillna = true)
@@ -9600,6 +9638,26 @@ NB_MODULE(indicator, m) {
         }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
         .def("batch", [](VolumeWeightedAveragePrice &self, nb::iterable records) {
             return batch_records_four(self, records, "close", "high", "low", "volume");
+        }, nb::arg("records"));
+
+    nb::class_<VolumeWeightedMovingAverage>(m, "VolumeWeightedMovingAverage")
+        .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
+        .def("update", &VolumeWeightedMovingAverage::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(VolumeWeightedMovingAverage, close, volume)
+        RTTA_REPLAY2(VolumeWeightedMovingAverage, close, volume)
+        .def("batch", [](VolumeWeightedMovingAverage &self, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("batch", [](VolumeWeightedMovingAverage &self, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("batch", [](VolumeWeightedMovingAverage &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table2(self, records, "close", "volume", [](auto &indicator, const auto &close, const auto &volume) {
+                    return indicator.batch_array(close, volume);
+                });
+            }
+            return batch_records_two(self, records, "close", "volume");
         }, nb::arg("records"));
 
     nb::class_<Vortex>(m, "Vortex")
