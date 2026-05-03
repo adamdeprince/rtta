@@ -16,6 +16,7 @@ from benchmarks.benchmark_indicators import (
 
 
 RESULT_FIELDS = (
+    "acceleration",
     "angle",
     "base",
     "bear_power",
@@ -51,8 +52,10 @@ RESULT_FIELDS = (
     "oscillator",
     "percent",
     "positive",
+    "price",
     "ppo",
     "pvo",
+    "residual",
     "rvi",
     "signal",
     "slope",
@@ -68,6 +71,7 @@ RESULT_FIELDS = (
     "up",
     "upper",
     "value",
+    "velocity",
     "width",
 )
 

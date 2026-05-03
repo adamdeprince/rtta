@@ -15,6 +15,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `TSI` | True Strength Index double-smoothed momentum oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/true-strength-index |
 | `AbsolutePriceOscillator` | Difference between fast and slow moving averages in price units. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/macd-moving-average-convergence-divergence-oscillator |
 | `AccumulationDistribution` | Volume-price accumulation/distribution line. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/accumulation-distribution-line |
+| `AlphaBetaGammaTrackingFilter` | Steady-state Kalman-like price, velocity, and acceleration tracker. | https://kalmanfilter.net/alphabeta.html |
 | `Aroon` | Aroon Up/Down trend age indicators based on recent highs and lows. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/aroon |
 | `AroonOscillator` | Difference between Aroon Up and Aroon Down. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/aroon-oscillator |
 | `AverageDirectionalMovementIndex` | ADX trend-strength indicator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/average-directional-index-adx |

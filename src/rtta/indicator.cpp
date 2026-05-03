@@ -907,6 +907,20 @@ struct KalmanExtremumTrendBatchResult {
     nb::object signal;
 };
 
+struct AlphaBetaGammaTrackingFilterResult {
+    double price;
+    double velocity;
+    double acceleration;
+    double residual;
+};
+
+struct AlphaBetaGammaTrackingFilterBatchResult {
+    nb::object price;
+    nb::object velocity;
+    nb::object acceleration;
+    nb::object residual;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1039,6 +1053,10 @@ inline double result_checksum(const TwoFactorKalmanTrendFilterResult &value) {
 
 inline double result_checksum(const KalmanExtremumTrendResult &value) {
     return value.trend + value.oscillator + value.signal;
+}
+
+inline double result_checksum(const AlphaBetaGammaTrackingFilterResult &value) {
+    return value.price + value.velocity + value.acceleration + value.residual;
 }
 
 class RollingExtremeQueue {
@@ -9141,6 +9159,114 @@ private:
     KalmanExtremumTrendResult last_;
 };
 
+class AlphaBetaGammaTrackingFilter {
+public:
+    AlphaBetaGammaTrackingFilter(double alpha = 0.65,
+                                 double beta = 0.25,
+                                 double gamma = 0.05,
+                                 double dt = 1.0,
+                                 double initial_price = nan(),
+                                 double initial_velocity = 0.0,
+                                 double initial_acceleration = 0.0,
+                                 bool fillna = true)
+        : alpha_(clamp_gain(alpha)),
+          beta_(clamp_gain(beta)),
+          gamma_(clamp_gain(gamma)),
+          dt_(dt > 0.0 ? dt : 1.0),
+          initial_price_(initial_price),
+          price_(0.0),
+          velocity_(std::isfinite(initial_velocity) ? initial_velocity : 0.0),
+          acceleration_(std::isfinite(initial_acceleration) ? initial_acceleration : 0.0),
+          initialized_(false),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    AlphaBetaGammaTrackingFilterResult update(double close) {
+        if (!initialized_) {
+            initialized_ = true;
+            if (!std::isfinite(initial_price_)) {
+                price_ = close;
+                last_ = AlphaBetaGammaTrackingFilterResult{price_, velocity_, acceleration_, 0.0};
+                ++count_;
+                return output_for_warmup();
+            }
+            price_ = initial_price_;
+        }
+
+        const double predicted_price = price_ + velocity_ * dt_ + 0.5 * acceleration_ * dt_ * dt_;
+        const double predicted_velocity = velocity_ + acceleration_ * dt_;
+        const double predicted_acceleration = acceleration_;
+        const double residual = close - predicted_price;
+
+        price_ = predicted_price + alpha_ * residual;
+        velocity_ = predicted_velocity + beta_ * residual / dt_;
+        acceleration_ = predicted_acceleration + 2.0 * gamma_ * residual / (dt_ * dt_);
+        last_ = AlphaBetaGammaTrackingFilterResult{price_, velocity_, acceleration_, residual};
+        ++count_;
+        return output_for_warmup();
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const AlphaBetaGammaTrackingFilterResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    AlphaBetaGammaTrackingFilterBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> price(size);
+        std::vector<double> velocity(size);
+        std::vector<double> acceleration(size);
+        std::vector<double> residual(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const AlphaBetaGammaTrackingFilterResult out = update(static_cast<double>(values[i]));
+            price[i] = out.price;
+            velocity[i] = out.velocity;
+            acceleration[i] = out.acceleration;
+            residual[i] = out.residual;
+        }
+        return {
+            make_array(std::move(price)),
+            make_array(std::move(velocity)),
+            make_array(std::move(acceleration)),
+            make_array(std::move(residual)),
+        };
+    }
+
+private:
+    static double clamp_gain(double value) {
+        if (!std::isfinite(value)) {
+            return 0.0;
+        }
+        return std::clamp(value, 0.0, 1.0);
+    }
+
+    AlphaBetaGammaTrackingFilterResult output_for_warmup() const {
+        if (!fillna_ && count_ < 2) {
+            return AlphaBetaGammaTrackingFilterResult{nan(), nan(), nan(), nan()};
+        }
+        return last_;
+    }
+
+    double alpha_;
+    double beta_;
+    double gamma_;
+    double dt_;
+    double initial_price_;
+    double price_;
+    double velocity_;
+    double acceleration_;
+    bool initialized_;
+    std::size_t count_;
+    bool fillna_;
+    AlphaBetaGammaTrackingFilterResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -10914,6 +11040,18 @@ NB_MODULE(indicator, m) {
         .def_ro("oscillator", &KalmanExtremumTrendBatchResult::oscillator)
         .def_ro("signal", &KalmanExtremumTrendBatchResult::signal);
 
+    nb::class_<AlphaBetaGammaTrackingFilterResult>(m, "AlphaBetaGammaTrackingFilterResult")
+        .def_ro("price", &AlphaBetaGammaTrackingFilterResult::price)
+        .def_ro("velocity", &AlphaBetaGammaTrackingFilterResult::velocity)
+        .def_ro("acceleration", &AlphaBetaGammaTrackingFilterResult::acceleration)
+        .def_ro("residual", &AlphaBetaGammaTrackingFilterResult::residual);
+
+    nb::class_<AlphaBetaGammaTrackingFilterBatchResult>(m, "AlphaBetaGammaTrackingFilterBatchResult")
+        .def_ro("price", &AlphaBetaGammaTrackingFilterBatchResult::price)
+        .def_ro("velocity", &AlphaBetaGammaTrackingFilterBatchResult::velocity)
+        .def_ro("acceleration", &AlphaBetaGammaTrackingFilterBatchResult::acceleration)
+        .def_ro("residual", &AlphaBetaGammaTrackingFilterBatchResult::residual);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -12437,6 +12575,64 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(trend)),
                 make_array(std::move(oscillator)),
                 make_array(std::move(signal)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<AlphaBetaGammaTrackingFilter>(m, "AlphaBetaGammaTrackingFilter")
+        .def(nb::init<double, double, double, double, double, double, double, bool>(),
+             nb::arg("alpha") = 0.65,
+             nb::arg("beta") = 0.25,
+             nb::arg("gamma") = 0.05,
+             nb::arg("dt") = 1.0,
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("initial_acceleration") = 0.0,
+             nb::arg("fillna") = true)
+        .def("update", &AlphaBetaGammaTrackingFilter::update, nb::arg("close"))
+        .def("last", &AlphaBetaGammaTrackingFilter::last)
+        RTTA_ADVANCE1(AlphaBetaGammaTrackingFilter, close)
+        RTTA_REPLAY1(AlphaBetaGammaTrackingFilter, close)
+        RTTA_FIELD1(AlphaBetaGammaTrackingFilter, price, close)
+        RTTA_FIELD1(AlphaBetaGammaTrackingFilter, velocity, close)
+        RTTA_FIELD1(AlphaBetaGammaTrackingFilter, acceleration, close)
+        RTTA_FIELD1(AlphaBetaGammaTrackingFilter, residual, close)
+        .def("replay_update_outputs", [](AlphaBetaGammaTrackingFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](AlphaBetaGammaTrackingFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](AlphaBetaGammaTrackingFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](AlphaBetaGammaTrackingFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](AlphaBetaGammaTrackingFilter &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> price = make_record_output(records);
+            std::vector<double> velocity;
+            std::vector<double> acceleration;
+            std::vector<double> residual;
+            velocity.reserve(price.capacity());
+            acceleration.reserve(price.capacity());
+            residual.reserve(price.capacity());
+            for (nb::handle record : records) {
+                const AlphaBetaGammaTrackingFilterResult out = self.update(scalar_or_record_value(record, "close", 0));
+                price.push_back(out.price);
+                velocity.push_back(out.velocity);
+                acceleration.push_back(out.acceleration);
+                residual.push_back(out.residual);
+            }
+            return AlphaBetaGammaTrackingFilterBatchResult{
+                make_array(std::move(price)),
+                make_array(std::move(velocity)),
+                make_array(std::move(acceleration)),
+                make_array(std::move(residual)),
             };
         }, nb::arg("records"));
 

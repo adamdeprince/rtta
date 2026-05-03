@@ -13,6 +13,7 @@ from benchmarks.benchmark_indicators import INDICATORS, generate_market_data
 
 MULTI_OUTPUTS = {
     "Aroon": ("down", "up"),
+    "AlphaBetaGammaTrackingFilter": ("price", "velocity", "acceleration", "residual"),
     "BollingerBands": ("middle", "upper", "lower"),
     "DonchianChannel": ("upper", "lower", "middle", "width", "percent"),
     "EaseOfMovement": ("ease_of_movement", "sma"),

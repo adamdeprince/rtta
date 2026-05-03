@@ -30,6 +30,10 @@
 - Added `OrderFlowImbalance`, a quote-level best bid/ask price and size
   pressure measure with incremental update/advance, replay, array batch,
   record-list batch, pandas-table batch, benchmark, and correctness coverage.
+- Added `AlphaBetaGammaTrackingFilter`, a steady-state Kalman-like
+  price/velocity/acceleration tracker with immutable multi-output results,
+  scalar field accessors, replay-output batches, and array/table/record batch
+  support.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

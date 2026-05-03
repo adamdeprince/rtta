@@ -104,6 +104,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("TSI", ("x",)),
     IndicatorSpec("AbsolutePriceOscillator", ("close",)),
     IndicatorSpec("AccumulationDistribution", ("close", "high", "low", "volume")),
+    IndicatorSpec("AlphaBetaGammaTrackingFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("Aroon", ("high", "low")),
     IndicatorSpec("AroonOscillator", ("high", "low")),
     IndicatorSpec("AverageDirectionalMovementIndex", ("close", "high", "low")),
