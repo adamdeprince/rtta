@@ -27,6 +27,9 @@
   `ElderRayIndex`, `CoppockCurve`, `FisherTransform`,
   `FractalAdaptiveMovingAverage`, `MesaAdaptiveMovingAverage`, and
   `EhlersOptimalTrackingFilter`.
+- Added `OrderFlowImbalance`, a quote-level best bid/ask price and size
+  pressure measure with incremental update/advance, replay, array batch,
+  record-list batch, pandas-table batch, benchmark, and correctness coverage.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

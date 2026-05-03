@@ -61,6 +61,10 @@ class MarketRecord:
     x: float
     real0: float
     real1: float
+    bid_price: float
+    bid_size: float
+    ask_price: float
+    ask_size: float
 
     def __getitem__(self, key: str) -> float:
         return getattr(self, key)
@@ -172,6 +176,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("NegativeVolumeIndex", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("NormalizedATR", ("close", "high", "low")),
     IndicatorSpec("OnBalanceVolume", ("close", "volume")),
+    IndicatorSpec("OrderFlowImbalance", ("bid_price", "bid_size", "ask_price", "ask_size"), batch_inputs=("bid_price", "bid_size", "ask_price", "ask_size")),
     IndicatorSpec("ParabolicSAR", ("high", "low")),
     IndicatorSpec("PercentagePrice", ("close",), batch_inputs=("close",), batch_method="batch_ppo"),
     IndicatorSpec("PercentageVolume", ("volume",), batch_inputs=("volume",)),
@@ -219,6 +224,11 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
     volume = rng.integers(1_000, 100_000, samples).astype(np.float64)
     real0 = close
     real1 = close * 0.73 + rng.normal(0.0, 0.25, samples)
+    quote_spread = rng.uniform(0.01, 0.05, samples)
+    bid_price = close - 0.5 * quote_spread
+    ask_price = close + 0.5 * quote_spread
+    bid_size = rng.integers(100, 10_000, samples).astype(np.float64)
+    ask_size = rng.integers(100, 10_000, samples).astype(np.float64)
 
     arrays = {
         "open": open_.astype(np.float64),
@@ -231,6 +241,10 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
         "x": close.astype(np.float64),
         "real0": real0.astype(np.float64),
         "real1": real1.astype(np.float64),
+        "bid_price": bid_price.astype(np.float64),
+        "bid_size": bid_size,
+        "ask_price": ask_price.astype(np.float64),
+        "ask_size": ask_size,
     }
 
     lists = {name: values.tolist() for name, values in arrays.items()}
@@ -257,6 +271,10 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             x=float(arrays["x"][i]),
             real0=float(arrays["real0"][i]),
             real1=float(arrays["real1"][i]),
+            bid_price=float(arrays["bid_price"][i]),
+            bid_size=float(arrays["bid_size"][i]),
+            ask_price=float(arrays["ask_price"][i]),
+            ask_size=float(arrays["ask_size"][i]),
         )
         for i in range(samples)
     ]
@@ -273,6 +291,10 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             "x": record.x,
             "real0": record.real0,
             "real1": record.real1,
+            "bid_price": record.bid_price,
+            "bid_size": record.bid_size,
+            "ask_price": record.ask_price,
+            "ask_size": record.ask_size,
         }
         for record in records
     ]

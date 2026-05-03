@@ -4727,6 +4727,69 @@ private:
     bool first_;
 };
 
+class OrderFlowImbalance {
+public:
+    OrderFlowImbalance(int window = 1, bool fillna = true)
+        : events_(window),
+          has_previous_(false),
+          previous_bid_price_(0.0),
+          previous_bid_size_(0.0),
+          previous_ask_price_(0.0),
+          previous_ask_size_(0.0),
+          fillna_(fillna),
+          last_(fillna ? 0.0 : nan()) {}
+
+    inline double update(double bid_price, double bid_size, double ask_price, double ask_size) {
+        double event = 0.0;
+        if (has_previous_) {
+            if (bid_price >= previous_bid_price_) {
+                event += bid_size;
+            }
+            if (bid_price <= previous_bid_price_) {
+                event -= previous_bid_size_;
+            }
+            if (ask_price <= previous_ask_price_) {
+                event -= ask_size;
+            }
+            if (ask_price >= previous_ask_price_) {
+                event += previous_ask_size_;
+            }
+        }
+
+        events_.push(event);
+        previous_bid_price_ = bid_price;
+        previous_bid_size_ = bid_size;
+        previous_ask_price_ = ask_price;
+        previous_ask_size_ = ask_size;
+        has_previous_ = true;
+        last_ = (!fillna_ && !events_.full()) ? nan() : events_.sum();
+        return last_;
+    }
+
+    inline void advance(double bid_price, double bid_size, double ask_price, double ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    nb::object batch_array(const Array0 &bid_price, const Array1 &bid_size, const Array2 &ask_price, const Array3 &ask_size) {
+        return batch_update4(*this, bid_price, bid_size, ask_price, ask_size);
+    }
+
+private:
+    RollingSumWindow events_;
+    bool has_previous_;
+    double previous_bid_price_;
+    double previous_bid_size_;
+    double previous_ask_price_;
+    double previous_ask_size_;
+    bool fillna_;
+    double last_;
+};
+
 class ChaikinMoneyFlow {
 public:
     ChaikinMoneyFlow(int window = 20, bool fillna = true)
@@ -12818,6 +12881,27 @@ NB_MODULE(indicator, m) {
         RTTA_ADVANCE2(OnBalanceVolume, close, volume)
         RTTA_REPLAY2(OnBalanceVolume, close, volume)
         RTTA_BATCH2(OnBalanceVolume, close, volume, "close", "volume");
+
+    nb::class_<OrderFlowImbalance>(m, "OrderFlowImbalance")
+        .def(nb::init<int, bool>(), nb::arg("window") = 1, nb::arg("fillna") = true)
+        .def("update", &OrderFlowImbalance::update, nb::arg("bid_price"), nb::arg("bid_size"), nb::arg("ask_price"), nb::arg("ask_size"))
+        .def("last", &OrderFlowImbalance::last)
+        RTTA_ADVANCE4(OrderFlowImbalance, bid_price, bid_size, ask_price, ask_size)
+        RTTA_REPLAY4(OrderFlowImbalance, bid_price, bid_size, ask_price, ask_size)
+        .def("batch", [](OrderFlowImbalance &self, const InputArray &bid_price, const InputArray &bid_size, const InputArray &ask_price, const InputArray &ask_size) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch", [](OrderFlowImbalance &self, const FloatInputArray &bid_price, const FloatInputArray &bid_size, const FloatInputArray &ask_price, const FloatInputArray &ask_size) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch", [](OrderFlowImbalance &self, nb::iterable records) {
+            if (table_has_column(records, "bid_price")) {
+                return dispatch_table4(self, records, "bid_price", "bid_size", "ask_price", "ask_size", [](auto &indicator, const auto &bid_price, const auto &bid_size, const auto &ask_price, const auto &ask_size) {
+                    return indicator.batch_array(bid_price, bid_size, ask_price, ask_size);
+                });
+            }
+            return batch_records_four(self, records, "bid_price", "bid_size", "ask_price", "ask_size");
+        }, nb::arg("records"));
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
