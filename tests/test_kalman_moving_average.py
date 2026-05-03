@@ -8,6 +8,7 @@ from rtta.indicator import (
     KalmanLocalLinearTrend,
     KalmanMovingAverage,
     KalmanPredictionBands,
+    KalmanTrendSignal,
     KalmanVelocityOscillator,
 )
 
@@ -112,6 +113,27 @@ def _fast_kalman_prediction_bands(close, tuning, multiplier=2.0):
         upper.append(center + band)
         lower.append(center - band)
     return np.asarray(middle), np.asarray(upper), np.asarray(lower)
+
+
+def _fast_kalman_trend_signal(close, tuning):
+    kf = kalman.make_constant_velocity_1d(
+        tuning.initial_price,
+        tuning.initial_velocity,
+        tuning.dt,
+        tuning.position_variance,
+        tuning.velocity_variance,
+        tuning.process_position_variance,
+        tuning.process_velocity_variance,
+        tuning.measurement_variance,
+    )
+    trend = []
+    signal = []
+    for value in close:
+        kf.update([float(value)])
+        filtered = float(kf.x[0])
+        trend.append(filtered)
+        signal.append(1.0 if value > filtered else -1.0 if value < filtered else 0.0)
+    return np.asarray(trend), np.asarray(signal)
 
 
 def _default_seed_outputs(close):
@@ -374,6 +396,89 @@ def test_prediction_bands_advance_replay_and_last_follow_update_state():
     assert actual.lower == pytest.approx(expected.lower)
     assert isinstance(KalmanPredictionBands().replay_update(close), float)
     assert isinstance(KalmanPredictionBands().replay_advance(close), float)
+
+
+def test_trend_signal_update_matches_fast_kalman_trend_rule():
+    close = np.asarray([100.0, 100.4, 101.2, 101.0, 102.5, 103.0], dtype=np.float64)
+    tuning = KalmanTrendSignal.tune(close)
+    indicator = KalmanTrendSignal(tuning)
+
+    actual = [indicator.update(value) for value in close]
+    expected_trend, expected_signal = _fast_kalman_trend_signal(close, tuning)
+    np.testing.assert_allclose([item.trend for item in actual], expected_trend, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose([item.signal for item in actual], expected_signal, rtol=1e-12, atol=1e-12)
+
+
+def test_trend_signal_batch_replay_scalar_and_splat_paths():
+    rng = np.random.default_rng(86420)
+    close = 90.0 + np.cumsum(rng.normal(0.03, 0.75, 512))
+    tuning = KalmanTrendSignal.tune(close)
+
+    batch = KalmanTrendSignal(tuning).batch(close)
+    replay = KalmanTrendSignal(tuning).replay_update_outputs(close)
+    expected_trend, expected_signal = _fast_kalman_trend_signal(close, tuning)
+    np.testing.assert_allclose(batch.trend, expected_trend, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(batch.signal, expected_signal, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(replay.trend, expected_trend, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(replay.signal, expected_signal, rtol=1e-12, atol=1e-12)
+
+    via_args = KalmanTrendSignal(*tuning).batch(close)
+    np.testing.assert_allclose(via_args.trend, expected_trend, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(via_args.signal, expected_signal, rtol=1e-12, atol=1e-12)
+
+    trend_indicator = KalmanTrendSignal(tuning)
+    signal_indicator = KalmanTrendSignal(tuning)
+    result = KalmanTrendSignal(tuning).update(float(close[0]))
+    assert trend_indicator.update_trend(float(close[0])) == pytest.approx(result.trend)
+    assert trend_indicator.last_trend() == pytest.approx(result.trend)
+    assert signal_indicator.update_signal(float(close[0])) == pytest.approx(result.signal)
+    assert signal_indicator.last_signal() == pytest.approx(result.signal)
+
+    records = [{"close": float(value)} for value in close]
+    from_records = KalmanTrendSignal(tuning).batch(records)
+    np.testing.assert_allclose(from_records.trend, expected_trend, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(from_records.signal, expected_signal, rtol=1e-12, atol=1e-12)
+
+    pandas = pytest.importorskip("pandas")
+    from_table = KalmanTrendSignal(tuning).batch(pandas.DataFrame({"close": close}))
+    np.testing.assert_allclose(from_table.trend, expected_trend, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(from_table.signal, expected_signal, rtol=1e-12, atol=1e-12)
+
+
+def test_trend_signal_tune_accepts_records_pandas_and_is_immutable():
+    close = np.asarray([10.0, 10.4, 10.3, 11.0, 11.6], dtype=np.float64)
+    expected = KalmanTrendSignal.tune(close)
+
+    records = [{"close": float(value)} for value in close]
+    from_records = KalmanTrendSignal.tune(records)
+    assert from_records.measurement_variance == pytest.approx(expected.measurement_variance)
+
+    pandas = pytest.importorskip("pandas")
+    from_table = KalmanTrendSignal.tune(pandas.DataFrame({"close": close}))
+    assert from_table.process_velocity_variance == pytest.approx(expected.process_velocity_variance)
+
+    assert isinstance(from_table, rtta.KalmanTrendSignalTuning)
+    with pytest.raises(AttributeError):
+        from_table.measurement_variance = 1.0
+
+
+def test_trend_signal_advance_replay_and_last_follow_update_state():
+    close = np.asarray([30.0, 30.1, 30.7, 30.6, 31.2], dtype=np.float64)
+    update_indicator = KalmanTrendSignal()
+    advance_indicator = KalmanTrendSignal()
+
+    for value in close[:-1]:
+        expected = update_indicator.update(value)
+        assert advance_indicator.advance(value) is None
+        assert advance_indicator.last().trend == pytest.approx(expected.trend)
+        assert advance_indicator.last().signal == pytest.approx(expected.signal)
+
+    expected = update_indicator.update(close[-1])
+    actual = advance_indicator.update(close[-1])
+    assert actual.trend == pytest.approx(expected.trend)
+    assert actual.signal == pytest.approx(expected.signal)
+    assert isinstance(KalmanTrendSignal().replay_update(close), float)
+    assert isinstance(KalmanTrendSignal().replay_advance(close), float)
 
 
 def test_velocity_oscillator_update_matches_fast_kalman_velocity_state():

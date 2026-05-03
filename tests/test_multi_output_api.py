@@ -24,6 +24,7 @@ MULTI_OUTPUTS = {
     "KSTOscillator": ("kst", "signal", "difference"),
     "KalmanLocalLinearTrend": ("level", "trend"),
     "KalmanPredictionBands": ("middle", "upper", "lower"),
+    "KalmanTrendSignal": ("trend", "signal"),
     "KeltnerChannel": ("middle", "upper", "lower"),
     "KeltnerChannelOriginal": ("middle", "upper", "lower"),
     "PercentagePrice": ("ppo", "signal", "histogram"),

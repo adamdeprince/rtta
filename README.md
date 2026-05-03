@@ -79,6 +79,8 @@ parameters for the data. `KalmanVelocityOscillator.tune(close)` and
 velocity-state oscillator and normalized innovation residual.
 `KalmanPredictionBands.tune(close)` uses the same noise model and exposes
 one-step prediction bands around the predicted measurement.
+`KalmanTrendSignal.tune(close)` uses that same model and returns the filtered
+trend plus a discrete price-versus-trend signal.
 
 New indicators should follow the same surface area as the existing C++
 nanobind indicators:

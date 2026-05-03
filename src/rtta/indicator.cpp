@@ -791,6 +791,16 @@ struct KalmanPredictionBandsBatchResult {
     nb::object lower;
 };
 
+struct KalmanTrendSignalResult {
+    double trend;
+    double signal;
+};
+
+struct KalmanTrendSignalBatchResult {
+    nb::object trend;
+    nb::object signal;
+};
+
 struct KalmanLocalLinearTrendResult {
     double level;
     double trend;
@@ -893,6 +903,10 @@ inline double result_checksum(const BollingerBandsResult &value) {
 
 inline double result_checksum(const KalmanPredictionBandsResult &value) {
     return value.middle + value.upper + value.lower;
+}
+
+inline double result_checksum(const KalmanTrendSignalResult &value) {
+    return value.trend + value.signal;
 }
 
 inline double result_checksum(const KalmanLocalLinearTrendResult &value) {
@@ -3225,6 +3239,17 @@ struct KalmanPredictionBandsTuning {
     double measurement_variance;
 };
 
+struct KalmanTrendSignalTuning {
+    double initial_price;
+    double initial_velocity;
+    double dt;
+    double position_variance;
+    double velocity_variance;
+    double process_position_variance;
+    double process_velocity_variance;
+    double measurement_variance;
+};
+
 class KalmanMovingAverage {
 public:
     KalmanMovingAverage(double initial_price = nan(),
@@ -3774,6 +3799,163 @@ private:
     bool initialized_;
     std::size_t count_;
     KalmanPredictionBandsResult last_;
+    bool fillna_;
+};
+
+class KalmanTrendSignal {
+public:
+    KalmanTrendSignal(double initial_price = nan(),
+                      double initial_velocity = 0.0,
+                      double dt = 1.0,
+                      double position_variance = 1.0,
+                      double velocity_variance = 1.0,
+                      double process_position_variance = 1.0e-4,
+                      double process_velocity_variance = 1.0e-3,
+                      double measurement_variance = 0.25,
+                      bool fillna = true)
+        : initial_price_(initial_price),
+          initial_velocity_(initial_velocity),
+          dt_(dt > 0.0 ? dt : 1.0),
+          position_variance_(variance_floor(position_variance)),
+          velocity_variance_(variance_floor(velocity_variance)),
+          process_position_variance_(variance_floor(process_position_variance)),
+          process_velocity_variance_(variance_floor(process_velocity_variance)),
+          measurement_variance_(variance_floor(measurement_variance)),
+          initialized_(false),
+          count_(0),
+          last_{nan(), nan()},
+          fillna_(fillna) {}
+
+    KalmanTrendSignal(const KalmanTrendSignalTuning &tuning, bool fillna = true)
+        : KalmanTrendSignal(
+              tuning.initial_price,
+              tuning.initial_velocity,
+              tuning.dt,
+              tuning.position_variance,
+              tuning.velocity_variance,
+              tuning.process_position_variance,
+              tuning.process_velocity_variance,
+              tuning.measurement_variance,
+              fillna) {}
+
+    KalmanTrendSignalResult update(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
+            if (!std::isfinite(initial_price_)) {
+                last_ = KalmanTrendSignalResult{close, 0.0};
+                ++count_;
+                return output_for_warmup();
+            }
+        }
+
+        (void) filter_.update(kalman::Vec<1>{close});
+        const double trend = filter_.x[0];
+        last_ = KalmanTrendSignalResult{trend, signal_for(close, trend)};
+        ++count_;
+        return output_for_warmup();
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const KalmanTrendSignalResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    KalmanTrendSignalBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> trend(size);
+        std::vector<double> signal(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const KalmanTrendSignalResult out = update(static_cast<double>(values[i]));
+            trend[i] = out.trend;
+            signal[i] = out.signal;
+        }
+        return KalmanTrendSignalBatchResult{
+            make_array(std::move(trend)),
+            make_array(std::move(signal)),
+        };
+    }
+
+    template <typename Array>
+    static KalmanTrendSignalTuning tune_array(const Array &close, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_array(close, dt, min_variance));
+    }
+
+    static KalmanTrendSignalTuning tune_records(nb::iterable records, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_records(records, dt, min_variance));
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        if (!std::isfinite(value) || value < minimum) {
+            return minimum;
+        }
+        return value;
+    }
+
+    static double signal_for(double close, double trend) {
+        if (!std::isfinite(close) || !std::isfinite(trend)) {
+            return nan();
+        }
+        if (close > trend) {
+            return 1.0;
+        }
+        if (close < trend) {
+            return -1.0;
+        }
+        return 0.0;
+    }
+
+    static KalmanTrendSignalTuning from_moving_average_tuning(const KalmanMovingAverageTuning &tuning) {
+        return KalmanTrendSignalTuning{
+            tuning.initial_price,
+            tuning.initial_velocity,
+            tuning.dt,
+            tuning.position_variance,
+            tuning.velocity_variance,
+            tuning.process_position_variance,
+            tuning.process_velocity_variance,
+            tuning.measurement_variance,
+        };
+    }
+
+    KalmanTrendSignalResult output_for_warmup() const {
+        if (!fillna_ && count_ < 2) {
+            return KalmanTrendSignalResult{nan(), nan()};
+        }
+        return last_;
+    }
+
+    void initialize(double price) {
+        filter_ = kalman::make_constant_velocity_1d(
+            price,
+            initial_velocity_,
+            dt_,
+            position_variance_,
+            velocity_variance_,
+            process_position_variance_,
+            process_velocity_variance_,
+            measurement_variance_);
+        initialized_ = true;
+        last_ = KalmanTrendSignalResult{price, 0.0};
+    }
+
+    double initial_price_;
+    double initial_velocity_;
+    double dt_;
+    double position_variance_;
+    double velocity_variance_;
+    double process_position_variance_;
+    double process_velocity_variance_;
+    double measurement_variance_;
+    kalman::LocalLinearTrendFilter filter_;
+    bool initialized_;
+    std::size_t count_;
+    KalmanTrendSignalResult last_;
     bool fillna_;
 };
 
@@ -9377,6 +9559,14 @@ NB_MODULE(indicator, m) {
         .def_ro("upper", &KalmanPredictionBandsBatchResult::upper)
         .def_ro("lower", &KalmanPredictionBandsBatchResult::lower);
 
+    nb::class_<KalmanTrendSignalResult>(m, "KalmanTrendSignalResult")
+        .def_ro("trend", &KalmanTrendSignalResult::trend)
+        .def_ro("signal", &KalmanTrendSignalResult::signal);
+
+    nb::class_<KalmanTrendSignalBatchResult>(m, "KalmanTrendSignalBatchResult")
+        .def_ro("trend", &KalmanTrendSignalBatchResult::trend)
+        .def_ro("signal", &KalmanTrendSignalBatchResult::signal);
+
     nb::class_<KalmanLocalLinearTrendResult>(m, "KalmanLocalLinearTrendResult")
         .def_ro("level", &KalmanLocalLinearTrendResult::level)
         .def_ro("trend", &KalmanLocalLinearTrendResult::trend);
@@ -10240,6 +10430,100 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(middle)),
                 make_array(std::move(upper)),
                 make_array(std::move(lower)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<KalmanTrendSignalTuning>(m, "KalmanTrendSignalTuning")
+        .def_ro("initial_price", &KalmanTrendSignalTuning::initial_price)
+        .def_ro("initial_velocity", &KalmanTrendSignalTuning::initial_velocity)
+        .def_ro("dt", &KalmanTrendSignalTuning::dt)
+        .def_ro("position_variance", &KalmanTrendSignalTuning::position_variance)
+        .def_ro("velocity_variance", &KalmanTrendSignalTuning::velocity_variance)
+        .def_ro("process_position_variance", &KalmanTrendSignalTuning::process_position_variance)
+        .def_ro("process_velocity_variance", &KalmanTrendSignalTuning::process_velocity_variance)
+        .def_ro("measurement_variance", &KalmanTrendSignalTuning::measurement_variance)
+        .def("__len__", [](const KalmanTrendSignalTuning &) { return 8; })
+        .def("__iter__", [](const KalmanTrendSignalTuning &self) {
+            nb::tuple values = nb::make_tuple(
+                self.initial_price,
+                self.initial_velocity,
+                self.dt,
+                self.position_variance,
+                self.velocity_variance,
+                self.process_position_variance,
+                self.process_velocity_variance,
+                self.measurement_variance);
+            return values.attr("__iter__")();
+        });
+
+    nb::class_<KalmanTrendSignal>(m, "KalmanTrendSignal")
+        .def(nb::init<double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("position_variance") = 1.0,
+             nb::arg("velocity_variance") = 1.0,
+             nb::arg("process_position_variance") = 1.0e-4,
+             nb::arg("process_velocity_variance") = 1.0e-3,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def(nb::init<const KalmanTrendSignalTuning &, bool>(),
+             nb::arg("tuning"),
+             nb::arg("fillna") = true)
+        .def_static("tune", [](const InputArray &close, double dt, double min_variance) {
+            return KalmanTrendSignal::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](const FloatInputArray &close, double dt, double min_variance) {
+            return KalmanTrendSignal::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](nb::iterable records, double dt, double min_variance) {
+            if (table_has_column(records, "close")) {
+                nb::object close = table_column_array(records, "close");
+                switch (array_dtype(close)) {
+                    case InputDType::Float32:
+                        return KalmanTrendSignal::tune_array(nb::cast<FloatInputArray>(close), dt, min_variance);
+                    case InputDType::Float64:
+                        return KalmanTrendSignal::tune_array(nb::cast<InputArray>(close), dt, min_variance);
+                }
+                throw nb::type_error("unsupported pandas table column dtype");
+            }
+            return KalmanTrendSignal::tune_records(records, dt, min_variance);
+        }, nb::arg("records"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def("update", &KalmanTrendSignal::update, nb::arg("close"))
+        .def("last", &KalmanTrendSignal::last)
+        RTTA_ADVANCE1(KalmanTrendSignal, close)
+        RTTA_REPLAY1(KalmanTrendSignal, close)
+        RTTA_FIELD1(KalmanTrendSignal, trend, close)
+        RTTA_FIELD1(KalmanTrendSignal, signal, close)
+        .def("replay_update_outputs", [](KalmanTrendSignal &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](KalmanTrendSignal &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanTrendSignal &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanTrendSignal &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanTrendSignal &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> trend = make_record_output(records);
+            std::vector<double> signal;
+            signal.reserve(trend.capacity());
+            for (nb::handle record : records) {
+                const KalmanTrendSignalResult out = self.update(scalar_or_record_value(record, "close", 0));
+                trend.push_back(out.trend);
+                signal.push_back(out.signal);
+            }
+            return KalmanTrendSignalBatchResult{
+                make_array(std::move(trend)),
+                make_array(std::move(signal)),
             };
         }, nb::arg("records"));
 

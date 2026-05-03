@@ -21,6 +21,8 @@
   innovation normalized by its predicted standard deviation.
 - Added `KalmanPredictionBands`, exposing one-step predicted price bands from
   Kalman predicted measurement uncertainty.
+- Added `KalmanTrendSignal`, exposing a Kalman-filtered trend line and
+  buy/sell signal based on price crossing the filtered trend.
 - Added `ALGOS.md`, cataloging public indicators with short descriptions and
   documentation links that prefer ChartSchool when a direct ChartSchool page
   exists.
