@@ -56,6 +56,7 @@ class MarketRecord:
     low: float
     close: float
     volume: float
+    anchor: float
     value: float
     input: float
     x: float
@@ -105,6 +106,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("AbsolutePriceOscillator", ("close",)),
     IndicatorSpec("AccumulationDistribution", ("close", "high", "low", "volume")),
     IndicatorSpec("AlphaBetaGammaTrackingFilter", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("AnchoredVWAP", ("close", "high", "low", "volume", "anchor"), batch_inputs=("close", "high", "low", "volume", "anchor")),
     IndicatorSpec("Aroon", ("high", "low")),
     IndicatorSpec("AroonOscillator", ("high", "low")),
     IndicatorSpec("AverageDirectionalMovementIndex", ("close", "high", "low")),
@@ -231,6 +233,10 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
     high = np.maximum(open_, close) + spread
     low = np.minimum(open_, close) - spread
     volume = rng.integers(1_000, 100_000, samples).astype(np.float64)
+    anchor = np.zeros(samples, dtype=np.float64)
+    if samples:
+        anchor[0] = 1.0
+        anchor[128::128] = 1.0
     real0 = close
     real1 = close * 0.73 + rng.normal(0.0, 0.25, samples)
     quote_spread = rng.uniform(0.01, 0.05, samples)
@@ -245,6 +251,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
         "low": low.astype(np.float64),
         "close": close.astype(np.float64),
         "volume": volume,
+        "anchor": anchor,
         "value": close.astype(np.float64),
         "input": close.astype(np.float64),
         "x": close.astype(np.float64),
@@ -275,6 +282,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             low=float(arrays["low"][i]),
             close=float(arrays["close"][i]),
             volume=float(arrays["volume"][i]),
+            anchor=float(arrays["anchor"][i]),
             value=float(arrays["value"][i]),
             input=float(arrays["input"][i]),
             x=float(arrays["x"][i]),
@@ -295,6 +303,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             "low": record.low,
             "close": record.close,
             "volume": record.volume,
+            "anchor": record.anchor,
             "value": record.value,
             "input": record.input,
             "x": record.x,
@@ -359,6 +368,17 @@ def make_rtta_incremental_runner(rtta: Any, spec: IndicatorSpec, data: MarketDat
             update = indicator.update
             for x0, x1, x2, x3 in zip(a0, a1, a2, a3):
                 update(x0, x1, x2, x3)
+
+        return run
+
+    if len(inputs) == 5:
+        a0, a1, a2, a3, a4 = inputs
+
+        def run() -> None:
+            indicator = make_indicator()
+            update = indicator.update
+            for x0, x1, x2, x3, x4 in zip(a0, a1, a2, a3, a4):
+                update(x0, x1, x2, x3, x4)
 
         return run
 

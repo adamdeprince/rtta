@@ -128,6 +128,15 @@ def make_loop_runner(inputs: list[list[float]]) -> Callable[[], None]:
 
         return run
 
+    if len(inputs) == 5:
+        a0, a1, a2, a3, a4 = inputs
+
+        def run() -> None:
+            for _x0, _x1, _x2, _x3, _x4 in zip(a0, a1, a2, a3, a4):
+                pass
+
+        return run
+
     raise ValueError(f"unsupported update arity {len(inputs)}")
 
 
@@ -176,6 +185,18 @@ def make_method_runner(make_indicator: Callable[[], Any], method_name: str, inpu
             method = getattr(indicator, method_name)
             for x0, x1, x2, x3 in zip(a0, a1, a2, a3):
                 method(x0, x1, x2, x3)
+            return indicator
+
+        return run
+
+    if len(inputs) == 5:
+        a0, a1, a2, a3, a4 = inputs
+
+        def run() -> Any:
+            indicator = make_indicator()
+            method = getattr(indicator, method_name)
+            for x0, x1, x2, x3, x4 in zip(a0, a1, a2, a3, a4):
+                method(x0, x1, x2, x3, x4)
             return indicator
 
         return run

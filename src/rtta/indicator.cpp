@@ -120,6 +120,15 @@ nb::object batch_update4(
     const Array2 &c,
     const Array3 &d);
 
+template <typename Indicator, typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+nb::object batch_update5(
+    Indicator &indicator,
+    const Array0 &a,
+    const Array1 &b,
+    const Array2 &c,
+    const Array3 &d,
+    const Array4 &e);
+
 bool field_uses_close_fallback(const char *field) {
     return std::strcmp(field, "input") == 0 ||
            std::strcmp(field, "value") == 0 ||
@@ -420,6 +429,46 @@ auto dispatch_table4(
     throw nb::type_error("unsupported pandas table column dtype");
 }
 
+template <typename Indicator, typename Callback>
+auto dispatch_table5(
+    Indicator &indicator,
+    nb::handle table,
+    const char *field0,
+    const char *field1,
+    const char *field2,
+    const char *field3,
+    const char *field4,
+    Callback callback) {
+    nb::object a = table_column_array(table, field0);
+    nb::object b = table_column_array(table, field1);
+    nb::object c = table_column_array(table, field2);
+    nb::object d = table_column_array(table, field3);
+    nb::object e = table_column_array(table, field4);
+    const InputDType dtype = array_dtype(a);
+    if (dtype != array_dtype(b) || dtype != array_dtype(c) || dtype != array_dtype(d) || dtype != array_dtype(e)) {
+        throw nb::type_error("pandas table batch columns must all use the same floating-point dtype");
+    }
+    switch (dtype) {
+        case InputDType::Float32:
+            return callback(
+                indicator,
+                nb::cast<FloatInputArray>(a),
+                nb::cast<FloatInputArray>(b),
+                nb::cast<FloatInputArray>(c),
+                nb::cast<FloatInputArray>(d),
+                nb::cast<FloatInputArray>(e));
+        case InputDType::Float64:
+            return callback(
+                indicator,
+                nb::cast<InputArray>(a),
+                nb::cast<InputArray>(b),
+                nb::cast<InputArray>(c),
+                nb::cast<InputArray>(d),
+                nb::cast<InputArray>(e));
+    }
+    throw nb::type_error("unsupported pandas table column dtype");
+}
+
 template <typename Indicator>
 nb::object batch_records_one(Indicator &indicator, nb::iterable records, const char *field) {
     if (table_has_column(records, field)) {
@@ -486,6 +535,41 @@ nb::object batch_records_four(
             record_value(record, field1, 1),
             record_value(record, field2, 2),
             record_value(record, field3, 3)));
+    }
+    return make_array(std::move(output));
+}
+
+template <typename Indicator>
+nb::object batch_records_five(
+    Indicator &indicator,
+    nb::iterable records,
+    const char *field0,
+    const char *field1,
+    const char *field2,
+    const char *field3,
+    const char *field4) {
+    if (table_has_column(records, field0)) {
+        return dispatch_table5(
+            indicator,
+            records,
+            field0,
+            field1,
+            field2,
+            field3,
+            field4,
+            [](auto &self, const auto &a, const auto &b, const auto &c, const auto &d, const auto &e) {
+                return batch_update5(self, a, b, c, d, e);
+            });
+    }
+
+    std::vector<double> output = make_record_output(records);
+    for (nb::handle record : records) {
+        output.push_back(indicator.update(
+            record_value(record, field0, 0),
+            record_value(record, field1, 1),
+            record_value(record, field2, 2),
+            record_value(record, field3, 3),
+            record_value(record, field4, 4)));
     }
     return make_array(std::move(output));
 }
@@ -560,6 +644,36 @@ nb::object batch_update4(
             static_cast<double>(b_values[i]),
             static_cast<double>(c_values[i]),
             static_cast<double>(d_values[i]));
+    }
+    return make_array(std::move(output));
+}
+
+template <typename Indicator, typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+nb::object batch_update5(
+    Indicator &indicator,
+    const Array0 &a,
+    const Array1 &b,
+    const Array2 &c,
+    const Array3 &d,
+    const Array4 &e) {
+    const std::size_t size = a.shape(0);
+    require_same_size(size, b.shape(0));
+    require_same_size(size, c.shape(0));
+    require_same_size(size, d.shape(0));
+    require_same_size(size, e.shape(0));
+    std::vector<double> output(size);
+    const auto *a_values = a.data();
+    const auto *b_values = b.data();
+    const auto *c_values = c.data();
+    const auto *d_values = d.data();
+    const auto *e_values = e.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        output[i] = indicator.update(
+            static_cast<double>(a_values[i]),
+            static_cast<double>(b_values[i]),
+            static_cast<double>(c_values[i]),
+            static_cast<double>(d_values[i]),
+            static_cast<double>(e_values[i]));
     }
     return make_array(std::move(output));
 }
@@ -5189,6 +5303,130 @@ private:
     RollingWindow typical_price_volume_;
     RollingWindow volume_;
     bool fillna_;
+};
+
+class AnchoredVWAP {
+public:
+    AnchoredVWAP()
+        : cumulative_price_volume_(0.0),
+          cumulative_volume_(0.0),
+          last_(nan()) {}
+
+    double update(double close, double high, double low, double volume, double anchor) {
+        if (anchor != 0.0 || cumulative_volume_ == 0.0) {
+            cumulative_price_volume_ = 0.0;
+            cumulative_volume_ = 0.0;
+        }
+
+        const double typical_price = (high + low + close) / 3.0;
+        cumulative_price_volume_ += typical_price * volume;
+        cumulative_volume_ += volume;
+        last_ = safe_divide(cumulative_price_volume_, cumulative_volume_);
+        return last_;
+    }
+
+    void advance(double close, double high, double low, double volume, double anchor) {
+        (void) update(close, high, low, volume, anchor);
+    }
+
+    double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    nb::object batch_array(
+        const Array0 &close,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &volume,
+        const Array4 &anchor) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
+        require_same_size(size, anchor.shape(0));
+        std::vector<double> output(size);
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const auto *volume_values = volume.data();
+        const auto *anchor_values = anchor.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]),
+                static_cast<double>(volume_values[i]),
+                static_cast<double>(anchor_values[i]));
+        }
+
+        return make_array(std::move(output));
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_update_array(
+        const Array0 &close,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &volume,
+        const Array4 &anchor) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
+        require_same_size(size, anchor.shape(0));
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const auto *volume_values = volume.data();
+        const auto *anchor_values = anchor.data();
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            checksum += update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]),
+                static_cast<double>(volume_values[i]),
+                static_cast<double>(anchor_values[i]));
+        }
+        return checksum;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_advance_array(
+        const Array0 &close,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &volume,
+        const Array4 &anchor) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
+        require_same_size(size, anchor.shape(0));
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const auto *volume_values = volume.data();
+        const auto *anchor_values = anchor.data();
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            advance(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]),
+                static_cast<double>(volume_values[i]),
+                static_cast<double>(anchor_values[i]));
+            checksum += result_checksum(last_);
+        }
+        return checksum;
+    }
+
+private:
+    double cumulative_price_volume_;
+    double cumulative_volume_;
+    double last_;
 };
 
 class VolumeWeightedMovingAverage {
@@ -15450,6 +15688,40 @@ NB_MODULE(indicator, m) {
         }, array_arg("close"), array_arg("volume"))
         .def("batch", [](NegativeVolumeIndex &self, nb::iterable records) {
             return batch_records_two(self, records, "close", "volume");
+        }, nb::arg("records"));
+
+    nb::class_<AnchoredVWAP>(m, "AnchoredVWAP")
+        .def(nb::init<>())
+        .def("update", &AnchoredVWAP::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"), nb::arg("anchor"))
+        .def("advance", [](AnchoredVWAP &self, double close, double high, double low, double volume, double anchor) {
+            self.advance(close, high, low, volume, anchor);
+        }, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"), nb::arg("anchor"))
+        .def("last", &AnchoredVWAP::last)
+        .def("replay_update", [](AnchoredVWAP &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume, const InputArray &anchor) {
+            return self.replay_update_array(close, high, low, volume, anchor);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"), array_arg("anchor"))
+        .def("replay_update", [](AnchoredVWAP &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume, const FloatInputArray &anchor) {
+            return self.replay_update_array(close, high, low, volume, anchor);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"), array_arg("anchor"))
+        .def("replay_advance", [](AnchoredVWAP &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume, const InputArray &anchor) {
+            return self.replay_advance_array(close, high, low, volume, anchor);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"), array_arg("anchor"))
+        .def("replay_advance", [](AnchoredVWAP &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume, const FloatInputArray &anchor) {
+            return self.replay_advance_array(close, high, low, volume, anchor);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"), array_arg("anchor"))
+        .def("batch", [](AnchoredVWAP &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume, const InputArray &anchor) {
+            return self.batch_array(close, high, low, volume, anchor);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"), array_arg("anchor"))
+        .def("batch", [](AnchoredVWAP &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume, const FloatInputArray &anchor) {
+            return self.batch_array(close, high, low, volume, anchor);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"), array_arg("anchor"))
+        .def("batch", [](AnchoredVWAP &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table5(self, records, "close", "high", "low", "volume", "anchor", [](auto &indicator, const auto &close, const auto &high, const auto &low, const auto &volume, const auto &anchor) {
+                    return indicator.batch_array(close, high, low, volume, anchor);
+                });
+            }
+            return batch_records_five(self, records, "close", "high", "low", "volume", "anchor");
         }, nb::arg("records"));
 
     nb::class_<VolumeWeightedAveragePrice>(m, "VolumeWeightedAveragePrice")
