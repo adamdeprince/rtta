@@ -3,7 +3,7 @@ import pytest
 from types import SimpleNamespace
 
 import rtta
-from rtta.indicator import KalmanLocalLinearTrend, KalmanMovingAverage
+from rtta.indicator import KalmanLocalLinearTrend, KalmanMovingAverage, KalmanVelocityOscillator
 
 kalman = pytest.importorskip("kalman")
 
@@ -44,6 +44,24 @@ def _fast_kalman_level_trend(close, tuning):
         level.append(float(kf.x[0]))
         trend.append(float(kf.x[1]))
     return np.asarray(level), np.asarray(trend)
+
+
+def _fast_kalman_velocity(close, tuning):
+    kf = kalman.make_constant_velocity_1d(
+        tuning.initial_price,
+        tuning.initial_velocity,
+        tuning.dt,
+        tuning.position_variance,
+        tuning.velocity_variance,
+        tuning.process_position_variance,
+        tuning.process_velocity_variance,
+        tuning.measurement_variance,
+    )
+    output = []
+    for value in close:
+        kf.update([float(value)])
+        output.append(float(kf.x[1]))
+    return np.asarray(output)
 
 
 def _default_seed_outputs(close):
@@ -150,6 +168,68 @@ def test_tuning_type_is_exported():
     assert isinstance(tuning, rtta.KalmanMovingAverageTuning)
     with pytest.raises(AttributeError):
         tuning.measurement_variance = 1.0
+
+
+def test_velocity_oscillator_update_matches_fast_kalman_velocity_state():
+    close = np.asarray([100.0, 100.4, 101.2, 101.0, 102.5, 103.0], dtype=np.float64)
+    tuning = KalmanVelocityOscillator.tune(close)
+    indicator = KalmanVelocityOscillator(tuning)
+
+    actual = np.asarray([indicator.update(value) for value in close])
+    expected = _fast_kalman_velocity(close, tuning)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_velocity_oscillator_batch_splat_and_512_sample_paths():
+    rng = np.random.default_rng(24680)
+    close = 70.0 + np.cumsum(rng.normal(0.02, 0.6, 512))
+    tuning = KalmanVelocityOscillator.tune(close)
+
+    via_tuning = KalmanVelocityOscillator(tuning).batch(close)
+    via_args = KalmanVelocityOscillator(*tuning).batch(close)
+    expected = _fast_kalman_velocity(close, tuning)
+    np.testing.assert_allclose(via_tuning, expected, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(via_args, expected, rtol=1e-12, atol=1e-12)
+
+    records = [{"close": float(value)} for value in close]
+    from_records = KalmanVelocityOscillator(tuning).batch(records)
+    np.testing.assert_allclose(from_records, expected, rtol=1e-12, atol=1e-12)
+
+    pandas = pytest.importorskip("pandas")
+    from_table = KalmanVelocityOscillator(tuning).batch(pandas.DataFrame({"close": close}))
+    np.testing.assert_allclose(from_table, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_velocity_oscillator_tune_accepts_records_pandas_and_is_immutable():
+    close = np.asarray([10.0, 10.4, 10.3, 11.0, 11.6], dtype=np.float64)
+    expected = KalmanVelocityOscillator.tune(close)
+
+    records = [{"close": float(value)} for value in close]
+    from_records = KalmanVelocityOscillator.tune(records)
+    assert from_records.measurement_variance == pytest.approx(expected.measurement_variance)
+
+    pandas = pytest.importorskip("pandas")
+    from_table = KalmanVelocityOscillator.tune(pandas.DataFrame({"close": close}))
+    assert from_table.process_velocity_variance == pytest.approx(expected.process_velocity_variance)
+
+    assert isinstance(from_table, rtta.KalmanVelocityOscillatorTuning)
+    with pytest.raises(AttributeError):
+        from_table.measurement_variance = 1.0
+
+
+def test_velocity_oscillator_advance_replay_and_last_follow_update_state():
+    close = np.asarray([30.0, 30.1, 30.7, 30.6, 31.2], dtype=np.float64)
+    update_indicator = KalmanVelocityOscillator()
+    advance_indicator = KalmanVelocityOscillator()
+
+    for value in close[:-1]:
+        expected = update_indicator.update(value)
+        assert advance_indicator.advance(value) is None
+        assert advance_indicator.last() == pytest.approx(expected)
+
+    assert advance_indicator.update(close[-1]) == pytest.approx(update_indicator.update(close[-1]))
+    assert isinstance(KalmanVelocityOscillator().replay_update(close), float)
+    assert isinstance(KalmanVelocityOscillator().replay_advance(close), float)
 
 
 def test_local_linear_trend_update_matches_fast_kalman_constant_velocity_filter():

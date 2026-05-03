@@ -74,7 +74,8 @@ Kalman indicators expose algorithm-specific tuning helpers. For example,
 variance parameters for that indicator and returns an immutable
 `KalmanMovingAverageTuning` object. Pass that object back to
 `KalmanMovingAverage(...)` to build an indicator with the recommended
-parameters for the data.
+parameters for the data. `KalmanVelocityOscillator.tune(close)` follows the
+same convention and returns the velocity-state tuning for the oscillator.
 
 New indicators should follow the same surface area as the existing C++
 nanobind indicators:

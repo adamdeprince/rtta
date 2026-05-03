@@ -136,6 +136,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("KSTOscillator", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KalmanLocalLinearTrend", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KalmanMovingAverage", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("KalmanVelocityOscillator", ("close",), batch_inputs=("close",)),
     IndicatorSpec("Kama", ("close",), batch_inputs=("input",)),
     IndicatorSpec("KeltnerChannel", ("close", "high", "low")),
     IndicatorSpec("KeltnerChannelOriginal", ("close", "high", "low")),

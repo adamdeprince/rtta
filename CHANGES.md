@@ -14,6 +14,9 @@
   indicator-specific immutable tuning output.
 - Added `KalmanLocalLinearTrend`, a Kalman level/trend state-space indicator
   with configurable and trainable tuning parameters.
+- Added `KalmanVelocityOscillator`, exposing the velocity state from the same
+  constant-velocity Kalman price model with configurable and trainable tuning
+  parameters.
 - Added `ALGOS.md`, cataloging public indicators with short descriptions and
   documentation links that prefer ChartSchool when a direct ChartSchool page
   exists.
