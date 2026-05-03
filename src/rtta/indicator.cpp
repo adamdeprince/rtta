@@ -1149,6 +1149,18 @@ struct HeikinAshiTransformBatchResult {
     nb::object close;
 };
 
+struct VolumeProfileResult {
+    double point_of_control;
+    double value_area_high;
+    double value_area_low;
+};
+
+struct VolumeProfileBatchResult {
+    nb::object point_of_control;
+    nb::object value_area_high;
+    nb::object value_area_low;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1318,6 +1330,10 @@ inline double result_checksum(const RenkoBrickGeneratorResult &value) {
 
 inline double result_checksum(const HeikinAshiTransformResult &value) {
     return value.open + value.high + value.low + value.close;
+}
+
+inline double result_checksum(const VolumeProfileResult &value) {
+    return value.point_of_control + value.value_area_high + value.value_area_low;
 }
 
 class RollingExtremeQueue {
@@ -5427,6 +5443,158 @@ private:
     double cumulative_price_volume_;
     double cumulative_volume_;
     double last_;
+};
+
+class VolumeProfile {
+public:
+    VolumeProfile(int window = 128, int bins = 24, double value_area_percent = 70.0, bool fillna = true)
+        : window_(checked_window(window)),
+          bins_(checked_bins(bins)),
+          value_area_fraction_(checked_value_area_percent(value_area_percent) / 100.0),
+          fillna_(fillna),
+          prices_(window_),
+          volumes_(window_),
+          histogram_(bins_),
+          count_(0),
+          next_(0),
+          last_{nan(), nan(), nan()} {}
+
+    VolumeProfileResult update(double close, double volume) {
+        prices_[next_] = close;
+        volumes_[next_] = volume;
+        if (count_ < window_) {
+            ++count_;
+        }
+        next_ = (next_ + 1) % window_;
+
+        if (!fillna_ && count_ < window_) {
+            last_ = VolumeProfileResult{nan(), nan(), nan()};
+            return last_;
+        }
+
+        last_ = compute();
+        return last_;
+    }
+
+    void advance(double close, double volume) {
+        (void) update(close, volume);
+    }
+
+    const VolumeProfileResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    VolumeProfileBatchResult batch_array(const Array0 &close, const Array1 &volume) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
+        std::vector<double> point_of_control(size);
+        std::vector<double> value_area_high(size);
+        std::vector<double> value_area_low(size);
+        const auto *close_values = close.data();
+        const auto *volume_values = volume.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const VolumeProfileResult out = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(volume_values[i]));
+            point_of_control[i] = out.point_of_control;
+            value_area_high[i] = out.value_area_high;
+            value_area_low[i] = out.value_area_low;
+        }
+
+        return {
+            make_array(std::move(point_of_control)),
+            make_array(std::move(value_area_high)),
+            make_array(std::move(value_area_low)),
+        };
+    }
+
+private:
+    static std::size_t checked_window(int window) {
+        if (window <= 0) {
+            throw nb::value_error("window must be positive");
+        }
+        return static_cast<std::size_t>(window);
+    }
+
+    static std::size_t checked_bins(int bins) {
+        if (bins <= 0) {
+            throw nb::value_error("bins must be positive");
+        }
+        return static_cast<std::size_t>(bins);
+    }
+
+    static double checked_value_area_percent(double value_area_percent) {
+        if (value_area_percent <= 0.0 || value_area_percent > 100.0) {
+            throw nb::value_error("value_area_percent must be in the range (0, 100]");
+        }
+        return value_area_percent;
+    }
+
+    VolumeProfileResult compute() {
+        double min_price = prices_[0];
+        double max_price = prices_[0];
+        double total_volume = 0.0;
+        for (std::size_t i = 0; i < count_; ++i) {
+            min_price = std::min(min_price, prices_[i]);
+            max_price = std::max(max_price, prices_[i]);
+            total_volume += volumes_[i];
+        }
+
+        if (total_volume == 0.0 || min_price == max_price) {
+            return VolumeProfileResult{min_price, max_price, min_price};
+        }
+
+        std::fill(histogram_.begin(), histogram_.end(), 0.0);
+        const double width = (max_price - min_price) / static_cast<double>(bins_);
+        for (std::size_t i = 0; i < count_; ++i) {
+            std::size_t bin = static_cast<std::size_t>((prices_[i] - min_price) / width);
+            if (bin >= bins_) {
+                bin = bins_ - 1;
+            }
+            histogram_[bin] += volumes_[i];
+        }
+
+        std::size_t point_of_control_bin = 0;
+        for (std::size_t i = 1; i < bins_; ++i) {
+            if (histogram_[i] > histogram_[point_of_control_bin]) {
+                point_of_control_bin = i;
+            }
+        }
+
+        std::size_t low_bin = point_of_control_bin;
+        std::size_t high_bin = point_of_control_bin;
+        double cumulative_volume = histogram_[point_of_control_bin];
+        const double target_volume = total_volume * value_area_fraction_;
+        while (cumulative_volume < target_volume && (low_bin > 0 || high_bin + 1 < bins_)) {
+            const double left_volume = low_bin > 0 ? histogram_[low_bin - 1] : -1.0;
+            const double right_volume = high_bin + 1 < bins_ ? histogram_[high_bin + 1] : -1.0;
+            if (right_volume > left_volume) {
+                ++high_bin;
+                cumulative_volume += right_volume;
+            } else {
+                --low_bin;
+                cumulative_volume += left_volume;
+            }
+        }
+
+        const double point_of_control = min_price + (static_cast<double>(point_of_control_bin) + 0.5) * width;
+        const double value_area_low = min_price + static_cast<double>(low_bin) * width;
+        const double value_area_high = min_price + static_cast<double>(high_bin + 1) * width;
+        return VolumeProfileResult{point_of_control, value_area_high, value_area_low};
+    }
+
+    std::size_t window_;
+    std::size_t bins_;
+    double value_area_fraction_;
+    bool fillna_;
+    std::vector<double> prices_;
+    std::vector<double> volumes_;
+    std::vector<double> histogram_;
+    std::size_t count_;
+    std::size_t next_;
+    VolumeProfileResult last_;
 };
 
 class VolumeWeightedMovingAverage {
@@ -12726,6 +12894,16 @@ NB_MODULE(indicator, m) {
         .def_ro("low", &HeikinAshiTransformBatchResult::low)
         .def_ro("close", &HeikinAshiTransformBatchResult::close);
 
+    nb::class_<VolumeProfileResult>(m, "VolumeProfileResult")
+        .def_ro("point_of_control", &VolumeProfileResult::point_of_control)
+        .def_ro("value_area_high", &VolumeProfileResult::value_area_high)
+        .def_ro("value_area_low", &VolumeProfileResult::value_area_low);
+
+    nb::class_<VolumeProfileBatchResult>(m, "VolumeProfileBatchResult")
+        .def_ro("point_of_control", &VolumeProfileBatchResult::point_of_control)
+        .def_ro("value_area_high", &VolumeProfileBatchResult::value_area_high)
+        .def_ro("value_area_low", &VolumeProfileBatchResult::value_area_low);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -15722,6 +15900,58 @@ NB_MODULE(indicator, m) {
                 });
             }
             return batch_records_five(self, records, "close", "high", "low", "volume", "anchor");
+        }, nb::arg("records"));
+
+    nb::class_<VolumeProfile>(m, "VolumeProfile")
+        .def(nb::init<int, int, double, bool>(),
+             nb::arg("window") = 128,
+             nb::arg("bins") = 24,
+             nb::arg("value_area_percent") = 70.0,
+             nb::arg("fillna") = true)
+        .def("update", &VolumeProfile::update, nb::arg("close"), nb::arg("volume"))
+        .def("last", &VolumeProfile::last)
+        RTTA_ADVANCE2(VolumeProfile, close, volume)
+        RTTA_REPLAY2(VolumeProfile, close, volume)
+        RTTA_FIELD2(VolumeProfile, point_of_control, close, volume)
+        RTTA_FIELD2(VolumeProfile, value_area_high, close, volume)
+        RTTA_FIELD2(VolumeProfile, value_area_low, close, volume)
+        .def("replay_update_outputs", [](VolumeProfile &self, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("replay_update_outputs", [](VolumeProfile &self, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("batch", [](VolumeProfile &self, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("batch", [](VolumeProfile &self, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("batch", [](VolumeProfile &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table2(self, records, "close", "volume", [](auto &indicator, const auto &close, const auto &volume) {
+                    return indicator.batch_array(close, volume);
+                });
+            }
+
+            std::vector<double> point_of_control = make_record_output(records);
+            std::vector<double> value_area_high;
+            std::vector<double> value_area_low;
+            value_area_high.reserve(point_of_control.capacity());
+            value_area_low.reserve(point_of_control.capacity());
+            for (nb::handle record : records) {
+                const VolumeProfileResult out = self.update(
+                    record_value(record, "close", 0),
+                    record_value(record, "volume", 1));
+                point_of_control.push_back(out.point_of_control);
+                value_area_high.push_back(out.value_area_high);
+                value_area_low.push_back(out.value_area_low);
+            }
+            return VolumeProfileBatchResult{
+                make_array(std::move(point_of_control)),
+                make_array(std::move(value_area_high)),
+                make_array(std::move(value_area_low)),
+            };
         }, nb::arg("records"));
 
     nb::class_<VolumeWeightedAveragePrice>(m, "VolumeWeightedAveragePrice")

@@ -47,6 +47,7 @@ MULTI_OUTPUTS = {
     "Stochastic": ("slowk", "slowd"),
     "SuperTrend": ("value", "direction", "upper", "lower"),
     "TwoFactorKalmanTrendFilter": ("short_trend", "long_trend", "value"),
+    "VolumeProfile": ("point_of_control", "value_area_high", "value_area_low"),
     "Vortex": ("positive", "negative", "difference"),
     "ZigZagSwingDetector": ("value", "direction", "pivot", "pivot_index"),
 }

@@ -124,6 +124,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `UlcerIndex` | Drawdown-based downside-risk measure. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/ulcer-index |
 | `Variance` | Rolling variance. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/standard-deviation-volatility |
 | `VariableIndexDynamicAverage` | VIDYA adaptive EMA using absolute CMO as the smoothing factor. | https://www.metatrader5.com/en/terminal/help/indicators/trend_indicators/vida |
+| `VolumeProfile` | Rolling volume-by-price histogram that emits point of control and value-area high/low levels. | https://www.schwab.com/learn/story/using-volume-profile-indicator |
 | `VolumePriceTrend` | Cumulative volume adjusted by percentage price change. | https://technical-analysis-library-in-python.readthedocs.io/en/stable/ta.html |
 | `VolumeWeightedAveragePrice` | VWAP price weighted by traded volume. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/volume-weighted-average-price-vwap |
 | `VolumeWeightedMovingAverage` | VWMA rolling close weighted by volume. | https://trendspider.com/learning-center/what-is-the-volume-weighted-moving-average-vwma/ |

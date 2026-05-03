@@ -214,6 +214,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("UlcerIndex", ("close",), batch_inputs=("close",)),
     IndicatorSpec("Variance", ("value",)),
     IndicatorSpec("VariableIndexDynamicAverage", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("VolumeProfile", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("VolumePriceTrend", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("VolumeWeightedAveragePrice", ("close", "high", "low", "volume"), batch_inputs=("close", "high", "low", "volume")),
     IndicatorSpec("VolumeWeightedMovingAverage", ("close", "volume"), batch_inputs=("close", "volume")),

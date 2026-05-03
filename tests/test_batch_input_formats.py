@@ -66,6 +66,7 @@ RESULT_FIELDS = (
     "percent",
     "positive",
     "price",
+    "point_of_control",
     "pivot",
     "pivot_index",
     "ppo",
@@ -90,6 +91,8 @@ RESULT_FIELDS = (
     "up",
     "upper",
     "value",
+    "value_area_high",
+    "value_area_low",
     "velocity",
     "width",
 )

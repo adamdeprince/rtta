@@ -55,6 +55,8 @@
   Heikin-Ashi open, high, low, and close values.
 - Added `AnchoredVWAP`, a VWAP variant that resets cumulative price-volume
   state from arbitrary anchor events.
+- Added `VolumeProfile`, a rolling volume-by-price histogram that emits point
+  of control plus value-area high and low levels.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.
