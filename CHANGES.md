@@ -40,6 +40,9 @@
 - Added `ParticleFilterTrend`, a deterministic-seed non-Gaussian particle
   trend filter with Laplace measurement likelihood, systematic resampling,
   signal output, and effective sample size diagnostics.
+- Added `SavitzkyGolayFilter`, a causal rolling polynomial smoother with
+  precomputed endpoint convolution coefficients for smooth price, first
+  derivative, and second derivative outputs.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

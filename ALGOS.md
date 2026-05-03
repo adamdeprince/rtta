@@ -100,6 +100,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `RateOfChangeRatio` | Rate-of-change ratio against a prior value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
 | `RateOfChangeRatio100` | Rate-of-change ratio scaled by 100. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
 | `RelativeVigorIndex` | Smoothed close-open momentum relative to high-low range with signal line. | https://www.investopedia.com/terms/r/relative_vigor_index.asp |
+| `SavitzkyGolayFilter` | Rolling polynomial least-squares smoother with first and second derivative outputs. | https://en.wikipedia.org/wiki/Savitzky%E2%80%93Golay_filter |
 | `SchaffTrendCycle` | MACD/stochastic cycle oscillator. | https://technical-analysis-library-in-python.readthedocs.io/en/stable/ta.html |
 | `StdDev` | Rolling standard deviation. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/standard-deviation-volatility |
 | `StochRSI` | Stochastic oscillator applied to RSI values. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/stochrsi |

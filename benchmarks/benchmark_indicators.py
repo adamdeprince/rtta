@@ -189,6 +189,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("RateOfChangeRatio", ("close",)),
     IndicatorSpec("RateOfChangeRatio100", ("close",)),
     IndicatorSpec("RelativeVigorIndex", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("SavitzkyGolayFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("SchaffTrendCycle", ("close",), batch_inputs=("close",)),
     IndicatorSpec("StdDev", ("value",), ctor_kwargs={"window": 5}),
     IndicatorSpec("StochRSI", ("value",)),

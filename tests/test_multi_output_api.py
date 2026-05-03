@@ -36,6 +36,7 @@ MULTI_OUTPUTS = {
     "PercentagePrice": ("ppo", "signal", "histogram"),
     "PercentageVolume": ("pvo", "signal", "histogram"),
     "RelativeVigorIndex": ("rvi", "signal"),
+    "SavitzkyGolayFilter": ("smooth", "first_derivative", "second_derivative"),
     "KlingerVolumeOscillator": ("kvo", "signal", "histogram"),
     "MesaAdaptiveMovingAverage": ("mama", "fama"),
     "ParticleFilterTrend": ("trend", "velocity", "signal", "effective_sample_size"),

@@ -955,6 +955,18 @@ struct ParticleFilterTrendBatchResult {
     nb::object effective_sample_size;
 };
 
+struct SavitzkyGolayFilterResult {
+    double smooth;
+    double first_derivative;
+    double second_derivative;
+};
+
+struct SavitzkyGolayFilterBatchResult {
+    nb::object smooth;
+    nb::object first_derivative;
+    nb::object second_derivative;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1100,6 +1112,10 @@ inline double result_checksum(const InteractingMultipleModelFilterResult &value)
 
 inline double result_checksum(const ParticleFilterTrendResult &value) {
     return value.trend + value.velocity + value.signal + value.effective_sample_size;
+}
+
+inline double result_checksum(const SavitzkyGolayFilterResult &value) {
+    return value.smooth + value.first_derivative + value.second_derivative;
 }
 
 class RollingExtremeQueue {
@@ -9785,6 +9801,206 @@ private:
     ParticleFilterTrendResult last_;
 };
 
+class SavitzkyGolayFilter {
+public:
+    SavitzkyGolayFilter(int window = 7, int polynomial_order = 2, double dt = 1.0, bool fillna = true)
+        : window_(std::max(window, 3)),
+          polynomial_order_(std::clamp(polynomial_order, 2, std::max(window_ - 1, 2))),
+          dt_(dt > 0.0 ? dt : 1.0),
+          values_(window_),
+          smooth_coefficients_(coefficients(window_, polynomial_order_, 0, dt_)),
+          first_derivative_coefficients_(coefficients(window_, polynomial_order_, 1, dt_)),
+          second_derivative_coefficients_(coefficients(window_, polynomial_order_, 2, dt_)),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    SavitzkyGolayFilterResult update(double close) {
+        values_.push(close);
+        if (!fillna_ && !values_.full()) {
+            last_ = SavitzkyGolayFilterResult{nan(), nan(), nan()};
+            return last_;
+        }
+
+        const std::size_t size = values_.size();
+        if (size == static_cast<std::size_t>(window_)) {
+            last_ = SavitzkyGolayFilterResult{
+                apply(smooth_coefficients_),
+                apply(first_derivative_coefficients_),
+                apply(second_derivative_coefficients_),
+            };
+            return last_;
+        }
+
+        if (size == 1) {
+            last_ = SavitzkyGolayFilterResult{values_.at(0), 0.0, 0.0};
+            return last_;
+        }
+
+        const int partial_order = std::min<int>(polynomial_order_, static_cast<int>(size) - 1);
+        last_ = SavitzkyGolayFilterResult{
+            apply(coefficients(static_cast<int>(size), partial_order, 0, dt_)),
+            apply(coefficients(static_cast<int>(size), partial_order, 1, dt_)),
+            partial_order >= 2 ? apply(coefficients(static_cast<int>(size), partial_order, 2, dt_)) : 0.0,
+        };
+        return last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const SavitzkyGolayFilterResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    SavitzkyGolayFilterBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> smooth(size);
+        std::vector<double> first_derivative(size);
+        std::vector<double> second_derivative(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const SavitzkyGolayFilterResult out = update(static_cast<double>(values[i]));
+            smooth[i] = out.smooth;
+            first_derivative[i] = out.first_derivative;
+            second_derivative[i] = out.second_derivative;
+        }
+        return {
+            make_array(std::move(smooth)),
+            make_array(std::move(first_derivative)),
+            make_array(std::move(second_derivative)),
+        };
+    }
+
+private:
+    static double factorial(int value) {
+        double output = 1.0;
+        for (int i = 2; i <= value; ++i) {
+            output *= static_cast<double>(i);
+        }
+        return output;
+    }
+
+    static std::vector<double> invert(std::vector<double> matrix, int size) {
+        std::vector<double> augmented(static_cast<std::size_t>(size * size * 2), 0.0);
+        const int stride = 2 * size;
+        for (int row = 0; row < size; ++row) {
+            for (int col = 0; col < size; ++col) {
+                augmented[static_cast<std::size_t>(row * stride + col)] = matrix[static_cast<std::size_t>(row * size + col)];
+            }
+            augmented[static_cast<std::size_t>(row * stride + size + row)] = 1.0;
+        }
+
+        for (int col = 0; col < size; ++col) {
+            int pivot = col;
+            double pivot_abs = std::abs(augmented[static_cast<std::size_t>(pivot * stride + col)]);
+            for (int row = col + 1; row < size; ++row) {
+                const double candidate = std::abs(augmented[static_cast<std::size_t>(row * stride + col)]);
+                if (candidate > pivot_abs) {
+                    pivot = row;
+                    pivot_abs = candidate;
+                }
+            }
+            if (pivot_abs < 1.0e-14) {
+                throw nb::value_error("SavitzkyGolayFilter polynomial fit is singular");
+            }
+            if (pivot != col) {
+                for (int item = 0; item < stride; ++item) {
+                    std::swap(
+                        augmented[static_cast<std::size_t>(col * stride + item)],
+                        augmented[static_cast<std::size_t>(pivot * stride + item)]);
+                }
+            }
+
+            const double divisor = augmented[static_cast<std::size_t>(col * stride + col)];
+            for (int item = 0; item < stride; ++item) {
+                augmented[static_cast<std::size_t>(col * stride + item)] /= divisor;
+            }
+            for (int row = 0; row < size; ++row) {
+                if (row == col) {
+                    continue;
+                }
+                const double factor = augmented[static_cast<std::size_t>(row * stride + col)];
+                if (factor == 0.0) {
+                    continue;
+                }
+                for (int item = 0; item < stride; ++item) {
+                    augmented[static_cast<std::size_t>(row * stride + item)] -= factor * augmented[static_cast<std::size_t>(col * stride + item)];
+                }
+            }
+        }
+
+        std::vector<double> inverse(static_cast<std::size_t>(size * size));
+        for (int row = 0; row < size; ++row) {
+            for (int col = 0; col < size; ++col) {
+                inverse[static_cast<std::size_t>(row * size + col)] = augmented[static_cast<std::size_t>(row * stride + size + col)];
+            }
+        }
+        return inverse;
+    }
+
+    static std::vector<double> coefficients(int window, int polynomial_order, int derivative_order, double dt) {
+        const int columns = std::min(polynomial_order, window - 1) + 1;
+        std::vector<double> output(static_cast<std::size_t>(window), 0.0);
+        if (derivative_order >= columns) {
+            return output;
+        }
+
+        std::vector<double> normal(static_cast<std::size_t>(columns * columns), 0.0);
+        std::vector<double> vandermonde(static_cast<std::size_t>(window * columns), 0.0);
+        for (int row = 0; row < window; ++row) {
+            const double x = static_cast<double>(row - (window - 1));
+            double power = 1.0;
+            for (int col = 0; col < columns; ++col) {
+                vandermonde[static_cast<std::size_t>(row * columns + col)] = power;
+                power *= x;
+            }
+        }
+
+        for (int row = 0; row < columns; ++row) {
+            for (int col = 0; col < columns; ++col) {
+                double sum = 0.0;
+                for (int sample = 0; sample < window; ++sample) {
+                    sum += vandermonde[static_cast<std::size_t>(sample * columns + row)] *
+                           vandermonde[static_cast<std::size_t>(sample * columns + col)];
+                }
+                normal[static_cast<std::size_t>(row * columns + col)] = sum;
+            }
+        }
+
+        const std::vector<double> inverse = invert(std::move(normal), columns);
+        const double scale = factorial(derivative_order) / std::pow(dt, derivative_order);
+        for (int sample = 0; sample < window; ++sample) {
+            double weight = 0.0;
+            for (int col = 0; col < columns; ++col) {
+                weight += inverse[static_cast<std::size_t>(derivative_order * columns + col)] *
+                          vandermonde[static_cast<std::size_t>(sample * columns + col)];
+            }
+            output[static_cast<std::size_t>(sample)] = scale * weight;
+        }
+        return output;
+    }
+
+    double apply(const std::vector<double> &coefficients) const {
+        double value = 0.0;
+        for (std::size_t i = 0; i < coefficients.size(); ++i) {
+            value += coefficients[i] * values_.at(i);
+        }
+        return value;
+    }
+
+    int window_;
+    int polynomial_order_;
+    double dt_;
+    RollingBuffer values_;
+    std::vector<double> smooth_coefficients_;
+    std::vector<double> first_derivative_coefficients_;
+    std::vector<double> second_derivative_coefficients_;
+    bool fillna_;
+    SavitzkyGolayFilterResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -11598,6 +11814,16 @@ NB_MODULE(indicator, m) {
         .def_ro("signal", &ParticleFilterTrendBatchResult::signal)
         .def_ro("effective_sample_size", &ParticleFilterTrendBatchResult::effective_sample_size);
 
+    nb::class_<SavitzkyGolayFilterResult>(m, "SavitzkyGolayFilterResult")
+        .def_ro("smooth", &SavitzkyGolayFilterResult::smooth)
+        .def_ro("first_derivative", &SavitzkyGolayFilterResult::first_derivative)
+        .def_ro("second_derivative", &SavitzkyGolayFilterResult::second_derivative);
+
+    nb::class_<SavitzkyGolayFilterBatchResult>(m, "SavitzkyGolayFilterBatchResult")
+        .def_ro("smooth", &SavitzkyGolayFilterBatchResult::smooth)
+        .def_ro("first_derivative", &SavitzkyGolayFilterBatchResult::first_derivative)
+        .def_ro("second_derivative", &SavitzkyGolayFilterBatchResult::second_derivative);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -13309,6 +13535,55 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(velocity)),
                 make_array(std::move(signal)),
                 make_array(std::move(effective_sample_size)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<SavitzkyGolayFilter>(m, "SavitzkyGolayFilter")
+        .def(nb::init<int, int, double, bool>(),
+             nb::arg("window") = 7,
+             nb::arg("polynomial_order") = 2,
+             nb::arg("dt") = 1.0,
+             nb::arg("fillna") = true)
+        .def("update", &SavitzkyGolayFilter::update, nb::arg("close"))
+        .def("last", &SavitzkyGolayFilter::last)
+        RTTA_ADVANCE1(SavitzkyGolayFilter, close)
+        RTTA_REPLAY1(SavitzkyGolayFilter, close)
+        RTTA_FIELD1(SavitzkyGolayFilter, smooth, close)
+        RTTA_FIELD1(SavitzkyGolayFilter, first_derivative, close)
+        RTTA_FIELD1(SavitzkyGolayFilter, second_derivative, close)
+        .def("replay_update_outputs", [](SavitzkyGolayFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](SavitzkyGolayFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](SavitzkyGolayFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](SavitzkyGolayFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](SavitzkyGolayFilter &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> smooth = make_record_output(records);
+            std::vector<double> first_derivative;
+            std::vector<double> second_derivative;
+            first_derivative.reserve(smooth.capacity());
+            second_derivative.reserve(smooth.capacity());
+            for (nb::handle record : records) {
+                const SavitzkyGolayFilterResult out = self.update(scalar_or_record_value(record, "close", 0));
+                smooth.push_back(out.smooth);
+                first_derivative.push_back(out.first_derivative);
+                second_derivative.push_back(out.second_derivative);
+            }
+            return SavitzkyGolayFilterBatchResult{
+                make_array(std::move(smooth)),
+                make_array(std::move(first_derivative)),
+                make_array(std::move(second_derivative)),
             };
         }, nb::arg("records"));
 
