@@ -129,3 +129,21 @@ CSV output is also available:
 ```bash
 python benchmarks/benchmark_indicators.py --format csv --output benchmark.csv
 ```
+
+Citation
+--------
+
+If you use RTTA in research, benchmarks, or published work, cite it with:
+
+```bibtex
+@misc{deprince2026pyrtta,
+  author       = {DePrince, Adam},
+  title        = {{pyrtta}: Low Latency Incremental Technical Analysis},
+  year         = {2026},
+  version      = {0.2.0},
+  howpublished = {\url{https://github.com/adamdeprince/rtta}},
+  note         = {Python package name: pyrtta; import package name: rtta}
+}
+```
+
+The same entry is available in `CITATION.bib`.

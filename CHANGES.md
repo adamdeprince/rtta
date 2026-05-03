@@ -17,6 +17,8 @@
 - Added `ALGOS.md`, cataloging public indicators with short descriptions and
   documentation links that prefer ChartSchool when a direct ChartSchool page
   exists.
+- Added `CITATION.bib` and a README citation section with a BibTeX reference
+  for users who cite the package.
 - Added `VariableIndexDynamicAverage`, implementing VIDYA with CMO-modulated
   EMA smoothing for update, advance, replay, array batch, record-list batch,
   pandas-table batch, benchmarks, and correctness tests.
