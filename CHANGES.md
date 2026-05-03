@@ -4,11 +4,19 @@
 
 - Renamed the Python distribution to `pyrtta` while preserving `rtta` as the
   import package name.
-- Added `fast-kalman` as a Python dependency and C++ submodule-backed include
-  dependency for Kalman filter indicators.
+- Added pinned `fast-kalman==0.2.2` Python and build dependencies for Kalman
+  filter indicators.
+- Removed the vendored `third_party/fast-kalman` submodule path; CMake now
+  consumes the C++ headers from the pinned `fast-kalman` build dependency so
+  source distributions build cleanly without submodule-specific setup.
 - Added `KalmanMovingAverage`, a constant-velocity Kalman price filter with
   update, advance, replay, batch, pandas-table batch, record-list batch, and
   indicator-specific immutable tuning output.
+- Added `KalmanLocalLinearTrend`, a Kalman level/trend state-space indicator
+  with configurable and trainable tuning parameters.
+- Added `ALGOS.md`, cataloging public indicators with short descriptions and
+  documentation links that prefer ChartSchool when a direct ChartSchool page
+  exists.
 - Added `VariableIndexDynamicAverage`, implementing VIDYA with CMO-modulated
   EMA smoothing for update, advance, replay, array batch, record-list batch,
   pandas-table batch, benchmarks, and correctness tests.

@@ -28,12 +28,10 @@ Development
 
 This project is built as a C++23 nanobind extension with CMake through
 `scikit-build-core`. Poetry is used for dependency management. The Kalman
-indicators use `fast-kalman` directly through the `third_party/fast-kalman`
-submodule, so source checkouts should initialize submodules before building.
+indicators include `fast-kalman` headers from the pinned build dependency.
 
 ```bash
 poetry install --with build,dev --no-root
-git submodule update --init --recursive
 poetry run python -m pip install --no-build-isolation -e .
 poetry run pytest
 ```

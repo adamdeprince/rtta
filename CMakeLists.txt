@@ -19,11 +19,21 @@ endif()
 find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(nanobind CONFIG REQUIRED)
 
-set(FAST_KALMAN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fast-kalman/include")
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -c
+    "import importlib.metadata as m; print(m.distribution('fast-kalman').locate_file('include'))"
+  OUTPUT_VARIABLE FAST_KALMAN_INCLUDE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE FAST_KALMAN_INCLUDE_RESULT
+)
+if (NOT FAST_KALMAN_INCLUDE_RESULT EQUAL 0)
+  message(FATAL_ERROR
+    "fast-kalman==0.2.2 must be installed in the build environment. "
+    "It is listed in pyproject.toml build-system.requires.")
+endif()
 if (NOT EXISTS "${FAST_KALMAN_INCLUDE_DIR}/kalman/kalman.hpp")
   message(FATAL_ERROR
-    "fast-kalman submodule is missing. "
-    "Run `git submodule update --init --recursive` before building from a git checkout.")
+    "fast-kalman was found, but ${FAST_KALMAN_INCLUDE_DIR}/kalman/kalman.hpp does not exist.")
 endif()
 
 nanobind_add_module(indicator NB_STATIC src/rtta/indicator.cpp)

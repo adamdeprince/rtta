@@ -22,6 +22,7 @@ MULTI_OUTPUTS = {
     "HighLowIndex": ("min_index", "max_index"),
     "Ichimoku": ("conversion", "base", "span_a", "span_b"),
     "KSTOscillator": ("kst", "signal", "difference"),
+    "KalmanLocalLinearTrend": ("level", "trend"),
     "KeltnerChannel": ("middle", "upper", "lower"),
     "KeltnerChannelOriginal": ("middle", "upper", "lower"),
     "PercentagePrice": ("ppo", "signal", "histogram"),

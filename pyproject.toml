@@ -2,6 +2,7 @@
 requires = [
     "scikit-build-core>=0.12",
     "nanobind>=2.2",
+    "fast-kalman==0.2.2",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -37,12 +38,6 @@ minimum-version = "0.12"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/rtta"]
 wheel.exclude = ["**/*.cpp"]
-sdist.include = [
-    "third_party/fast-kalman/CMakeLists.txt",
-    "third_party/fast-kalman/LICENSE",
-    "third_party/fast-kalman/include/**",
-    "third_party/fast-kalman/src/kalman.cpp",
-]
 sdist.exclude = [".codex"]
 
 [tool.scikit-build.cmake]

@@ -1,0 +1,203 @@
+import numpy as np
+import pytest
+from types import SimpleNamespace
+
+import rtta
+from rtta.indicator import KalmanLocalLinearTrend, KalmanMovingAverage
+
+kalman = pytest.importorskip("kalman")
+
+
+def _fast_kalman_outputs(close, tuning):
+    kf = kalman.make_constant_velocity_1d(
+        tuning.initial_price,
+        tuning.initial_velocity,
+        tuning.dt,
+        tuning.position_variance,
+        tuning.velocity_variance,
+        tuning.process_position_variance,
+        tuning.process_velocity_variance,
+        tuning.measurement_variance,
+    )
+    output = []
+    for value in close:
+        kf.update([float(value)])
+        output.append(float(kf.x[0]))
+    return np.asarray(output)
+
+
+def _fast_kalman_level_trend(close, tuning):
+    kf = kalman.make_constant_velocity_1d(
+        tuning.initial_level,
+        tuning.initial_trend,
+        tuning.dt,
+        tuning.level_variance,
+        tuning.trend_variance,
+        tuning.process_level_variance,
+        tuning.process_trend_variance,
+        tuning.observation_variance,
+    )
+    level = []
+    trend = []
+    for value in close:
+        kf.update([float(value)])
+        level.append(float(kf.x[0]))
+        trend.append(float(kf.x[1]))
+    return np.asarray(level), np.asarray(trend)
+
+
+def _default_seed_outputs(close):
+    tuning = SimpleNamespace(
+        initial_price=float(close[0]),
+        initial_velocity=0.0,
+        dt=1.0,
+        position_variance=1.0,
+        velocity_variance=1.0,
+        process_position_variance=1.0e-4,
+        process_velocity_variance=1.0e-3,
+        measurement_variance=0.25,
+    )
+
+    kf = kalman.make_constant_velocity_1d(
+        tuning.initial_price,
+        tuning.initial_velocity,
+        tuning.dt,
+        tuning.position_variance,
+        tuning.velocity_variance,
+        tuning.process_position_variance,
+        tuning.process_velocity_variance,
+        tuning.measurement_variance,
+    )
+    output = [float(close[0])]
+    for value in close[1:]:
+        kf.update([float(value)])
+        output.append(float(kf.x[0]))
+    return np.asarray(output)
+
+
+def test_update_matches_fast_kalman_constant_velocity_filter():
+    close = np.asarray([100.0, 100.4, 101.2, 101.0, 102.5, 103.0], dtype=np.float64)
+    tuning = KalmanMovingAverage.tune(close)
+    indicator = KalmanMovingAverage(tuning)
+
+    actual = np.asarray([indicator.update(value) for value in close])
+    expected = _fast_kalman_outputs(close, tuning)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_moving_average_tuning_can_be_splatted_into_constructor():
+    close = np.asarray([100.0, 100.4, 101.2, 101.0, 102.5, 103.0], dtype=np.float64)
+    tuning = KalmanMovingAverage.tune(close)
+    via_tuning = KalmanMovingAverage(tuning).batch(close)
+    via_args = KalmanMovingAverage(*tuning).batch(close)
+    np.testing.assert_allclose(via_args, via_tuning, rtol=1e-12, atol=1e-12)
+
+
+def test_default_batch_matches_seeded_fast_kalman_path_for_realistic_sequence():
+    rng = np.random.default_rng(9876)
+    close = 100.0 + np.cumsum(rng.normal(0.03, 0.7, 512))
+
+    actual = KalmanMovingAverage().batch(close)
+    expected = _default_seed_outputs(close)
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+
+
+def test_tune_matches_fast_kalman_linear_tuner_for_price_model():
+    close = np.asarray([50.0, 50.2, 50.6, 50.7, 51.4, 51.8, 52.0], dtype=np.float64)
+    tuning = KalmanMovingAverage.tune(close)
+    generic = kalman.LinearKalmanTuner(2, 1, dt=1.0, model="constant-velocity").update(close)
+
+    assert tuning.initial_price == pytest.approx(generic.x[0])
+    assert tuning.initial_velocity == pytest.approx(generic.x[1])
+    assert tuning.dt == pytest.approx(1.0)
+    assert tuning.position_variance == pytest.approx(generic.P[0])
+    assert tuning.velocity_variance == pytest.approx(generic.P[3])
+    assert tuning.process_position_variance == pytest.approx(generic.Q[0])
+    assert tuning.process_velocity_variance == pytest.approx(generic.Q[3])
+    assert tuning.measurement_variance == pytest.approx(generic.R[0])
+
+
+def test_tune_accepts_records_and_pandas_table():
+    close = np.asarray([10.0, 10.4, 10.3, 11.0, 11.6], dtype=np.float64)
+    expected = KalmanMovingAverage.tune(close)
+
+    records = [{"close": float(value)} for value in close]
+    from_records = KalmanMovingAverage.tune(records)
+    assert from_records.measurement_variance == pytest.approx(expected.measurement_variance)
+
+    pandas = pytest.importorskip("pandas")
+    from_table = KalmanMovingAverage.tune(pandas.DataFrame({"close": close}))
+    assert from_table.process_velocity_variance == pytest.approx(expected.process_velocity_variance)
+
+
+def test_advance_replay_and_last_follow_update_state():
+    close = np.asarray([30.0, 30.1, 30.7, 30.6, 31.2], dtype=np.float64)
+    update_indicator = KalmanMovingAverage()
+    advance_indicator = KalmanMovingAverage()
+
+    for value in close[:-1]:
+        expected = update_indicator.update(value)
+        assert advance_indicator.advance(value) is None
+        assert advance_indicator.last() == pytest.approx(expected)
+
+    assert advance_indicator.update(close[-1]) == pytest.approx(update_indicator.update(close[-1]))
+    assert isinstance(KalmanMovingAverage().replay_update(close), float)
+    assert isinstance(KalmanMovingAverage().replay_advance(close), float)
+
+
+def test_tuning_type_is_exported():
+    tuning = rtta.KalmanMovingAverage.tune([1.0, 1.2, 1.4])
+    assert isinstance(tuning, rtta.KalmanMovingAverageTuning)
+    with pytest.raises(AttributeError):
+        tuning.measurement_variance = 1.0
+
+
+def test_local_linear_trend_update_matches_fast_kalman_constant_velocity_filter():
+    close = np.asarray([100.0, 100.4, 101.2, 101.0, 102.5, 103.0], dtype=np.float64)
+    tuning = KalmanLocalLinearTrend.tune(close)
+    indicator = KalmanLocalLinearTrend(tuning)
+
+    actual = [indicator.update(value) for value in close]
+    expected_level, expected_trend = _fast_kalman_level_trend(close, tuning)
+    np.testing.assert_allclose([item.level for item in actual], expected_level, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose([item.trend for item in actual], expected_trend, rtol=1e-12, atol=1e-12)
+
+
+def test_local_linear_trend_batch_replay_scalar_and_splat_paths():
+    rng = np.random.default_rng(12345)
+    close = 50.0 + np.cumsum(rng.normal(0.05, 0.5, 512))
+    tuning = KalmanLocalLinearTrend.tune(close)
+
+    batch = KalmanLocalLinearTrend(tuning).batch(close)
+    replay = KalmanLocalLinearTrend(tuning).replay_update_outputs(close)
+    np.testing.assert_allclose(batch.level, replay.level, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(batch.trend, replay.trend, rtol=1e-12, atol=1e-12)
+
+    via_args = KalmanLocalLinearTrend(*tuning).batch(close)
+    np.testing.assert_allclose(batch.level, via_args.level, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(batch.trend, via_args.trend, rtol=1e-12, atol=1e-12)
+
+    level_indicator = KalmanLocalLinearTrend(tuning)
+    trend_indicator = KalmanLocalLinearTrend(tuning)
+    result = KalmanLocalLinearTrend(tuning).update(float(close[0]))
+    assert level_indicator.update_level(float(close[0])) == pytest.approx(result.level)
+    assert level_indicator.last_level() == pytest.approx(result.level)
+    assert trend_indicator.update_trend(float(close[0])) == pytest.approx(result.trend)
+    assert trend_indicator.last_trend() == pytest.approx(result.trend)
+
+
+def test_local_linear_trend_tune_accepts_records_pandas_and_is_immutable():
+    close = np.asarray([10.0, 10.4, 10.3, 11.0, 11.6], dtype=np.float64)
+    expected = KalmanLocalLinearTrend.tune(close)
+
+    records = [{"close": float(value)} for value in close]
+    from_records = KalmanLocalLinearTrend.tune(records)
+    assert from_records.observation_variance == pytest.approx(expected.observation_variance)
+
+    pandas = pytest.importorskip("pandas")
+    from_table = KalmanLocalLinearTrend.tune(pandas.DataFrame({"close": close}))
+    assert from_table.process_trend_variance == pytest.approx(expected.process_trend_variance)
+
+    assert isinstance(from_table, rtta.KalmanLocalLinearTrendTuning)
+    with pytest.raises(AttributeError):
+        from_table.observation_variance = 1.0

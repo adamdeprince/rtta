@@ -779,6 +779,16 @@ struct BollingerBandsBatchResult {
     nb::object lower;
 };
 
+struct KalmanLocalLinearTrendResult {
+    double level;
+    double trend;
+};
+
+struct KalmanLocalLinearTrendBatchResult {
+    nb::object level;
+    nb::object trend;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -867,6 +877,10 @@ inline double result_checksum(const StochasticResult &value) {
 
 inline double result_checksum(const BollingerBandsResult &value) {
     return value.middle + value.upper + value.lower;
+}
+
+inline double result_checksum(const KalmanLocalLinearTrendResult &value) {
+    return value.level + value.trend;
 }
 
 class RollingExtremeQueue {
@@ -3151,6 +3165,17 @@ struct KalmanMovingAverageTuning {
     double measurement_variance;
 };
 
+struct KalmanLocalLinearTrendTuning {
+    double initial_level;
+    double initial_trend;
+    double dt;
+    double level_variance;
+    double trend_variance;
+    double process_level_variance;
+    double process_trend_variance;
+    double observation_variance;
+};
+
 class KalmanMovingAverage {
 public:
     KalmanMovingAverage(double initial_price = nan(),
@@ -3406,6 +3431,149 @@ private:
     bool initialized_;
     std::size_t count_;
     double last_;
+    bool fillna_;
+};
+
+class KalmanLocalLinearTrend {
+public:
+    KalmanLocalLinearTrend(double initial_level = nan(),
+                           double initial_trend = 0.0,
+                           double dt = 1.0,
+                           double level_variance = 1.0,
+                           double trend_variance = 1.0,
+                           double process_level_variance = 1.0e-4,
+                           double process_trend_variance = 1.0e-3,
+                           double observation_variance = 0.25,
+                           bool fillna = true)
+        : initial_level_(initial_level),
+          initial_trend_(initial_trend),
+          dt_(dt > 0.0 ? dt : 1.0),
+          level_variance_(variance_floor(level_variance)),
+          trend_variance_(variance_floor(trend_variance)),
+          process_level_variance_(variance_floor(process_level_variance)),
+          process_trend_variance_(variance_floor(process_trend_variance)),
+          observation_variance_(variance_floor(observation_variance)),
+          initialized_(false),
+          count_(0),
+          last_{nan(), nan()},
+          fillna_(fillna) {}
+
+    KalmanLocalLinearTrend(const KalmanLocalLinearTrendTuning &tuning, bool fillna = true)
+        : KalmanLocalLinearTrend(
+              tuning.initial_level,
+              tuning.initial_trend,
+              tuning.dt,
+              tuning.level_variance,
+              tuning.trend_variance,
+              tuning.process_level_variance,
+              tuning.process_trend_variance,
+              tuning.observation_variance,
+              fillna) {}
+
+    KalmanLocalLinearTrendResult update(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_level_) ? initial_level_ : close);
+            if (!std::isfinite(initial_level_)) {
+                last_ = KalmanLocalLinearTrendResult{close, initial_trend_};
+                ++count_;
+                return output_for_warmup();
+            }
+        }
+
+        (void) filter_.update(kalman::Vec<1>{close});
+        last_ = KalmanLocalLinearTrendResult{filter_.x[0], filter_.x[1]};
+        ++count_;
+        return output_for_warmup();
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const KalmanLocalLinearTrendResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    KalmanLocalLinearTrendBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> level(size);
+        std::vector<double> trend(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const KalmanLocalLinearTrendResult out = update(static_cast<double>(values[i]));
+            level[i] = out.level;
+            trend[i] = out.trend;
+        }
+        return KalmanLocalLinearTrendBatchResult{
+            make_array(std::move(level)),
+            make_array(std::move(trend)),
+        };
+    }
+
+    template <typename Array>
+    static KalmanLocalLinearTrendTuning tune_array(const Array &close, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_array(close, dt, min_variance));
+    }
+
+    static KalmanLocalLinearTrendTuning tune_records(nb::iterable records, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_records(records, dt, min_variance));
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        if (!std::isfinite(value) || value < minimum) {
+            return minimum;
+        }
+        return value;
+    }
+
+    static KalmanLocalLinearTrendTuning from_moving_average_tuning(const KalmanMovingAverageTuning &tuning) {
+        return KalmanLocalLinearTrendTuning{
+            tuning.initial_price,
+            tuning.initial_velocity,
+            tuning.dt,
+            tuning.position_variance,
+            tuning.velocity_variance,
+            tuning.process_position_variance,
+            tuning.process_velocity_variance,
+            tuning.measurement_variance,
+        };
+    }
+
+    KalmanLocalLinearTrendResult output_for_warmup() const {
+        if (!fillna_ && count_ < 2) {
+            return KalmanLocalLinearTrendResult{nan(), nan()};
+        }
+        return last_;
+    }
+
+    void initialize(double level) {
+        filter_ = kalman::make_constant_velocity_1d(
+            level,
+            initial_trend_,
+            dt_,
+            level_variance_,
+            trend_variance_,
+            process_level_variance_,
+            process_trend_variance_,
+            observation_variance_);
+        initialized_ = true;
+        last_ = KalmanLocalLinearTrendResult{level, initial_trend_};
+    }
+
+    double initial_level_;
+    double initial_trend_;
+    double dt_;
+    double level_variance_;
+    double trend_variance_;
+    double process_level_variance_;
+    double process_trend_variance_;
+    double observation_variance_;
+    kalman::LocalLinearTrendFilter filter_;
+    bool initialized_;
+    std::size_t count_;
+    KalmanLocalLinearTrendResult last_;
     bool fillna_;
 };
 
@@ -8726,6 +8894,14 @@ NB_MODULE(indicator, m) {
         .def_ro("upper", &BollingerBandsBatchResult::upper)
         .def_ro("lower", &BollingerBandsBatchResult::lower);
 
+    nb::class_<KalmanLocalLinearTrendResult>(m, "KalmanLocalLinearTrendResult")
+        .def_ro("level", &KalmanLocalLinearTrendResult::level)
+        .def_ro("trend", &KalmanLocalLinearTrendResult::trend);
+
+    nb::class_<KalmanLocalLinearTrendBatchResult>(m, "KalmanLocalLinearTrendBatchResult")
+        .def_ro("level", &KalmanLocalLinearTrendBatchResult::level)
+        .def_ro("trend", &KalmanLocalLinearTrendBatchResult::trend);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -9333,7 +9509,20 @@ NB_MODULE(indicator, m) {
         .def_ro("velocity_variance", &KalmanMovingAverageTuning::velocity_variance)
         .def_ro("process_position_variance", &KalmanMovingAverageTuning::process_position_variance)
         .def_ro("process_velocity_variance", &KalmanMovingAverageTuning::process_velocity_variance)
-        .def_ro("measurement_variance", &KalmanMovingAverageTuning::measurement_variance);
+        .def_ro("measurement_variance", &KalmanMovingAverageTuning::measurement_variance)
+        .def("__len__", [](const KalmanMovingAverageTuning &) { return 8; })
+        .def("__iter__", [](const KalmanMovingAverageTuning &self) {
+            nb::tuple values = nb::make_tuple(
+                self.initial_price,
+                self.initial_velocity,
+                self.dt,
+                self.position_variance,
+                self.velocity_variance,
+                self.process_position_variance,
+                self.process_velocity_variance,
+                self.measurement_variance);
+            return values.attr("__iter__")();
+        });
 
     nb::class_<KalmanMovingAverage>(m, "KalmanMovingAverage")
         .def(nb::init<double, double, double, double, double, double, double, double, bool>(),
@@ -9389,6 +9578,100 @@ NB_MODULE(indicator, m) {
                 output.push_back(self.update(scalar_or_record_value(record, "close", 0)));
             }
             return make_array(std::move(output));
+        }, nb::arg("records"));
+
+    nb::class_<KalmanLocalLinearTrendTuning>(m, "KalmanLocalLinearTrendTuning")
+        .def_ro("initial_level", &KalmanLocalLinearTrendTuning::initial_level)
+        .def_ro("initial_trend", &KalmanLocalLinearTrendTuning::initial_trend)
+        .def_ro("dt", &KalmanLocalLinearTrendTuning::dt)
+        .def_ro("level_variance", &KalmanLocalLinearTrendTuning::level_variance)
+        .def_ro("trend_variance", &KalmanLocalLinearTrendTuning::trend_variance)
+        .def_ro("process_level_variance", &KalmanLocalLinearTrendTuning::process_level_variance)
+        .def_ro("process_trend_variance", &KalmanLocalLinearTrendTuning::process_trend_variance)
+        .def_ro("observation_variance", &KalmanLocalLinearTrendTuning::observation_variance)
+        .def("__len__", [](const KalmanLocalLinearTrendTuning &) { return 8; })
+        .def("__iter__", [](const KalmanLocalLinearTrendTuning &self) {
+            nb::tuple values = nb::make_tuple(
+                self.initial_level,
+                self.initial_trend,
+                self.dt,
+                self.level_variance,
+                self.trend_variance,
+                self.process_level_variance,
+                self.process_trend_variance,
+                self.observation_variance);
+            return values.attr("__iter__")();
+        });
+
+    nb::class_<KalmanLocalLinearTrend>(m, "KalmanLocalLinearTrend")
+        .def(nb::init<double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("initial_level") = nan(),
+             nb::arg("initial_trend") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("level_variance") = 1.0,
+             nb::arg("trend_variance") = 1.0,
+             nb::arg("process_level_variance") = 1.0e-4,
+             nb::arg("process_trend_variance") = 1.0e-3,
+             nb::arg("observation_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def(nb::init<const KalmanLocalLinearTrendTuning &, bool>(),
+             nb::arg("tuning"),
+             nb::arg("fillna") = true)
+        .def_static("tune", [](const InputArray &close, double dt, double min_variance) {
+            return KalmanLocalLinearTrend::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](const FloatInputArray &close, double dt, double min_variance) {
+            return KalmanLocalLinearTrend::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](nb::iterable records, double dt, double min_variance) {
+            if (table_has_column(records, "close")) {
+                nb::object close = table_column_array(records, "close");
+                switch (array_dtype(close)) {
+                    case InputDType::Float32:
+                        return KalmanLocalLinearTrend::tune_array(nb::cast<FloatInputArray>(close), dt, min_variance);
+                    case InputDType::Float64:
+                        return KalmanLocalLinearTrend::tune_array(nb::cast<InputArray>(close), dt, min_variance);
+                }
+                throw nb::type_error("unsupported pandas table column dtype");
+            }
+            return KalmanLocalLinearTrend::tune_records(records, dt, min_variance);
+        }, nb::arg("records"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def("update", &KalmanLocalLinearTrend::update, nb::arg("close"))
+        .def("last", &KalmanLocalLinearTrend::last)
+        RTTA_ADVANCE1(KalmanLocalLinearTrend, close)
+        RTTA_REPLAY1(KalmanLocalLinearTrend, close)
+        RTTA_FIELD1(KalmanLocalLinearTrend, level, close)
+        RTTA_FIELD1(KalmanLocalLinearTrend, trend, close)
+        .def("replay_update_outputs", [](KalmanLocalLinearTrend &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](KalmanLocalLinearTrend &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanLocalLinearTrend &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanLocalLinearTrend &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanLocalLinearTrend &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> level = make_record_output(records);
+            std::vector<double> trend;
+            trend.reserve(level.capacity());
+            for (nb::handle record : records) {
+                const KalmanLocalLinearTrendResult out = self.update(scalar_or_record_value(record, "close", 0));
+                level.push_back(out.level);
+                trend.push_back(out.trend);
+            }
+            return KalmanLocalLinearTrendBatchResult{
+                make_array(std::move(level)),
+                make_array(std::move(trend)),
+            };
         }, nb::arg("records"));
 
     nb::class_<VariableIndexDynamicAverage>(m, "VariableIndexDynamicAverage")
