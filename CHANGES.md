@@ -37,6 +37,9 @@
 - Added `InteractingMultipleModelFilter`, a four-regime IMM Kalman tracker
   that mixes low-volatility, high-volatility, trend, and chop models with
   online model probabilities.
+- Added `ParticleFilterTrend`, a deterministic-seed non-Gaussian particle
+  trend filter with Laplace measurement likelihood, systematic resampling,
+  signal output, and effective sample size diagnostics.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

@@ -179,6 +179,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("NormalizedATR", ("close", "high", "low")),
     IndicatorSpec("OnBalanceVolume", ("close", "volume")),
     IndicatorSpec("OrderFlowImbalance", ("bid_price", "bid_size", "ask_price", "ask_size"), batch_inputs=("bid_price", "bid_size", "ask_price", "ask_size")),
+    IndicatorSpec("ParticleFilterTrend", ("close",), ctor_kwargs={"particles": 64}, batch_inputs=("close",)),
     IndicatorSpec("ParabolicSAR", ("high", "low")),
     IndicatorSpec("PercentagePrice", ("close",), batch_inputs=("close",), batch_method="batch_ppo"),
     IndicatorSpec("PercentageVolume", ("volume",), batch_inputs=("volume",)),

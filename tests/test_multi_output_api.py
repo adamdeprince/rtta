@@ -38,6 +38,7 @@ MULTI_OUTPUTS = {
     "RelativeVigorIndex": ("rvi", "signal"),
     "KlingerVolumeOscillator": ("kvo", "signal", "histogram"),
     "MesaAdaptiveMovingAverage": ("mama", "fama"),
+    "ParticleFilterTrend": ("trend", "velocity", "signal", "effective_sample_size"),
     "Stochastic": ("slowk", "slowd"),
     "SuperTrend": ("value", "direction", "upper", "lower"),
     "TwoFactorKalmanTrendFilter": ("short_trend", "long_trend", "value"),

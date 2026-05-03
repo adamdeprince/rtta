@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -940,6 +941,20 @@ struct InteractingMultipleModelFilterBatchResult {
     nb::object chop_probability;
 };
 
+struct ParticleFilterTrendResult {
+    double trend;
+    double velocity;
+    double signal;
+    double effective_sample_size;
+};
+
+struct ParticleFilterTrendBatchResult {
+    nb::object trend;
+    nb::object velocity;
+    nb::object signal;
+    nb::object effective_sample_size;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1081,6 +1096,10 @@ inline double result_checksum(const AlphaBetaGammaTrackingFilterResult &value) {
 inline double result_checksum(const InteractingMultipleModelFilterResult &value) {
     return value.value + value.velocity + value.low_vol_probability + value.high_vol_probability +
            value.trend_probability + value.chop_probability;
+}
+
+inline double result_checksum(const ParticleFilterTrendResult &value) {
+    return value.trend + value.velocity + value.signal + value.effective_sample_size;
 }
 
 class RollingExtremeQueue {
@@ -9553,6 +9572,219 @@ private:
     InteractingMultipleModelFilterResult last_;
 };
 
+class ParticleFilterTrend {
+public:
+    ParticleFilterTrend(int particles = 128,
+                        double initial_price = nan(),
+                        double initial_velocity = 0.0,
+                        double dt = 1.0,
+                        double process_position_scale = 0.05,
+                        double process_velocity_scale = 0.01,
+                        double measurement_scale = 0.5,
+                        double resample_threshold = 0.5,
+                        std::uint64_t seed = 1,
+                        bool fillna = true)
+        : particles_(static_cast<std::size_t>(std::max(particles, 8))),
+          weights_(particles_.size(), 1.0 / static_cast<double>(particles_.size())),
+          initial_price_(initial_price),
+          initial_velocity_(std::isfinite(initial_velocity) ? initial_velocity : 0.0),
+          dt_(dt > 0.0 ? dt : 1.0),
+          process_position_scale_(positive_scale(process_position_scale, 0.05)),
+          process_velocity_scale_(positive_scale(process_velocity_scale, 0.01)),
+          measurement_scale_(positive_scale(measurement_scale, 0.5)),
+          resample_threshold_(std::clamp(std::isfinite(resample_threshold) ? resample_threshold : 0.5, 0.0, 1.0)),
+          rng_(seed == 0 ? 1 : seed),
+          initialized_(false),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    ParticleFilterTrendResult update(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
+            if (!std::isfinite(initial_price_)) {
+                update_output(close, static_cast<double>(particles_.size()));
+                ++count_;
+                return output_for_warmup();
+            }
+        }
+
+        propagate_and_weight(close);
+        const double effective_sample_size = effective_sample_size_value();
+        update_output(close, effective_sample_size);
+        if (effective_sample_size < resample_threshold_ * static_cast<double>(particles_.size())) {
+            resample();
+        }
+        ++count_;
+        return output_for_warmup();
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const ParticleFilterTrendResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    ParticleFilterTrendBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> trend(size);
+        std::vector<double> velocity(size);
+        std::vector<double> signal(size);
+        std::vector<double> effective_sample_size(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const ParticleFilterTrendResult out = update(static_cast<double>(values[i]));
+            trend[i] = out.trend;
+            velocity[i] = out.velocity;
+            signal[i] = out.signal;
+            effective_sample_size[i] = out.effective_sample_size;
+        }
+        return {
+            make_array(std::move(trend)),
+            make_array(std::move(velocity)),
+            make_array(std::move(signal)),
+            make_array(std::move(effective_sample_size)),
+        };
+    }
+
+private:
+    struct Particle {
+        double price;
+        double velocity;
+    };
+
+    static constexpr double pi_ = 3.141592653589793238462643383279502884;
+
+    static double positive_scale(double value, double fallback) {
+        return (!std::isfinite(value) || value <= 0.0) ? fallback : value;
+    }
+
+    double uniform_open() {
+        rng_ ^= rng_ >> 12;
+        rng_ ^= rng_ << 25;
+        rng_ ^= rng_ >> 27;
+        const std::uint64_t value = rng_ * 2685821657736338717ULL;
+        return (static_cast<double>(value >> 11) + 0.5) * (1.0 / 9007199254740992.0);
+    }
+
+    double standard_normal() {
+        const double u1 = std::max(uniform_open(), 1.0e-16);
+        const double u2 = uniform_open();
+        return std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * pi_ * u2);
+    }
+
+    void initialize(double close) {
+        const double spread = 0.25 * measurement_scale_;
+        const double velocity_spread = process_velocity_scale_;
+        const double equal_weight = 1.0 / static_cast<double>(particles_.size());
+        for (std::size_t i = 0; i < particles_.size(); ++i) {
+            particles_[i] = Particle{
+                close + spread * standard_normal(),
+                initial_velocity_ + velocity_spread * standard_normal(),
+            };
+            weights_[i] = equal_weight;
+        }
+        initialized_ = true;
+    }
+
+    void propagate_and_weight(double close) {
+        std::vector<double> log_weights(particles_.size());
+        double max_log_weight = -std::numeric_limits<double>::infinity();
+        const double sqrt_dt = std::sqrt(dt_);
+        for (std::size_t i = 0; i < particles_.size(); ++i) {
+            Particle &particle = particles_[i];
+            particle.velocity += process_velocity_scale_ * sqrt_dt * standard_normal();
+            particle.price += particle.velocity * dt_ + process_position_scale_ * sqrt_dt * standard_normal();
+            const double innovation = close - particle.price;
+            const double log_weight = std::log(std::max(weights_[i], 1.0e-300)) - std::abs(innovation) / measurement_scale_;
+            log_weights[i] = log_weight;
+            max_log_weight = std::max(max_log_weight, log_weight);
+        }
+
+        double total = 0.0;
+        for (std::size_t i = 0; i < particles_.size(); ++i) {
+            weights_[i] = std::exp(log_weights[i] - max_log_weight);
+            total += weights_[i];
+        }
+        if (!std::isfinite(total) || total <= 0.0) {
+            const double equal_weight = 1.0 / static_cast<double>(particles_.size());
+            for (double &weight : weights_) {
+                weight = equal_weight;
+            }
+            return;
+        }
+        for (double &weight : weights_) {
+            weight /= total;
+        }
+    }
+
+    double effective_sample_size_value() const {
+        double sum_squares = 0.0;
+        for (double weight : weights_) {
+            sum_squares += weight * weight;
+        }
+        return sum_squares > 0.0 ? 1.0 / sum_squares : static_cast<double>(particles_.size());
+    }
+
+    void update_output(double close, double effective_sample_size) {
+        double trend = 0.0;
+        double velocity = 0.0;
+        for (std::size_t i = 0; i < particles_.size(); ++i) {
+            trend += weights_[i] * particles_[i].price;
+            velocity += weights_[i] * particles_[i].velocity;
+        }
+        const double signal = close > trend ? 1.0 : (close < trend ? -1.0 : 0.0);
+        last_ = ParticleFilterTrendResult{trend, velocity, signal, effective_sample_size};
+    }
+
+    void resample() {
+        std::vector<Particle> resampled;
+        resampled.reserve(particles_.size());
+        const double step = 1.0 / static_cast<double>(particles_.size());
+        double u = uniform_open() * step;
+        double cumulative = weights_[0];
+        std::size_t index = 0;
+        for (std::size_t i = 0; i < particles_.size(); ++i) {
+            while (u > cumulative && index + 1 < particles_.size()) {
+                ++index;
+                cumulative += weights_[index];
+            }
+            resampled.push_back(particles_[index]);
+            u += step;
+        }
+        particles_ = std::move(resampled);
+        const double equal_weight = 1.0 / static_cast<double>(particles_.size());
+        for (double &weight : weights_) {
+            weight = equal_weight;
+        }
+    }
+
+    ParticleFilterTrendResult output_for_warmup() const {
+        if (!fillna_ && count_ < 2) {
+            return ParticleFilterTrendResult{nan(), nan(), nan(), nan()};
+        }
+        return last_;
+    }
+
+    std::vector<Particle> particles_;
+    std::vector<double> weights_;
+    double initial_price_;
+    double initial_velocity_;
+    double dt_;
+    double process_position_scale_;
+    double process_velocity_scale_;
+    double measurement_scale_;
+    double resample_threshold_;
+    std::uint64_t rng_;
+    bool initialized_;
+    std::size_t count_;
+    bool fillna_;
+    ParticleFilterTrendResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -11354,6 +11586,18 @@ NB_MODULE(indicator, m) {
         .def_ro("trend_probability", &InteractingMultipleModelFilterBatchResult::trend_probability)
         .def_ro("chop_probability", &InteractingMultipleModelFilterBatchResult::chop_probability);
 
+    nb::class_<ParticleFilterTrendResult>(m, "ParticleFilterTrendResult")
+        .def_ro("trend", &ParticleFilterTrendResult::trend)
+        .def_ro("velocity", &ParticleFilterTrendResult::velocity)
+        .def_ro("signal", &ParticleFilterTrendResult::signal)
+        .def_ro("effective_sample_size", &ParticleFilterTrendResult::effective_sample_size);
+
+    nb::class_<ParticleFilterTrendBatchResult>(m, "ParticleFilterTrendBatchResult")
+        .def_ro("trend", &ParticleFilterTrendBatchResult::trend)
+        .def_ro("velocity", &ParticleFilterTrendBatchResult::velocity)
+        .def_ro("signal", &ParticleFilterTrendBatchResult::signal)
+        .def_ro("effective_sample_size", &ParticleFilterTrendBatchResult::effective_sample_size);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -13005,6 +13249,66 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(high_vol_probability)),
                 make_array(std::move(trend_probability)),
                 make_array(std::move(chop_probability)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<ParticleFilterTrend>(m, "ParticleFilterTrend")
+        .def(nb::init<int, double, double, double, double, double, double, double, std::uint64_t, bool>(),
+             nb::arg("particles") = 128,
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("process_position_scale") = 0.05,
+             nb::arg("process_velocity_scale") = 0.01,
+             nb::arg("measurement_scale") = 0.5,
+             nb::arg("resample_threshold") = 0.5,
+             nb::arg("seed") = 1,
+             nb::arg("fillna") = true)
+        .def("update", &ParticleFilterTrend::update, nb::arg("close"))
+        .def("last", &ParticleFilterTrend::last)
+        RTTA_ADVANCE1(ParticleFilterTrend, close)
+        RTTA_REPLAY1(ParticleFilterTrend, close)
+        RTTA_FIELD1(ParticleFilterTrend, trend, close)
+        RTTA_FIELD1(ParticleFilterTrend, velocity, close)
+        RTTA_FIELD1(ParticleFilterTrend, signal, close)
+        RTTA_FIELD1(ParticleFilterTrend, effective_sample_size, close)
+        .def("replay_update_outputs", [](ParticleFilterTrend &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](ParticleFilterTrend &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](ParticleFilterTrend &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](ParticleFilterTrend &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](ParticleFilterTrend &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> trend = make_record_output(records);
+            std::vector<double> velocity;
+            std::vector<double> signal;
+            std::vector<double> effective_sample_size;
+            velocity.reserve(trend.capacity());
+            signal.reserve(trend.capacity());
+            effective_sample_size.reserve(trend.capacity());
+            for (nb::handle record : records) {
+                const ParticleFilterTrendResult out = self.update(scalar_or_record_value(record, "close", 0));
+                trend.push_back(out.trend);
+                velocity.push_back(out.velocity);
+                signal.push_back(out.signal);
+                effective_sample_size.push_back(out.effective_sample_size);
+            }
+            return ParticleFilterTrendBatchResult{
+                make_array(std::move(trend)),
+                make_array(std::move(velocity)),
+                make_array(std::move(signal)),
+                make_array(std::move(effective_sample_size)),
             };
         }, nb::arg("records"));
 

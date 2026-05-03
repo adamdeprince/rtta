@@ -26,6 +26,7 @@ RESULT_FIELDS = (
     "difference",
     "down",
     "ease_of_movement",
+    "effective_sample_size",
     "fama",
     "fastd",
     "fastk",

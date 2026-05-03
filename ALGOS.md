@@ -90,6 +90,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `NormalizedATR` | ATR normalized by close. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/average-true-range-atr-and-average-true-range-percent-atrp |
 | `OnBalanceVolume` | Cumulative volume added/subtracted by close direction. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/on-balance-volume-obv |
 | `OrderFlowImbalance` | Quote-level best bid/ask price and size change pressure over a rolling update window. | https://arxiv.org/abs/1011.6402 |
+| `ParticleFilterTrend` | Deterministic-seed particle trend filter with Laplace measurement likelihood and effective sample size output. | https://alphaarchitect.com/trend-following-filters-part-4/ |
 | `ParabolicSAR` | Parabolic stop-and-reverse trailing trend indicator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/parabolic-sar |
 | `PercentagePrice` | Percentage Price Oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/percentage-price-oscillator-ppo |
 | `PercentageVolume` | Percentage Volume Oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/percentage-volume-oscillator-pvo |
