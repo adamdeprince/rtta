@@ -52,6 +52,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `KalmanInnovationZScore` | Signed measurement innovation normalized by the predicted innovation standard deviation. | https://www.cs.unc.edu/~welch/media/pdf/kalman_intro.pdf |
 | `KalmanLocalLinearTrend` | Kalman local level/trend state-space estimator. | https://www.statsmodels.org/v0.12.2/examples/notebooks/generated/statespace_local_linear_trend.html |
 | `KalmanMovingAverage` | Kalman price filter using a local linear price/velocity model. | https://arxiv.org/pdf/1808.03297 |
+| `KalmanPredictionBands` | One-step Kalman prediction with upper/lower bands from predicted measurement uncertainty. | https://www.cs.unc.edu/~welch/media/pdf/kalman_intro.pdf |
 | `KalmanVelocityOscillator` | Zero-centered velocity state from a constant-velocity Kalman price model. | https://arxiv.org/pdf/1808.03297 |
 | `Kama` | Kaufman Adaptive Moving Average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/kaufmans-adaptive-moving-average-kama |
 | `KeltnerChannel` | EMA/ATR volatility channel. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/keltner-channels |

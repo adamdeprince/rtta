@@ -779,6 +779,18 @@ struct BollingerBandsBatchResult {
     nb::object lower;
 };
 
+struct KalmanPredictionBandsResult {
+    double middle;
+    double upper;
+    double lower;
+};
+
+struct KalmanPredictionBandsBatchResult {
+    nb::object middle;
+    nb::object upper;
+    nb::object lower;
+};
+
 struct KalmanLocalLinearTrendResult {
     double level;
     double trend;
@@ -876,6 +888,10 @@ inline double result_checksum(const StochasticResult &value) {
 }
 
 inline double result_checksum(const BollingerBandsResult &value) {
+    return value.middle + value.upper + value.lower;
+}
+
+inline double result_checksum(const KalmanPredictionBandsResult &value) {
     return value.middle + value.upper + value.lower;
 }
 
@@ -3198,6 +3214,17 @@ struct KalmanInnovationZScoreTuning {
     double measurement_variance;
 };
 
+struct KalmanPredictionBandsTuning {
+    double initial_price;
+    double initial_velocity;
+    double dt;
+    double position_variance;
+    double velocity_variance;
+    double process_position_variance;
+    double process_velocity_variance;
+    double measurement_variance;
+};
+
 class KalmanMovingAverage {
 public:
     KalmanMovingAverage(double initial_price = nan(),
@@ -3588,6 +3615,165 @@ private:
     bool initialized_;
     std::size_t count_;
     double last_;
+    bool fillna_;
+};
+
+class KalmanPredictionBands {
+public:
+    KalmanPredictionBands(double initial_price = nan(),
+                          double initial_velocity = 0.0,
+                          double dt = 1.0,
+                          double position_variance = 1.0,
+                          double velocity_variance = 1.0,
+                          double process_position_variance = 1.0e-4,
+                          double process_velocity_variance = 1.0e-3,
+                          double measurement_variance = 0.25,
+                          double multiplier = 2.0,
+                          bool fillna = true)
+        : initial_price_(initial_price),
+          initial_velocity_(initial_velocity),
+          dt_(dt > 0.0 ? dt : 1.0),
+          position_variance_(variance_floor(position_variance)),
+          velocity_variance_(variance_floor(velocity_variance)),
+          process_position_variance_(variance_floor(process_position_variance)),
+          process_velocity_variance_(variance_floor(process_velocity_variance)),
+          measurement_variance_(variance_floor(measurement_variance)),
+          multiplier_(std::isfinite(multiplier) ? std::abs(multiplier) : 2.0),
+          initialized_(false),
+          count_(0),
+          last_{nan(), nan(), nan()},
+          fillna_(fillna) {}
+
+    KalmanPredictionBands(const KalmanPredictionBandsTuning &tuning, double multiplier = 2.0, bool fillna = true)
+        : KalmanPredictionBands(
+              tuning.initial_price,
+              tuning.initial_velocity,
+              tuning.dt,
+              tuning.position_variance,
+              tuning.velocity_variance,
+              tuning.process_position_variance,
+              tuning.process_velocity_variance,
+              tuning.measurement_variance,
+              multiplier,
+              fillna) {}
+
+    KalmanPredictionBandsResult update(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
+            if (!std::isfinite(initial_price_)) {
+                const double band = multiplier_ * std::sqrt(measurement_variance_);
+                last_ = KalmanPredictionBandsResult{close, close + band, close - band};
+                ++count_;
+                return output_for_warmup();
+            }
+        }
+
+        const auto stats = filter_.update(kalman::Vec<1>{close});
+        const double innovation_variance = stats.S(0, 0);
+        if (!stats.ok || !std::isfinite(innovation_variance) || innovation_variance <= 0.0) {
+            last_ = KalmanPredictionBandsResult{nan(), nan(), nan()};
+        } else {
+            const double middle = close - stats.innovation[0];
+            const double band = multiplier_ * std::sqrt(innovation_variance);
+            last_ = KalmanPredictionBandsResult{middle, middle + band, middle - band};
+        }
+        ++count_;
+        return output_for_warmup();
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const KalmanPredictionBandsResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    KalmanPredictionBandsBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> middle(size);
+        std::vector<double> upper(size);
+        std::vector<double> lower(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const KalmanPredictionBandsResult out = update(static_cast<double>(values[i]));
+            middle[i] = out.middle;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+        }
+        return KalmanPredictionBandsBatchResult{
+            make_array(std::move(middle)),
+            make_array(std::move(upper)),
+            make_array(std::move(lower)),
+        };
+    }
+
+    template <typename Array>
+    static KalmanPredictionBandsTuning tune_array(const Array &close, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_array(close, dt, min_variance));
+    }
+
+    static KalmanPredictionBandsTuning tune_records(nb::iterable records, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_records(records, dt, min_variance));
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        if (!std::isfinite(value) || value < minimum) {
+            return minimum;
+        }
+        return value;
+    }
+
+    static KalmanPredictionBandsTuning from_moving_average_tuning(const KalmanMovingAverageTuning &tuning) {
+        return KalmanPredictionBandsTuning{
+            tuning.initial_price,
+            tuning.initial_velocity,
+            tuning.dt,
+            tuning.position_variance,
+            tuning.velocity_variance,
+            tuning.process_position_variance,
+            tuning.process_velocity_variance,
+            tuning.measurement_variance,
+        };
+    }
+
+    KalmanPredictionBandsResult output_for_warmup() const {
+        if (!fillna_ && count_ < 2) {
+            return KalmanPredictionBandsResult{nan(), nan(), nan()};
+        }
+        return last_;
+    }
+
+    void initialize(double price) {
+        filter_ = kalman::make_constant_velocity_1d(
+            price,
+            initial_velocity_,
+            dt_,
+            position_variance_,
+            velocity_variance_,
+            process_position_variance_,
+            process_velocity_variance_,
+            measurement_variance_);
+        initialized_ = true;
+        const double band = multiplier_ * std::sqrt(measurement_variance_);
+        last_ = KalmanPredictionBandsResult{price, price + band, price - band};
+    }
+
+    double initial_price_;
+    double initial_velocity_;
+    double dt_;
+    double position_variance_;
+    double velocity_variance_;
+    double process_position_variance_;
+    double process_velocity_variance_;
+    double measurement_variance_;
+    double multiplier_;
+    kalman::LocalLinearTrendFilter filter_;
+    bool initialized_;
+    std::size_t count_;
+    KalmanPredictionBandsResult last_;
     bool fillna_;
 };
 
@@ -9181,6 +9367,16 @@ NB_MODULE(indicator, m) {
         .def_ro("upper", &BollingerBandsBatchResult::upper)
         .def_ro("lower", &BollingerBandsBatchResult::lower);
 
+    nb::class_<KalmanPredictionBandsResult>(m, "KalmanPredictionBandsResult")
+        .def_ro("middle", &KalmanPredictionBandsResult::middle)
+        .def_ro("upper", &KalmanPredictionBandsResult::upper)
+        .def_ro("lower", &KalmanPredictionBandsResult::lower);
+
+    nb::class_<KalmanPredictionBandsBatchResult>(m, "KalmanPredictionBandsBatchResult")
+        .def_ro("middle", &KalmanPredictionBandsBatchResult::middle)
+        .def_ro("upper", &KalmanPredictionBandsBatchResult::upper)
+        .def_ro("lower", &KalmanPredictionBandsBatchResult::lower);
+
     nb::class_<KalmanLocalLinearTrendResult>(m, "KalmanLocalLinearTrendResult")
         .def_ro("level", &KalmanLocalLinearTrendResult::level)
         .def_ro("trend", &KalmanLocalLinearTrendResult::trend);
@@ -9944,6 +10140,107 @@ NB_MODULE(indicator, m) {
                 output.push_back(self.update(scalar_or_record_value(record, "close", 0)));
             }
             return make_array(std::move(output));
+        }, nb::arg("records"));
+
+    nb::class_<KalmanPredictionBandsTuning>(m, "KalmanPredictionBandsTuning")
+        .def_ro("initial_price", &KalmanPredictionBandsTuning::initial_price)
+        .def_ro("initial_velocity", &KalmanPredictionBandsTuning::initial_velocity)
+        .def_ro("dt", &KalmanPredictionBandsTuning::dt)
+        .def_ro("position_variance", &KalmanPredictionBandsTuning::position_variance)
+        .def_ro("velocity_variance", &KalmanPredictionBandsTuning::velocity_variance)
+        .def_ro("process_position_variance", &KalmanPredictionBandsTuning::process_position_variance)
+        .def_ro("process_velocity_variance", &KalmanPredictionBandsTuning::process_velocity_variance)
+        .def_ro("measurement_variance", &KalmanPredictionBandsTuning::measurement_variance)
+        .def("__len__", [](const KalmanPredictionBandsTuning &) { return 8; })
+        .def("__iter__", [](const KalmanPredictionBandsTuning &self) {
+            nb::tuple values = nb::make_tuple(
+                self.initial_price,
+                self.initial_velocity,
+                self.dt,
+                self.position_variance,
+                self.velocity_variance,
+                self.process_position_variance,
+                self.process_velocity_variance,
+                self.measurement_variance);
+            return values.attr("__iter__")();
+        });
+
+    nb::class_<KalmanPredictionBands>(m, "KalmanPredictionBands")
+        .def(nb::init<double, double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("position_variance") = 1.0,
+             nb::arg("velocity_variance") = 1.0,
+             nb::arg("process_position_variance") = 1.0e-4,
+             nb::arg("process_velocity_variance") = 1.0e-3,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("multiplier") = 2.0,
+             nb::arg("fillna") = true)
+        .def(nb::init<const KalmanPredictionBandsTuning &, double, bool>(),
+             nb::arg("tuning"),
+             nb::arg("multiplier") = 2.0,
+             nb::arg("fillna") = true)
+        .def_static("tune", [](const InputArray &close, double dt, double min_variance) {
+            return KalmanPredictionBands::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](const FloatInputArray &close, double dt, double min_variance) {
+            return KalmanPredictionBands::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](nb::iterable records, double dt, double min_variance) {
+            if (table_has_column(records, "close")) {
+                nb::object close = table_column_array(records, "close");
+                switch (array_dtype(close)) {
+                    case InputDType::Float32:
+                        return KalmanPredictionBands::tune_array(nb::cast<FloatInputArray>(close), dt, min_variance);
+                    case InputDType::Float64:
+                        return KalmanPredictionBands::tune_array(nb::cast<InputArray>(close), dt, min_variance);
+                }
+                throw nb::type_error("unsupported pandas table column dtype");
+            }
+            return KalmanPredictionBands::tune_records(records, dt, min_variance);
+        }, nb::arg("records"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def("update", &KalmanPredictionBands::update, nb::arg("close"))
+        .def("last", &KalmanPredictionBands::last)
+        RTTA_ADVANCE1(KalmanPredictionBands, close)
+        RTTA_REPLAY1(KalmanPredictionBands, close)
+        RTTA_FIELD1(KalmanPredictionBands, middle, close)
+        RTTA_FIELD1(KalmanPredictionBands, upper, close)
+        RTTA_FIELD1(KalmanPredictionBands, lower, close)
+        .def("replay_update_outputs", [](KalmanPredictionBands &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](KalmanPredictionBands &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanPredictionBands &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanPredictionBands &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanPredictionBands &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> middle = make_record_output(records);
+            std::vector<double> upper;
+            std::vector<double> lower;
+            upper.reserve(middle.capacity());
+            lower.reserve(middle.capacity());
+            for (nb::handle record : records) {
+                const KalmanPredictionBandsResult out = self.update(scalar_or_record_value(record, "close", 0));
+                middle.push_back(out.middle);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
+            }
+            return KalmanPredictionBandsBatchResult{
+                make_array(std::move(middle)),
+                make_array(std::move(upper)),
+                make_array(std::move(lower)),
+            };
         }, nb::arg("records"));
 
     nb::class_<KalmanVelocityOscillatorTuning>(m, "KalmanVelocityOscillatorTuning")

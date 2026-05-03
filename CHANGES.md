@@ -19,6 +19,8 @@
   parameters.
 - Added `KalmanInnovationZScore`, exposing the signed Kalman measurement
   innovation normalized by its predicted standard deviation.
+- Added `KalmanPredictionBands`, exposing one-step predicted price bands from
+  Kalman predicted measurement uncertainty.
 - Added `ALGOS.md`, cataloging public indicators with short descriptions and
   documentation links that prefer ChartSchool when a direct ChartSchool page
   exists.

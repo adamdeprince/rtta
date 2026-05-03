@@ -77,6 +77,8 @@ variance parameters for that indicator and returns an immutable
 parameters for the data. `KalmanVelocityOscillator.tune(close)` and
 `KalmanInnovationZScore.tune(close)` follow the same convention for the
 velocity-state oscillator and normalized innovation residual.
+`KalmanPredictionBands.tune(close)` uses the same noise model and exposes
+one-step prediction bands around the predicted measurement.
 
 New indicators should follow the same surface area as the existing C++
 nanobind indicators:
