@@ -122,6 +122,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `TypicalPrice` | Average of high, low, and close. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/typical-price |
 | `UltimateOscillator` | Weighted multi-window buying-pressure oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/ultimate-oscillator |
 | `UlcerIndex` | Drawdown-based downside-risk measure. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/ulcer-index |
+| `VPIN` | Volume-synchronized probability of informed trading using bulk-volume classification and rolling volume-bucket imbalance. | https://www.quantresearch.org/VPIN.pdf |
 | `Variance` | Rolling variance. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/standard-deviation-volatility |
 | `VariableIndexDynamicAverage` | VIDYA adaptive EMA using absolute CMO as the smoothing factor. | https://www.metatrader5.com/en/terminal/help/indicators/trend_indicators/vida |
 | `VolumeProfile` | Rolling volume-by-price histogram that emits point of control and value-area high/low levels. | https://www.schwab.com/learn/story/using-volume-profile-indicator |

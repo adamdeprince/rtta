@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -1684,6 +1685,10 @@ private:
 
 inline double safe_divide(double numerator, double denominator, double fallback = 0.0) {
     return denominator == 0.0 ? fallback : numerator / denominator;
+}
+
+inline double normal_cdf(double value) {
+    return 0.5 * std::erfc(-value / std::sqrt(2.0));
 }
 
 inline double true_range(double close, double high, double low, double prev_close) {
@@ -5081,6 +5086,159 @@ private:
     double previous_bid_size_;
     double previous_ask_price_;
     double previous_ask_size_;
+    bool fillna_;
+    double last_;
+};
+
+class VPIN {
+public:
+    VPIN(double bucket_volume = 1000000.0, int buckets = 50, int price_change_window = 50, bool fillna = true)
+        : bucket_volume_(checked_bucket_volume(bucket_volume)),
+          imbalances_(checked_window(buckets, "buckets")),
+          price_changes_(checked_window(price_change_window, "price_change_window")),
+          sum_price_change_(0.0),
+          sum_price_change_squared_(0.0),
+          partial_buy_volume_(0.0),
+          partial_sell_volume_(0.0),
+          partial_volume_(0.0),
+          previous_close_(0.0),
+          has_previous_(false),
+          fillna_(fillna),
+          last_(fillna ? 0.0 : nan()) {}
+
+    inline double update(double close, double volume) {
+        const double price_change = has_previous_ ? close - previous_close_ : 0.0;
+        update_price_change(price_change);
+
+        const double buy_fraction = classify_buy_fraction(price_change);
+        const double positive_volume = std::max(volume, 0.0);
+        add_classified_volume(positive_volume * buy_fraction, positive_volume * (1.0 - buy_fraction));
+
+        previous_close_ = close;
+        has_previous_ = true;
+        last_ = current_value();
+        return last_;
+    }
+
+    inline void advance(double close, double volume) {
+        (void) update(close, volume);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &close, const Array1 &volume) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
+        std::vector<double> output(size);
+        const auto *close_values = close.data();
+        const auto *volume_values = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(close_values[i]), static_cast<double>(volume_values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    static double checked_bucket_volume(double bucket_volume) {
+        if (bucket_volume <= 0.0) {
+            throw nb::value_error("bucket_volume must be positive");
+        }
+        return bucket_volume;
+    }
+
+    static int checked_window(int window, const char *name) {
+        if (window <= 0) {
+            throw nb::value_error((std::string(name) + " must be positive").c_str());
+        }
+        return window;
+    }
+
+    inline void update_price_change(double price_change) {
+        if (price_changes_.full()) {
+            const double old = price_changes_.oldest();
+            sum_price_change_ -= old;
+            sum_price_change_squared_ -= old * old;
+        }
+        price_changes_.push(price_change);
+        sum_price_change_ += price_change;
+        sum_price_change_squared_ += price_change * price_change;
+    }
+
+    inline double price_change_stddev() const {
+        const std::size_t n = price_changes_.size();
+        if (n < 2) {
+            return 0.0;
+        }
+        const double n_value = static_cast<double>(n);
+        const double variance = (sum_price_change_squared_ - (sum_price_change_ * sum_price_change_) / n_value) / (n_value - 1.0);
+        return variance <= 0.0 ? 0.0 : std::sqrt(variance);
+    }
+
+    inline double classify_buy_fraction(double price_change) const {
+        const double sigma = price_change_stddev();
+        if (sigma == 0.0) {
+            if (price_change > 0.0) {
+                return 1.0;
+            }
+            if (price_change < 0.0) {
+                return 0.0;
+            }
+            return 0.5;
+        }
+        return std::clamp(normal_cdf(price_change / sigma), 0.0, 1.0);
+    }
+
+    inline void complete_bucket() {
+        imbalances_.push(std::abs(partial_buy_volume_ - partial_sell_volume_));
+        partial_buy_volume_ = 0.0;
+        partial_sell_volume_ = 0.0;
+        partial_volume_ = 0.0;
+    }
+
+    inline void add_classified_volume(double buy_volume, double sell_volume) {
+        double remaining_buy = buy_volume;
+        double remaining_sell = sell_volume;
+        double remaining_volume = buy_volume + sell_volume;
+        while (remaining_volume > 0.0) {
+            const double bucket_remaining = bucket_volume_ - partial_volume_;
+            const double take = std::min(bucket_remaining, remaining_volume);
+            const double fraction = safe_divide(take, remaining_volume);
+            partial_buy_volume_ += remaining_buy * fraction;
+            partial_sell_volume_ += remaining_sell * fraction;
+            partial_volume_ += take;
+            remaining_buy -= remaining_buy * fraction;
+            remaining_sell -= remaining_sell * fraction;
+            remaining_volume -= take;
+
+            if (partial_volume_ >= bucket_volume_ - 1e-12) {
+                complete_bucket();
+            }
+        }
+    }
+
+    inline double current_value() const {
+        if (imbalances_.size() == 0) {
+            return fillna_ ? 0.0 : nan();
+        }
+        if (!fillna_ && !imbalances_.full()) {
+            return nan();
+        }
+        return safe_divide(imbalances_.sum(), bucket_volume_ * static_cast<double>(imbalances_.size()));
+    }
+
+    double bucket_volume_;
+    RollingSumWindow imbalances_;
+    RollingBuffer price_changes_;
+    double sum_price_change_;
+    double sum_price_change_squared_;
+    double partial_buy_volume_;
+    double partial_sell_volume_;
+    double partial_volume_;
+    double previous_close_;
+    bool has_previous_;
     bool fillna_;
     double last_;
 };
@@ -15388,6 +15546,18 @@ NB_MODULE(indicator, m) {
             }
             return batch_records_four(self, records, "bid_price", "bid_size", "ask_price", "ask_size");
         }, nb::arg("records"));
+
+    nb::class_<VPIN>(m, "VPIN")
+        .def(nb::init<double, int, int, bool>(),
+             nb::arg("bucket_volume") = 1000000.0,
+             nb::arg("buckets") = 50,
+             nb::arg("price_change_window") = 50,
+             nb::arg("fillna") = true)
+        .def("update", &VPIN::update, nb::arg("close"), nb::arg("volume"))
+        .def("last", &VPIN::last)
+        RTTA_ADVANCE2(VPIN, close, volume)
+        RTTA_REPLAY2(VPIN, close, volume)
+        RTTA_BATCH2_ARRAY(VPIN, close, volume, "close", "volume");
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)

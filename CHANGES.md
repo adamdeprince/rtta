@@ -57,6 +57,8 @@
   state from arbitrary anchor events.
 - Added `VolumeProfile`, a rolling volume-by-price histogram that emits point
   of control plus value-area high and low levels.
+- Added `VPIN`, a volume-clock order-flow toxicity metric using bulk-volume
+  classification and rolling volume-bucket imbalance.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.
