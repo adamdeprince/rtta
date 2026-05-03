@@ -17,6 +17,8 @@
 - Added `KalmanVelocityOscillator`, exposing the velocity state from the same
   constant-velocity Kalman price model with configurable and trainable tuning
   parameters.
+- Added `KalmanInnovationZScore`, exposing the signed Kalman measurement
+  innovation normalized by its predicted standard deviation.
 - Added `ALGOS.md`, cataloging public indicators with short descriptions and
   documentation links that prefer ChartSchool when a direct ChartSchool page
   exists.

@@ -3187,6 +3187,17 @@ struct KalmanVelocityOscillatorTuning {
     double measurement_variance;
 };
 
+struct KalmanInnovationZScoreTuning {
+    double initial_price;
+    double initial_velocity;
+    double dt;
+    double position_variance;
+    double velocity_variance;
+    double process_position_variance;
+    double process_velocity_variance;
+    double measurement_variance;
+};
+
 class KalmanMovingAverage {
 public:
     KalmanMovingAverage(double initial_price = nan(),
@@ -3428,6 +3439,141 @@ private:
             measurement_variance_);
         initialized_ = true;
         last_ = price;
+    }
+
+    double initial_price_;
+    double initial_velocity_;
+    double dt_;
+    double position_variance_;
+    double velocity_variance_;
+    double process_position_variance_;
+    double process_velocity_variance_;
+    double measurement_variance_;
+    kalman::LocalLinearTrendFilter filter_;
+    bool initialized_;
+    std::size_t count_;
+    double last_;
+    bool fillna_;
+};
+
+class KalmanInnovationZScore {
+public:
+    KalmanInnovationZScore(double initial_price = nan(),
+                           double initial_velocity = 0.0,
+                           double dt = 1.0,
+                           double position_variance = 1.0,
+                           double velocity_variance = 1.0,
+                           double process_position_variance = 1.0e-4,
+                           double process_velocity_variance = 1.0e-3,
+                           double measurement_variance = 0.25,
+                           bool fillna = true)
+        : initial_price_(initial_price),
+          initial_velocity_(initial_velocity),
+          dt_(dt > 0.0 ? dt : 1.0),
+          position_variance_(variance_floor(position_variance)),
+          velocity_variance_(variance_floor(velocity_variance)),
+          process_position_variance_(variance_floor(process_position_variance)),
+          process_velocity_variance_(variance_floor(process_velocity_variance)),
+          measurement_variance_(variance_floor(measurement_variance)),
+          initialized_(false),
+          count_(0),
+          last_(nan()),
+          fillna_(fillna) {}
+
+    KalmanInnovationZScore(const KalmanInnovationZScoreTuning &tuning, bool fillna = true)
+        : KalmanInnovationZScore(
+              tuning.initial_price,
+              tuning.initial_velocity,
+              tuning.dt,
+              tuning.position_variance,
+              tuning.velocity_variance,
+              tuning.process_position_variance,
+              tuning.process_velocity_variance,
+              tuning.measurement_variance,
+              fillna) {}
+
+    double update(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
+            if (!std::isfinite(initial_price_)) {
+                last_ = 0.0;
+                ++count_;
+                return (!fillna_ && count_ < 2) ? nan() : last_;
+            }
+        }
+
+        const auto stats = filter_.update(kalman::Vec<1>{close});
+        const double innovation_variance = stats.S(0, 0);
+        if (!stats.ok || !std::isfinite(innovation_variance) || innovation_variance <= 0.0) {
+            last_ = nan();
+        } else {
+            last_ = stats.innovation[0] / std::sqrt(innovation_variance);
+        }
+        ++count_;
+        return (!fillna_ && count_ < 2) ? nan() : last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+    template <typename Array>
+    static KalmanInnovationZScoreTuning tune_array(const Array &close, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_array(close, dt, min_variance));
+    }
+
+    static KalmanInnovationZScoreTuning tune_records(nb::iterable records, double dt = 1.0, double min_variance = 1.0e-12) {
+        return from_moving_average_tuning(KalmanMovingAverage::tune_records(records, dt, min_variance));
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        if (!std::isfinite(value) || value < minimum) {
+            return minimum;
+        }
+        return value;
+    }
+
+    static KalmanInnovationZScoreTuning from_moving_average_tuning(const KalmanMovingAverageTuning &tuning) {
+        return KalmanInnovationZScoreTuning{
+            tuning.initial_price,
+            tuning.initial_velocity,
+            tuning.dt,
+            tuning.position_variance,
+            tuning.velocity_variance,
+            tuning.process_position_variance,
+            tuning.process_velocity_variance,
+            tuning.measurement_variance,
+        };
+    }
+
+    void initialize(double price) {
+        filter_ = kalman::make_constant_velocity_1d(
+            price,
+            initial_velocity_,
+            dt_,
+            position_variance_,
+            velocity_variance_,
+            process_position_variance_,
+            process_velocity_variance_,
+            measurement_variance_);
+        initialized_ = true;
+        last_ = 0.0;
     }
 
     double initial_price_;
@@ -9709,6 +9855,85 @@ NB_MODULE(indicator, m) {
             return self.batch_array(close);
         }, array_arg("close"))
         .def("batch", [](KalmanMovingAverage &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> output = make_record_output(records);
+            for (nb::handle record : records) {
+                output.push_back(self.update(scalar_or_record_value(record, "close", 0)));
+            }
+            return make_array(std::move(output));
+        }, nb::arg("records"));
+
+    nb::class_<KalmanInnovationZScoreTuning>(m, "KalmanInnovationZScoreTuning")
+        .def_ro("initial_price", &KalmanInnovationZScoreTuning::initial_price)
+        .def_ro("initial_velocity", &KalmanInnovationZScoreTuning::initial_velocity)
+        .def_ro("dt", &KalmanInnovationZScoreTuning::dt)
+        .def_ro("position_variance", &KalmanInnovationZScoreTuning::position_variance)
+        .def_ro("velocity_variance", &KalmanInnovationZScoreTuning::velocity_variance)
+        .def_ro("process_position_variance", &KalmanInnovationZScoreTuning::process_position_variance)
+        .def_ro("process_velocity_variance", &KalmanInnovationZScoreTuning::process_velocity_variance)
+        .def_ro("measurement_variance", &KalmanInnovationZScoreTuning::measurement_variance)
+        .def("__len__", [](const KalmanInnovationZScoreTuning &) { return 8; })
+        .def("__iter__", [](const KalmanInnovationZScoreTuning &self) {
+            nb::tuple values = nb::make_tuple(
+                self.initial_price,
+                self.initial_velocity,
+                self.dt,
+                self.position_variance,
+                self.velocity_variance,
+                self.process_position_variance,
+                self.process_velocity_variance,
+                self.measurement_variance);
+            return values.attr("__iter__")();
+        });
+
+    nb::class_<KalmanInnovationZScore>(m, "KalmanInnovationZScore")
+        .def(nb::init<double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("position_variance") = 1.0,
+             nb::arg("velocity_variance") = 1.0,
+             nb::arg("process_position_variance") = 1.0e-4,
+             nb::arg("process_velocity_variance") = 1.0e-3,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def(nb::init<const KalmanInnovationZScoreTuning &, bool>(),
+             nb::arg("tuning"),
+             nb::arg("fillna") = true)
+        .def_static("tune", [](const InputArray &close, double dt, double min_variance) {
+            return KalmanInnovationZScore::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](const FloatInputArray &close, double dt, double min_variance) {
+            return KalmanInnovationZScore::tune_array(close, dt, min_variance);
+        }, array_arg("close"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def_static("tune", [](nb::iterable records, double dt, double min_variance) {
+            if (table_has_column(records, "close")) {
+                nb::object close = table_column_array(records, "close");
+                switch (array_dtype(close)) {
+                    case InputDType::Float32:
+                        return KalmanInnovationZScore::tune_array(nb::cast<FloatInputArray>(close), dt, min_variance);
+                    case InputDType::Float64:
+                        return KalmanInnovationZScore::tune_array(nb::cast<InputArray>(close), dt, min_variance);
+                }
+                throw nb::type_error("unsupported pandas table column dtype");
+            }
+            return KalmanInnovationZScore::tune_records(records, dt, min_variance);
+        }, nb::arg("records"), nb::arg("dt") = 1.0, nb::arg("min_variance") = 1.0e-12)
+        .def("update", &KalmanInnovationZScore::update, nb::arg("close"))
+        .def("last", &KalmanInnovationZScore::last)
+        RTTA_ADVANCE1(KalmanInnovationZScore, close)
+        RTTA_REPLAY1(KalmanInnovationZScore, close)
+        .def("batch", [](KalmanInnovationZScore &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanInnovationZScore &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](KalmanInnovationZScore &self, nb::iterable records) {
             if (table_has_column(records, "close")) {
                 return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
                     return indicator.batch_array(close);

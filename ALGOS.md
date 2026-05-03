@@ -49,6 +49,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `HullMovingAverage` | HMA lag-reduced weighted moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/hull-moving-average-hma |
 | `Ichimoku` | Ichimoku conversion, base, and leading span components. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/ichimoku-cloud |
 | `KSTOscillator` | Pring Know Sure Thing smoothed multi-ROC oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/pring-s-know-sure-thing-kst |
+| `KalmanInnovationZScore` | Signed measurement innovation normalized by the predicted innovation standard deviation. | https://www.cs.unc.edu/~welch/media/pdf/kalman_intro.pdf |
 | `KalmanLocalLinearTrend` | Kalman local level/trend state-space estimator. | https://www.statsmodels.org/v0.12.2/examples/notebooks/generated/statespace_local_linear_trend.html |
 | `KalmanMovingAverage` | Kalman price filter using a local linear price/velocity model. | https://arxiv.org/pdf/1808.03297 |
 | `KalmanVelocityOscillator` | Zero-centered velocity state from a constant-velocity Kalman price model. | https://arxiv.org/pdf/1808.03297 |
