@@ -190,6 +190,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("RateOfChangePercentage", ("close",)),
     IndicatorSpec("RateOfChangeRatio", ("close",)),
     IndicatorSpec("RateOfChangeRatio100", ("close",)),
+    IndicatorSpec("RenkoBrickGenerator", ("close",), batch_inputs=("close",)),
     IndicatorSpec("RelativeVigorIndex", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
     IndicatorSpec("SavitzkyGolayFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("SchaffTrendCycle", ("close",), batch_inputs=("close",)),

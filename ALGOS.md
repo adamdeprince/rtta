@@ -101,6 +101,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `RateOfChangePercentage` | Period-over-period rate of change as a fraction. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
 | `RateOfChangeRatio` | Rate-of-change ratio against a prior value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
 | `RateOfChangeRatio100` | Rate-of-change ratio scaled by 100. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
+| `RenkoBrickGenerator` | Event-driven Renko price transform that emits signed brick counts and current brick state from close updates. | https://www.tradingview.com/support/solutions/43000502284-understanding-renko-charts/ |
 | `RelativeVigorIndex` | Smoothed close-open momentum relative to high-low range with signal line. | https://www.investopedia.com/terms/r/relative_vigor_index.asp |
 | `SavitzkyGolayFilter` | Rolling polynomial least-squares smoother with first and second derivative outputs. | https://en.wikipedia.org/wiki/Savitzky%E2%80%93Golay_filter |
 | `SchaffTrendCycle` | MACD/stochastic cycle oscillator. | https://technical-analysis-library-in-python.readthedocs.io/en/stable/ta.html |

@@ -1005,6 +1005,22 @@ struct ZigZagSwingDetectorBatchResult {
     nb::object pivot_index;
 };
 
+struct RenkoBrickGeneratorResult {
+    double brick_open;
+    double brick_close;
+    double direction;
+    double bricks;
+    double reversal;
+};
+
+struct RenkoBrickGeneratorBatchResult {
+    nb::object brick_open;
+    nb::object brick_close;
+    nb::object direction;
+    nb::object bricks;
+    nb::object reversal;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1166,6 +1182,10 @@ inline double result_checksum(const GaussianProcessRegressionBandsResult &value)
 
 inline double result_checksum(const ZigZagSwingDetectorResult &value) {
     return value.value + value.direction + value.pivot + value.pivot_index;
+}
+
+inline double result_checksum(const RenkoBrickGeneratorResult &value) {
+    return value.brick_open + value.brick_close + value.direction + value.bricks + value.reversal;
 }
 
 class RollingExtremeQueue {
@@ -10424,6 +10444,83 @@ private:
     ZigZagSwingDetectorResult last_;
 };
 
+class RenkoBrickGenerator {
+public:
+    RenkoBrickGenerator(double brick_size = 1.0)
+        : brick_size_((std::isfinite(brick_size) && brick_size > 0.0) ? brick_size : 1.0),
+          initialized_(false),
+          brick_close_(0.0),
+          direction_(0.0),
+          last_{nan(), nan(), 0.0, 0.0, 0.0} {}
+
+    RenkoBrickGeneratorResult update(double close) {
+        if (!initialized_) {
+            initialized_ = true;
+            brick_close_ = close;
+            last_ = RenkoBrickGeneratorResult{close, close, 0.0, 0.0, 0.0};
+            return last_;
+        }
+
+        const double brick_open = brick_close_;
+        const double previous_direction = direction_;
+        double signed_bricks = 0.0;
+        while (close >= brick_close_ + brick_size_) {
+            brick_close_ += brick_size_;
+            direction_ = 1.0;
+            signed_bricks += 1.0;
+        }
+        while (close <= brick_close_ - brick_size_) {
+            brick_close_ -= brick_size_;
+            direction_ = -1.0;
+            signed_bricks -= 1.0;
+        }
+        const double reversal = signed_bricks != 0.0 && previous_direction != 0.0 && direction_ != previous_direction ? 1.0 : 0.0;
+        last_ = RenkoBrickGeneratorResult{brick_open, brick_close_, direction_, signed_bricks, reversal};
+        return last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const RenkoBrickGeneratorResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    RenkoBrickGeneratorBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> brick_open(size);
+        std::vector<double> brick_close(size);
+        std::vector<double> direction(size);
+        std::vector<double> bricks(size);
+        std::vector<double> reversal(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const RenkoBrickGeneratorResult out = update(static_cast<double>(values[i]));
+            brick_open[i] = out.brick_open;
+            brick_close[i] = out.brick_close;
+            direction[i] = out.direction;
+            bricks[i] = out.bricks;
+            reversal[i] = out.reversal;
+        }
+        return {
+            make_array(std::move(brick_open)),
+            make_array(std::move(brick_close)),
+            make_array(std::move(direction)),
+            make_array(std::move(bricks)),
+            make_array(std::move(reversal)),
+        };
+    }
+
+private:
+    double brick_size_;
+    bool initialized_;
+    double brick_close_;
+    double direction_;
+    RenkoBrickGeneratorResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -12278,6 +12375,20 @@ NB_MODULE(indicator, m) {
         .def_ro("direction", &ZigZagSwingDetectorBatchResult::direction)
         .def_ro("pivot", &ZigZagSwingDetectorBatchResult::pivot)
         .def_ro("pivot_index", &ZigZagSwingDetectorBatchResult::pivot_index);
+
+    nb::class_<RenkoBrickGeneratorResult>(m, "RenkoBrickGeneratorResult")
+        .def_ro("brick_open", &RenkoBrickGeneratorResult::brick_open)
+        .def_ro("brick_close", &RenkoBrickGeneratorResult::brick_close)
+        .def_ro("direction", &RenkoBrickGeneratorResult::direction)
+        .def_ro("bricks", &RenkoBrickGeneratorResult::bricks)
+        .def_ro("reversal", &RenkoBrickGeneratorResult::reversal);
+
+    nb::class_<RenkoBrickGeneratorBatchResult>(m, "RenkoBrickGeneratorBatchResult")
+        .def_ro("brick_open", &RenkoBrickGeneratorBatchResult::brick_open)
+        .def_ro("brick_close", &RenkoBrickGeneratorBatchResult::brick_close)
+        .def_ro("direction", &RenkoBrickGeneratorBatchResult::direction)
+        .def_ro("bricks", &RenkoBrickGeneratorBatchResult::bricks)
+        .def_ro("reversal", &RenkoBrickGeneratorBatchResult::reversal);
 
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
@@ -14189,6 +14300,61 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(direction)),
                 make_array(std::move(pivot)),
                 make_array(std::move(pivot_index)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<RenkoBrickGenerator>(m, "RenkoBrickGenerator")
+        .def(nb::init<double>(), nb::arg("brick_size") = 1.0)
+        .def("update", &RenkoBrickGenerator::update, nb::arg("close"))
+        .def("last", &RenkoBrickGenerator::last)
+        RTTA_ADVANCE1(RenkoBrickGenerator, close)
+        RTTA_REPLAY1(RenkoBrickGenerator, close)
+        RTTA_FIELD1(RenkoBrickGenerator, brick_open, close)
+        RTTA_FIELD1(RenkoBrickGenerator, brick_close, close)
+        RTTA_FIELD1(RenkoBrickGenerator, direction, close)
+        RTTA_FIELD1(RenkoBrickGenerator, bricks, close)
+        RTTA_FIELD1(RenkoBrickGenerator, reversal, close)
+        .def("replay_update_outputs", [](RenkoBrickGenerator &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](RenkoBrickGenerator &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](RenkoBrickGenerator &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](RenkoBrickGenerator &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](RenkoBrickGenerator &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> brick_open = make_record_output(records);
+            std::vector<double> brick_close;
+            std::vector<double> direction;
+            std::vector<double> bricks;
+            std::vector<double> reversal;
+            brick_close.reserve(brick_open.capacity());
+            direction.reserve(brick_open.capacity());
+            bricks.reserve(brick_open.capacity());
+            reversal.reserve(brick_open.capacity());
+            for (nb::handle record : records) {
+                const RenkoBrickGeneratorResult out = self.update(scalar_or_record_value(record, "close", 0));
+                brick_open.push_back(out.brick_open);
+                brick_close.push_back(out.brick_close);
+                direction.push_back(out.direction);
+                bricks.push_back(out.bricks);
+                reversal.push_back(out.reversal);
+            }
+            return RenkoBrickGeneratorBatchResult{
+                make_array(std::move(brick_open)),
+                make_array(std::move(brick_close)),
+                make_array(std::move(direction)),
+                make_array(std::move(bricks)),
+                make_array(std::move(reversal)),
             };
         }, nb::arg("records"));
 

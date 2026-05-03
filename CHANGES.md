@@ -49,6 +49,8 @@
   process smoother that emits posterior mean and uncertainty bands.
 - Added `ZigZagSwingDetector`, a close-based percentage swing detector for
   filtering noise and labeling confirmed pivots.
+- Added `RenkoBrickGenerator`, an event-driven close-price transform that
+  reports signed brick counts, current brick state, direction, and reversals.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

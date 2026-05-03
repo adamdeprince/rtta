@@ -37,6 +37,7 @@ MULTI_OUTPUTS = {
     "PercentagePrice": ("ppo", "signal", "histogram"),
     "PercentageVolume": ("pvo", "signal", "histogram"),
     "RelativeVigorIndex": ("rvi", "signal"),
+    "RenkoBrickGenerator": ("brick_open", "brick_close", "direction", "bricks", "reversal"),
     "SavitzkyGolayFilter": ("smooth", "first_derivative", "second_derivative"),
     "KlingerVolumeOscillator": ("kvo", "signal", "histogram"),
     "MesaAdaptiveMovingAverage": ("mama", "fama"),
