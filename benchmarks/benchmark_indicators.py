@@ -62,6 +62,7 @@ class MarketRecord:
     x: float
     real0: float
     real1: float
+    signed_dollar_volume: float
     bid_price: float
     bid_size: float
     ask_price: float
@@ -163,6 +164,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("KeltnerChannel", ("close", "high", "low")),
     IndicatorSpec("KeltnerChannelOriginal", ("close", "high", "low")),
     IndicatorSpec("KlingerVolumeOscillator", ("close", "high", "low", "volume"), batch_inputs=("close", "high", "low", "volume")),
+    IndicatorSpec("KyleLambda", ("close", "signed_dollar_volume"), batch_inputs=("close", "signed_dollar_volume")),
     IndicatorSpec("LinearRegression", ("value",)),
     IndicatorSpec("LinearRegressionAngle", ("value",)),
     IndicatorSpec("LinearRegressionIntercept", ("value",)),
@@ -241,6 +243,10 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
         anchor[128::128] = 1.0
     real0 = close
     real1 = close * 0.73 + rng.normal(0.0, 0.25, samples)
+    price_direction = np.sign(np.diff(close, prepend=close[0]))
+    random_direction = rng.choice(np.asarray([-1.0, 1.0], dtype=np.float64), size=samples)
+    trade_direction = np.where(price_direction == 0.0, random_direction, price_direction)
+    signed_dollar_volume = trade_direction * close * volume
     quote_spread = rng.uniform(0.01, 0.05, samples)
     bid_price = close - 0.5 * quote_spread
     ask_price = close + 0.5 * quote_spread
@@ -259,6 +265,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
         "x": close.astype(np.float64),
         "real0": real0.astype(np.float64),
         "real1": real1.astype(np.float64),
+        "signed_dollar_volume": signed_dollar_volume.astype(np.float64),
         "bid_price": bid_price.astype(np.float64),
         "bid_size": bid_size,
         "ask_price": ask_price.astype(np.float64),
@@ -290,6 +297,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             x=float(arrays["x"][i]),
             real0=float(arrays["real0"][i]),
             real1=float(arrays["real1"][i]),
+            signed_dollar_volume=float(arrays["signed_dollar_volume"][i]),
             bid_price=float(arrays["bid_price"][i]),
             bid_size=float(arrays["bid_size"][i]),
             ask_price=float(arrays["ask_price"][i]),
@@ -311,6 +319,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             "x": record.x,
             "real0": record.real0,
             "real1": record.real1,
+            "signed_dollar_volume": record.signed_dollar_volume,
             "bid_price": record.bid_price,
             "bid_size": record.bid_size,
             "ask_price": record.ask_price,

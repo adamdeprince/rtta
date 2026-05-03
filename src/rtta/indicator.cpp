@@ -5243,6 +5243,91 @@ private:
     double last_;
 };
 
+class KyleLambda {
+public:
+    KyleLambda(int window = 30, double scale = 1000000.0, bool fillna = true)
+        : returns_(window),
+          signed_sqrt_dollar_volume_(window),
+          sum_return_(0.0),
+          sum_flow_(0.0),
+          sum_return_flow_(0.0),
+          sum_flow_squared_(0.0),
+          scale_(scale),
+          previous_close_(0.0),
+          has_previous_(false),
+          fillna_(fillna),
+          last_(fillna ? 0.0 : nan()) {}
+
+    inline double update(double close, double signed_dollar_volume) {
+        const double price_return = has_previous_ ? safe_divide(close - previous_close_, previous_close_) : 0.0;
+        const double signed_sqrt_dollar_volume = signed_dollar_volume < 0.0
+            ? -std::sqrt(-signed_dollar_volume)
+            : std::sqrt(signed_dollar_volume);
+
+        if (returns_.full()) {
+            const double old_return = returns_.oldest();
+            const double old_flow = signed_sqrt_dollar_volume_.oldest();
+            sum_return_ -= old_return;
+            sum_flow_ -= old_flow;
+            sum_return_flow_ -= old_return * old_flow;
+            sum_flow_squared_ -= old_flow * old_flow;
+        }
+        returns_.push(price_return);
+        signed_sqrt_dollar_volume_.push(signed_sqrt_dollar_volume);
+        sum_return_ += price_return;
+        sum_flow_ += signed_sqrt_dollar_volume;
+        sum_return_flow_ += price_return * signed_sqrt_dollar_volume;
+        sum_flow_squared_ += signed_sqrt_dollar_volume * signed_sqrt_dollar_volume;
+        previous_close_ = close;
+        has_previous_ = true;
+        last_ = (!fillna_ && !returns_.full()) ? nan() : slope() * scale_;
+        return last_;
+    }
+
+    inline void advance(double close, double signed_dollar_volume) {
+        (void) update(close, signed_dollar_volume);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &close, const Array1 &signed_dollar_volume) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, signed_dollar_volume.shape(0));
+        std::vector<double> output(size);
+        const auto *close_values = close.data();
+        const auto *signed_dollar_volume_values = signed_dollar_volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(signed_dollar_volume_values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    inline double slope() const {
+        const double n = static_cast<double>(returns_.size());
+        const double covariance = n * sum_return_flow_ - sum_return_ * sum_flow_;
+        const double variance = n * sum_flow_squared_ - sum_flow_ * sum_flow_;
+        return safe_divide(covariance, variance);
+    }
+
+    RollingBuffer returns_;
+    RollingBuffer signed_sqrt_dollar_volume_;
+    double sum_return_;
+    double sum_flow_;
+    double sum_return_flow_;
+    double sum_flow_squared_;
+    double scale_;
+    double previous_close_;
+    bool has_previous_;
+    bool fillna_;
+    double last_;
+};
+
 class ChaikinMoneyFlow {
 public:
     ChaikinMoneyFlow(int window = 20, bool fillna = true)
@@ -15558,6 +15643,14 @@ NB_MODULE(indicator, m) {
         RTTA_ADVANCE2(VPIN, close, volume)
         RTTA_REPLAY2(VPIN, close, volume)
         RTTA_BATCH2_ARRAY(VPIN, close, volume, "close", "volume");
+
+    nb::class_<KyleLambda>(m, "KyleLambda")
+        .def(nb::init<int, double, bool>(), nb::arg("window") = 30, nb::arg("scale") = 1000000.0, nb::arg("fillna") = true)
+        .def("update", &KyleLambda::update, nb::arg("close"), nb::arg("signed_dollar_volume"))
+        .def("last", &KyleLambda::last)
+        RTTA_ADVANCE2(KyleLambda, close, signed_dollar_volume)
+        RTTA_REPLAY2(KyleLambda, close, signed_dollar_volume)
+        RTTA_BATCH2_ARRAY(KyleLambda, close, signed_dollar_volume, "close", "signed_dollar_volume");
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)

@@ -73,6 +73,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `KeltnerChannel` | EMA/ATR volatility channel. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/keltner-channels |
 | `KeltnerChannelOriginal` | Original SMA/range Keltner channel variant. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/keltner-channels |
 | `KlingerVolumeOscillator` | Volume-force oscillator using fast and slow EMAs plus signal line. | https://trendspider.com/learning-center/introduction-to-klinger-oscillator/ |
+| `KyleLambda` | Rolling price-impact slope of returns against signed square-root dollar volume. | https://frds.io/measures/kyle_lambda/ |
 | `LinearRegression` | Rolling least-squares fitted value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/slope |
 | `LinearRegressionAngle` | Angle of the rolling linear-regression slope. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/slope |
 | `LinearRegressionIntercept` | Intercept of the rolling linear-regression fit. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/linear-regression-r2 |
