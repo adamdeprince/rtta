@@ -16,6 +16,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `AbsolutePriceOscillator` | Difference between fast and slow moving averages in price units. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/macd-moving-average-convergence-divergence-oscillator |
 | `AccumulationDistribution` | Volume-price accumulation/distribution line. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/accumulation-distribution-line |
 | `AlphaBetaGammaTrackingFilter` | Steady-state Kalman-like price, velocity, and acceleration tracker. | https://kalmanfilter.net/alphabeta.html |
+| `AmihudIlliquidity` | Rolling average absolute return per dollar of traded volume. | https://ba-odegaard.no/teach/notes/liquidity_estimators/amihud_estimator/amihud_lectures.pdf |
 | `AnchoredVWAP` | VWAP accumulated from arbitrary anchor/reset events rather than a fixed session or rolling window. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/anchored-vwap |
 | `Aroon` | Aroon Up/Down trend age indicators based on recent highs and lows. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/aroon |
 | `AroonOscillator` | Difference between Aroon Up and Aroon Down. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/aroon-oscillator |

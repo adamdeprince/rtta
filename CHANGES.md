@@ -61,6 +61,8 @@
   classification and rolling volume-bucket imbalance.
 - Added `KyleLambda`, a rolling market-impact estimate from returns and signed
   square-root dollar volume.
+- Added `AmihudIlliquidity`, a rolling absolute-return-per-dollar-volume
+  liquidity estimator.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

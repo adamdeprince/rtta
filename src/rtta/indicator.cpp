@@ -5328,6 +5328,57 @@ private:
     double last_;
 };
 
+class AmihudIlliquidity {
+public:
+    AmihudIlliquidity(int window = 30, double scale = 1000000.0, bool fillna = true)
+        : ratios_(window),
+          scale_(scale),
+          previous_close_(0.0),
+          has_previous_(false),
+          fillna_(fillna),
+          last_(fillna ? 0.0 : nan()) {}
+
+    inline double update(double close, double volume) {
+        const double price_return = has_previous_ ? safe_divide(close - previous_close_, previous_close_) : 0.0;
+        const double dollar_volume = std::abs(close * volume);
+        const double ratio = safe_divide(std::abs(price_return), dollar_volume) * scale_;
+        ratios_.push(ratio);
+        previous_close_ = close;
+        has_previous_ = true;
+        last_ = (!fillna_ && !ratios_.full()) ? nan() : safe_divide(ratios_.sum(), static_cast<double>(ratios_.size()));
+        return last_;
+    }
+
+    inline void advance(double close, double volume) {
+        (void) update(close, volume);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &close, const Array1 &volume) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
+        std::vector<double> output(size);
+        const auto *close_values = close.data();
+        const auto *volume_values = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(close_values[i]), static_cast<double>(volume_values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingSumWindow ratios_;
+    double scale_;
+    double previous_close_;
+    bool has_previous_;
+    bool fillna_;
+    double last_;
+};
+
 class ChaikinMoneyFlow {
 public:
     ChaikinMoneyFlow(int window = 20, bool fillna = true)
@@ -15651,6 +15702,14 @@ NB_MODULE(indicator, m) {
         RTTA_ADVANCE2(KyleLambda, close, signed_dollar_volume)
         RTTA_REPLAY2(KyleLambda, close, signed_dollar_volume)
         RTTA_BATCH2_ARRAY(KyleLambda, close, signed_dollar_volume, "close", "signed_dollar_volume");
+
+    nb::class_<AmihudIlliquidity>(m, "AmihudIlliquidity")
+        .def(nb::init<int, double, bool>(), nb::arg("window") = 30, nb::arg("scale") = 1000000.0, nb::arg("fillna") = true)
+        .def("update", &AmihudIlliquidity::update, nb::arg("close"), nb::arg("volume"))
+        .def("last", &AmihudIlliquidity::last)
+        RTTA_ADVANCE2(AmihudIlliquidity, close, volume)
+        RTTA_REPLAY2(AmihudIlliquidity, close, volume)
+        RTTA_BATCH2_ARRAY(AmihudIlliquidity, close, volume, "close", "volume");
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
