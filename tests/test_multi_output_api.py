@@ -23,6 +23,7 @@ MULTI_OUTPUTS = {
     "HighLow": ("min", "max"),
     "HighLowIndex": ("min_index", "max_index"),
     "Ichimoku": ("conversion", "base", "span_a", "span_b"),
+    "InteractingMultipleModelFilter": ("value", "velocity", "low_vol_probability", "high_vol_probability", "trend_probability", "chop_probability"),
     "KSTOscillator": ("kst", "signal", "difference"),
     "KalmanExtremumTrend": ("trend", "oscillator", "signal"),
     "KalmanHedgeRatio": ("hedge_ratio", "intercept", "spread"),

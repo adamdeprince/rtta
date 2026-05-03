@@ -55,6 +55,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `HighLowIndex` | Combined offsets/indexes of rolling minimum and maximum values. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/distance-to-highs |
 | `HullMovingAverage` | HMA lag-reduced weighted moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/hull-moving-average-hma |
 | `Ichimoku` | Ichimoku conversion, base, and leading span components. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/ichimoku-cloud |
+| `InteractingMultipleModelFilter` | Four-regime IMM Kalman tracker that blends low-volatility, high-volatility, trend, and chop models by online probabilities. | https://www.sciencedirect.com/science/article/abs/pii/S1544612316302215 |
 | `KSTOscillator` | Pring Know Sure Thing smoothed multi-ROC oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/pring-s-know-sure-thing-kst |
 | `KalmanExtremumTrend` | Kalman trend combined with stochastic-style position inside recent extrema. | https://arxiv.org/pdf/1808.03297 |
 | `KalmanHedgeRatio` | Online Kalman regression hedge ratio and pair spread. | https://www.quantstart.com/articles/Dynamic-Hedge-Ratio-Between-ETF-Pairs-Using-the-Kalman-Filter/ |

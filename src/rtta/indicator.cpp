@@ -4,6 +4,7 @@
 #include <kalman/kalman.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -921,6 +922,24 @@ struct AlphaBetaGammaTrackingFilterBatchResult {
     nb::object residual;
 };
 
+struct InteractingMultipleModelFilterResult {
+    double value;
+    double velocity;
+    double low_vol_probability;
+    double high_vol_probability;
+    double trend_probability;
+    double chop_probability;
+};
+
+struct InteractingMultipleModelFilterBatchResult {
+    nb::object value;
+    nb::object velocity;
+    nb::object low_vol_probability;
+    nb::object high_vol_probability;
+    nb::object trend_probability;
+    nb::object chop_probability;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1057,6 +1076,11 @@ inline double result_checksum(const KalmanExtremumTrendResult &value) {
 
 inline double result_checksum(const AlphaBetaGammaTrackingFilterResult &value) {
     return value.price + value.velocity + value.acceleration + value.residual;
+}
+
+inline double result_checksum(const InteractingMultipleModelFilterResult &value) {
+    return value.value + value.velocity + value.low_vol_probability + value.high_vol_probability +
+           value.trend_probability + value.chop_probability;
 }
 
 class RollingExtremeQueue {
@@ -9267,6 +9291,268 @@ private:
     AlphaBetaGammaTrackingFilterResult last_;
 };
 
+class InteractingMultipleModelFilter {
+public:
+    InteractingMultipleModelFilter(double initial_price = nan(),
+                                   double initial_velocity = 0.0,
+                                   double dt = 1.0,
+                                   double low_vol_process_variance = 1.0e-5,
+                                   double high_vol_process_variance = 1.0e-2,
+                                   double trend_process_variance = 1.0e-4,
+                                   double chop_process_variance = 1.0e-3,
+                                   double measurement_variance = 0.25,
+                                   double stickiness = 0.96,
+                                   bool fillna = true)
+        : initial_price_(initial_price),
+          initial_velocity_(std::isfinite(initial_velocity) ? initial_velocity : 0.0),
+          dt_(dt > 0.0 ? dt : 1.0),
+          stickiness_(std::clamp(std::isfinite(stickiness) ? stickiness : 0.96, 0.25, 0.999)),
+          initialized_(false),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan(), nan(), nan()} {
+        const double measurement = variance_floor(measurement_variance);
+        specs_[0] = ModelSpec{1.0, 0.85, variance_floor(low_vol_process_variance), variance_floor(low_vol_process_variance), variance_floor(0.5 * measurement)};
+        specs_[1] = ModelSpec{1.0, 0.85, variance_floor(high_vol_process_variance), variance_floor(high_vol_process_variance), variance_floor(2.0 * measurement)};
+        specs_[2] = ModelSpec{1.0, 1.0, variance_floor(0.25 * trend_process_variance), variance_floor(trend_process_variance), measurement};
+        specs_[3] = ModelSpec{0.15, 0.20, variance_floor(chop_process_variance), variance_floor(2.0 * chop_process_variance), measurement};
+    }
+
+    InteractingMultipleModelFilterResult update(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
+            if (!std::isfinite(initial_price_)) {
+                ++count_;
+                return output_for_warmup();
+            }
+        }
+
+        std::array<ModelState, model_count_> mixed_models{};
+        std::array<double, model_count_> predicted_probabilities{};
+        mix_models(mixed_models, predicted_probabilities);
+
+        std::array<double, model_count_> log_likelihoods{};
+        double max_log_likelihood = -std::numeric_limits<double>::infinity();
+        for (std::size_t i = 0; i < model_count_; ++i) {
+            const double log_likelihood = update_model(mixed_models[i], specs_[i], close);
+            log_likelihoods[i] = log_likelihood;
+            max_log_likelihood = std::max(max_log_likelihood, log_likelihood);
+        }
+        models_ = mixed_models;
+        update_probabilities(predicted_probabilities, log_likelihoods, max_log_likelihood);
+        update_combined_output();
+        ++count_;
+        return output_for_warmup();
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const InteractingMultipleModelFilterResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    InteractingMultipleModelFilterBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> value(size);
+        std::vector<double> velocity(size);
+        std::vector<double> low_vol_probability(size);
+        std::vector<double> high_vol_probability(size);
+        std::vector<double> trend_probability(size);
+        std::vector<double> chop_probability(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const InteractingMultipleModelFilterResult out = update(static_cast<double>(values[i]));
+            value[i] = out.value;
+            velocity[i] = out.velocity;
+            low_vol_probability[i] = out.low_vol_probability;
+            high_vol_probability[i] = out.high_vol_probability;
+            trend_probability[i] = out.trend_probability;
+            chop_probability[i] = out.chop_probability;
+        }
+        return {
+            make_array(std::move(value)),
+            make_array(std::move(velocity)),
+            make_array(std::move(low_vol_probability)),
+            make_array(std::move(high_vol_probability)),
+            make_array(std::move(trend_probability)),
+            make_array(std::move(chop_probability)),
+        };
+    }
+
+private:
+    struct ModelSpec {
+        double position_velocity_loading;
+        double velocity_persistence;
+        double process_position_variance;
+        double process_velocity_variance;
+        double measurement_variance;
+    };
+
+    struct ModelState {
+        double price;
+        double velocity;
+        double p00;
+        double p01;
+        double p11;
+    };
+
+    static constexpr std::size_t model_count_ = 4;
+    static constexpr double pi_ = 3.141592653589793238462643383279502884;
+
+    static double variance_floor(double value, double minimum = 1.0e-12) {
+        return (!std::isfinite(value) || value < minimum) ? minimum : value;
+    }
+
+    double transition_probability(std::size_t from, std::size_t to) const {
+        if (from == to) {
+            return stickiness_;
+        }
+        return (1.0 - stickiness_) / static_cast<double>(model_count_ - 1);
+    }
+
+    void initialize(double close) {
+        for (std::size_t i = 0; i < model_count_; ++i) {
+            models_[i] = ModelState{close, initial_velocity_, 1.0, 0.0, 1.0};
+            probabilities_[i] = 1.0 / static_cast<double>(model_count_);
+        }
+        initialized_ = true;
+        update_combined_output();
+    }
+
+    void mix_models(std::array<ModelState, model_count_> &mixed_models, std::array<double, model_count_> &predicted_probabilities) const {
+        for (std::size_t to = 0; to < model_count_; ++to) {
+            double predicted_probability = 0.0;
+            for (std::size_t from = 0; from < model_count_; ++from) {
+                predicted_probability += probabilities_[from] * transition_probability(from, to);
+            }
+            predicted_probability = variance_floor(predicted_probability);
+            predicted_probabilities[to] = predicted_probability;
+
+            double price = 0.0;
+            double velocity = 0.0;
+            for (std::size_t from = 0; from < model_count_; ++from) {
+                const double weight = probabilities_[from] * transition_probability(from, to) / predicted_probability;
+                price += weight * models_[from].price;
+                velocity += weight * models_[from].velocity;
+            }
+
+            double p00 = 0.0;
+            double p01 = 0.0;
+            double p11 = 0.0;
+            for (std::size_t from = 0; from < model_count_; ++from) {
+                const double weight = probabilities_[from] * transition_probability(from, to) / predicted_probability;
+                const double dp = models_[from].price - price;
+                const double dv = models_[from].velocity - velocity;
+                p00 += weight * (models_[from].p00 + dp * dp);
+                p01 += weight * (models_[from].p01 + dp * dv);
+                p11 += weight * (models_[from].p11 + dv * dv);
+            }
+            mixed_models[to] = ModelState{price, velocity, variance_floor(p00), p01, variance_floor(p11)};
+        }
+    }
+
+    double update_model(ModelState &model, const ModelSpec &spec, double close) const {
+        const double loading = spec.position_velocity_loading * dt_;
+        const double persistence = spec.velocity_persistence;
+        const double predicted_price = model.price + loading * model.velocity;
+        const double predicted_velocity = persistence * model.velocity;
+        const double p00 = model.p00 + loading * model.p01 + loading * model.p01 + loading * loading * model.p11 + spec.process_position_variance;
+        const double p01 = persistence * (model.p01 + loading * model.p11);
+        const double p11 = persistence * persistence * model.p11 + spec.process_velocity_variance;
+        const double innovation = close - predicted_price;
+        const double innovation_variance = variance_floor(p00 + spec.measurement_variance);
+        const double k0 = p00 / innovation_variance;
+        const double k1 = p01 / innovation_variance;
+
+        model.price = predicted_price + k0 * innovation;
+        model.velocity = predicted_velocity + k1 * innovation;
+        model.p00 = variance_floor((1.0 - k0) * p00);
+        model.p01 = (1.0 - k0) * p01;
+        model.p11 = variance_floor(p11 - k1 * p01);
+
+        return -0.5 * (std::log(2.0 * pi_ * innovation_variance) + innovation * innovation / innovation_variance);
+    }
+
+    void update_probabilities(const std::array<double, model_count_> &predicted_probabilities,
+                              const std::array<double, model_count_> &log_likelihoods,
+                              double max_log_likelihood) {
+        double total = 0.0;
+        std::array<double, model_count_> next{};
+        if (!std::isfinite(max_log_likelihood)) {
+            probabilities_ = predicted_probabilities;
+            normalize_probabilities();
+            return;
+        }
+        for (std::size_t i = 0; i < model_count_; ++i) {
+            next[i] = predicted_probabilities[i] * std::exp(log_likelihoods[i] - max_log_likelihood);
+            total += next[i];
+        }
+        if (!std::isfinite(total) || total <= 0.0) {
+            probabilities_ = predicted_probabilities;
+            normalize_probabilities();
+            return;
+        }
+        for (std::size_t i = 0; i < model_count_; ++i) {
+            probabilities_[i] = next[i] / total;
+        }
+    }
+
+    void normalize_probabilities() {
+        double total = 0.0;
+        for (double probability : probabilities_) {
+            total += probability;
+        }
+        if (!std::isfinite(total) || total <= 0.0) {
+            for (double &probability : probabilities_) {
+                probability = 1.0 / static_cast<double>(model_count_);
+            }
+            return;
+        }
+        for (double &probability : probabilities_) {
+            probability /= total;
+        }
+    }
+
+    void update_combined_output() {
+        double value = 0.0;
+        double velocity = 0.0;
+        for (std::size_t i = 0; i < model_count_; ++i) {
+            value += probabilities_[i] * models_[i].price;
+            velocity += probabilities_[i] * models_[i].velocity;
+        }
+        last_ = InteractingMultipleModelFilterResult{
+            value,
+            velocity,
+            probabilities_[0],
+            probabilities_[1],
+            probabilities_[2],
+            probabilities_[3],
+        };
+    }
+
+    InteractingMultipleModelFilterResult output_for_warmup() const {
+        if (!fillna_ && count_ < 2) {
+            return InteractingMultipleModelFilterResult{nan(), nan(), nan(), nan(), nan(), nan()};
+        }
+        return last_;
+    }
+
+    double initial_price_;
+    double initial_velocity_;
+    double dt_;
+    double stickiness_;
+    std::array<ModelSpec, model_count_> specs_;
+    std::array<ModelState, model_count_> models_;
+    std::array<double, model_count_> probabilities_;
+    bool initialized_;
+    std::size_t count_;
+    bool fillna_;
+    InteractingMultipleModelFilterResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -11052,6 +11338,22 @@ NB_MODULE(indicator, m) {
         .def_ro("acceleration", &AlphaBetaGammaTrackingFilterBatchResult::acceleration)
         .def_ro("residual", &AlphaBetaGammaTrackingFilterBatchResult::residual);
 
+    nb::class_<InteractingMultipleModelFilterResult>(m, "InteractingMultipleModelFilterResult")
+        .def_ro("value", &InteractingMultipleModelFilterResult::value)
+        .def_ro("velocity", &InteractingMultipleModelFilterResult::velocity)
+        .def_ro("low_vol_probability", &InteractingMultipleModelFilterResult::low_vol_probability)
+        .def_ro("high_vol_probability", &InteractingMultipleModelFilterResult::high_vol_probability)
+        .def_ro("trend_probability", &InteractingMultipleModelFilterResult::trend_probability)
+        .def_ro("chop_probability", &InteractingMultipleModelFilterResult::chop_probability);
+
+    nb::class_<InteractingMultipleModelFilterBatchResult>(m, "InteractingMultipleModelFilterBatchResult")
+        .def_ro("value", &InteractingMultipleModelFilterBatchResult::value)
+        .def_ro("velocity", &InteractingMultipleModelFilterBatchResult::velocity)
+        .def_ro("low_vol_probability", &InteractingMultipleModelFilterBatchResult::low_vol_probability)
+        .def_ro("high_vol_probability", &InteractingMultipleModelFilterBatchResult::high_vol_probability)
+        .def_ro("trend_probability", &InteractingMultipleModelFilterBatchResult::trend_probability)
+        .def_ro("chop_probability", &InteractingMultipleModelFilterBatchResult::chop_probability);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -12633,6 +12935,76 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(velocity)),
                 make_array(std::move(acceleration)),
                 make_array(std::move(residual)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<InteractingMultipleModelFilter>(m, "InteractingMultipleModelFilter")
+        .def(nb::init<double, double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("low_vol_process_variance") = 1.0e-5,
+             nb::arg("high_vol_process_variance") = 1.0e-2,
+             nb::arg("trend_process_variance") = 1.0e-4,
+             nb::arg("chop_process_variance") = 1.0e-3,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("stickiness") = 0.96,
+             nb::arg("fillna") = true)
+        .def("update", &InteractingMultipleModelFilter::update, nb::arg("close"))
+        .def("last", &InteractingMultipleModelFilter::last)
+        RTTA_ADVANCE1(InteractingMultipleModelFilter, close)
+        RTTA_REPLAY1(InteractingMultipleModelFilter, close)
+        RTTA_FIELD1(InteractingMultipleModelFilter, value, close)
+        RTTA_FIELD1(InteractingMultipleModelFilter, velocity, close)
+        RTTA_FIELD1(InteractingMultipleModelFilter, low_vol_probability, close)
+        RTTA_FIELD1(InteractingMultipleModelFilter, high_vol_probability, close)
+        RTTA_FIELD1(InteractingMultipleModelFilter, trend_probability, close)
+        RTTA_FIELD1(InteractingMultipleModelFilter, chop_probability, close)
+        .def("replay_update_outputs", [](InteractingMultipleModelFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](InteractingMultipleModelFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](InteractingMultipleModelFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](InteractingMultipleModelFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](InteractingMultipleModelFilter &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> value = make_record_output(records);
+            std::vector<double> velocity;
+            std::vector<double> low_vol_probability;
+            std::vector<double> high_vol_probability;
+            std::vector<double> trend_probability;
+            std::vector<double> chop_probability;
+            velocity.reserve(value.capacity());
+            low_vol_probability.reserve(value.capacity());
+            high_vol_probability.reserve(value.capacity());
+            trend_probability.reserve(value.capacity());
+            chop_probability.reserve(value.capacity());
+            for (nb::handle record : records) {
+                const InteractingMultipleModelFilterResult out = self.update(scalar_or_record_value(record, "close", 0));
+                value.push_back(out.value);
+                velocity.push_back(out.velocity);
+                low_vol_probability.push_back(out.low_vol_probability);
+                high_vol_probability.push_back(out.high_vol_probability);
+                trend_probability.push_back(out.trend_probability);
+                chop_probability.push_back(out.chop_probability);
+            }
+            return InteractingMultipleModelFilterBatchResult{
+                make_array(std::move(value)),
+                make_array(std::move(velocity)),
+                make_array(std::move(low_vol_probability)),
+                make_array(std::move(high_vol_probability)),
+                make_array(std::move(trend_probability)),
+                make_array(std::move(chop_probability)),
             };
         }, nb::arg("records"));
 

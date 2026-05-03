@@ -34,6 +34,9 @@
   price/velocity/acceleration tracker with immutable multi-output results,
   scalar field accessors, replay-output batches, and array/table/record batch
   support.
+- Added `InteractingMultipleModelFilter`, a four-regime IMM Kalman tracker
+  that mixes low-volatility, high-volatility, trend, and chop models with
+  online model probabilities.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.
