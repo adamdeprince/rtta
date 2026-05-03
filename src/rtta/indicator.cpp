@@ -991,6 +991,20 @@ struct GaussianProcessRegressionBandsBatchResult {
     nb::object lower;
 };
 
+struct ZigZagSwingDetectorResult {
+    double value;
+    double direction;
+    double pivot;
+    double pivot_index;
+};
+
+struct ZigZagSwingDetectorBatchResult {
+    nb::object value;
+    nb::object direction;
+    nb::object pivot;
+    nb::object pivot_index;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1148,6 +1162,10 @@ inline double result_checksum(const NadarayaWatsonEnvelopeResult &value) {
 
 inline double result_checksum(const GaussianProcessRegressionBandsResult &value) {
     return value.middle + value.upper + value.lower;
+}
+
+inline double result_checksum(const ZigZagSwingDetectorResult &value) {
+    return value.value + value.direction + value.pivot + value.pivot_index;
 }
 
 class RollingExtremeQueue {
@@ -10274,6 +10292,138 @@ private:
     GaussianProcessRegressionBandsResult last_;
 };
 
+class ZigZagSwingDetector {
+public:
+    ZigZagSwingDetector(double percent_change = 5.0)
+        : threshold_(threshold_fraction(percent_change)),
+          initialized_(false),
+          index_(0),
+          direction_(0.0),
+          pivot_(0.0),
+          pivot_index_(0),
+          start_(0.0),
+          extreme_(0.0),
+          extreme_index_(0),
+          last_{nan(), 0.0, nan(), nan()} {}
+
+    ZigZagSwingDetectorResult update(double close) {
+        if (!initialized_) {
+            initialized_ = true;
+            pivot_ = close;
+            start_ = close;
+            extreme_ = close;
+            last_ = ZigZagSwingDetectorResult{close, 0.0, close, 0.0};
+            ++index_;
+            return last_;
+        }
+
+        double confirmed_pivot = pivot_;
+        double confirmed_pivot_index = static_cast<double>(pivot_index_);
+        if (direction_ == 0.0) {
+            if (close >= start_ * (1.0 + threshold_)) {
+                direction_ = 1.0;
+                pivot_ = start_;
+                pivot_index_ = 0;
+                extreme_ = close;
+                extreme_index_ = index_;
+            } else if (close <= start_ * (1.0 - threshold_)) {
+                direction_ = -1.0;
+                pivot_ = start_;
+                pivot_index_ = 0;
+                extreme_ = close;
+                extreme_index_ = index_;
+            } else {
+                if (std::abs(close - start_) > std::abs(extreme_ - start_)) {
+                    extreme_ = close;
+                    extreme_index_ = index_;
+                }
+            }
+            confirmed_pivot = pivot_;
+            confirmed_pivot_index = static_cast<double>(pivot_index_);
+        } else if (direction_ > 0.0) {
+            if (close >= extreme_) {
+                extreme_ = close;
+                extreme_index_ = index_;
+            } else if (close <= extreme_ * (1.0 - threshold_)) {
+                pivot_ = extreme_;
+                pivot_index_ = extreme_index_;
+                direction_ = -1.0;
+                extreme_ = close;
+                extreme_index_ = index_;
+                confirmed_pivot = pivot_;
+                confirmed_pivot_index = static_cast<double>(pivot_index_);
+            }
+        } else {
+            if (close <= extreme_) {
+                extreme_ = close;
+                extreme_index_ = index_;
+            } else if (close >= extreme_ * (1.0 + threshold_)) {
+                pivot_ = extreme_;
+                pivot_index_ = extreme_index_;
+                direction_ = 1.0;
+                extreme_ = close;
+                extreme_index_ = index_;
+                confirmed_pivot = pivot_;
+                confirmed_pivot_index = static_cast<double>(pivot_index_);
+            }
+        }
+
+        last_ = ZigZagSwingDetectorResult{extreme_, direction_, confirmed_pivot, confirmed_pivot_index};
+        ++index_;
+        return last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const ZigZagSwingDetectorResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    ZigZagSwingDetectorBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> value(size);
+        std::vector<double> direction(size);
+        std::vector<double> pivot(size);
+        std::vector<double> pivot_index(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const ZigZagSwingDetectorResult out = update(static_cast<double>(values[i]));
+            value[i] = out.value;
+            direction[i] = out.direction;
+            pivot[i] = out.pivot;
+            pivot_index[i] = out.pivot_index;
+        }
+        return {
+            make_array(std::move(value)),
+            make_array(std::move(direction)),
+            make_array(std::move(pivot)),
+            make_array(std::move(pivot_index)),
+        };
+    }
+
+private:
+    static double threshold_fraction(double percent_change) {
+        if (!std::isfinite(percent_change) || percent_change <= 0.0) {
+            return 0.05;
+        }
+        return percent_change > 1.0 ? percent_change / 100.0 : percent_change;
+    }
+
+    double threshold_;
+    bool initialized_;
+    std::size_t index_;
+    double direction_;
+    double pivot_;
+    std::size_t pivot_index_;
+    double start_;
+    double extreme_;
+    std::size_t extreme_index_;
+    ZigZagSwingDetectorResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -12116,6 +12266,18 @@ NB_MODULE(indicator, m) {
         .def_ro("middle", &GaussianProcessRegressionBandsBatchResult::middle)
         .def_ro("upper", &GaussianProcessRegressionBandsBatchResult::upper)
         .def_ro("lower", &GaussianProcessRegressionBandsBatchResult::lower);
+
+    nb::class_<ZigZagSwingDetectorResult>(m, "ZigZagSwingDetectorResult")
+        .def_ro("value", &ZigZagSwingDetectorResult::value)
+        .def_ro("direction", &ZigZagSwingDetectorResult::direction)
+        .def_ro("pivot", &ZigZagSwingDetectorResult::pivot)
+        .def_ro("pivot_index", &ZigZagSwingDetectorResult::pivot_index);
+
+    nb::class_<ZigZagSwingDetectorBatchResult>(m, "ZigZagSwingDetectorBatchResult")
+        .def_ro("value", &ZigZagSwingDetectorBatchResult::value)
+        .def_ro("direction", &ZigZagSwingDetectorBatchResult::direction)
+        .def_ro("pivot", &ZigZagSwingDetectorBatchResult::pivot)
+        .def_ro("pivot_index", &ZigZagSwingDetectorBatchResult::pivot_index);
 
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
@@ -13977,6 +14139,56 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(middle)),
                 make_array(std::move(upper)),
                 make_array(std::move(lower)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<ZigZagSwingDetector>(m, "ZigZagSwingDetector")
+        .def(nb::init<double>(), nb::arg("percent_change") = 5.0)
+        .def("update", &ZigZagSwingDetector::update, nb::arg("close"))
+        .def("last", &ZigZagSwingDetector::last)
+        RTTA_ADVANCE1(ZigZagSwingDetector, close)
+        RTTA_REPLAY1(ZigZagSwingDetector, close)
+        RTTA_FIELD1(ZigZagSwingDetector, value, close)
+        RTTA_FIELD1(ZigZagSwingDetector, direction, close)
+        RTTA_FIELD1(ZigZagSwingDetector, pivot, close)
+        RTTA_FIELD1(ZigZagSwingDetector, pivot_index, close)
+        .def("replay_update_outputs", [](ZigZagSwingDetector &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](ZigZagSwingDetector &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](ZigZagSwingDetector &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](ZigZagSwingDetector &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](ZigZagSwingDetector &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> value = make_record_output(records);
+            std::vector<double> direction;
+            std::vector<double> pivot;
+            std::vector<double> pivot_index;
+            direction.reserve(value.capacity());
+            pivot.reserve(value.capacity());
+            pivot_index.reserve(value.capacity());
+            for (nb::handle record : records) {
+                const ZigZagSwingDetectorResult out = self.update(scalar_or_record_value(record, "close", 0));
+                value.push_back(out.value);
+                direction.push_back(out.direction);
+                pivot.push_back(out.pivot);
+                pivot_index.push_back(out.pivot_index);
+            }
+            return ZigZagSwingDetectorBatchResult{
+                make_array(std::move(value)),
+                make_array(std::move(direction)),
+                make_array(std::move(pivot)),
+                make_array(std::move(pivot_index)),
             };
         }, nb::arg("records"));
 

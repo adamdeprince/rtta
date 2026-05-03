@@ -128,3 +128,4 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `WeightedClosePrice` | Weighted close transform using high, low, and close. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/weighted-close |
 | `WeightedMovingAverage` | Weighted moving average with larger recent weights. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/hull-moving-average-hma |
 | `WilliamsR` | Williams %R overbought/oversold oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/williams-r |
+| `ZigZagSwingDetector` | Close-based swing detector that filters price moves below a percentage threshold and emits confirmed pivots. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/zigzag |

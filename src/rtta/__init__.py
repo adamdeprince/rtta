@@ -129,6 +129,7 @@ from .indicator import (
     WeightedClosePrice,
     WeightedMovingAverage,
     WilliamsR,
+    ZigZagSwingDetector,
 )
 
 __version__ = "0.2.0"
@@ -264,5 +265,6 @@ __all__ = [
     "WeightedClosePrice",
     "WeightedMovingAverage",
     "WilliamsR",
+    "ZigZagSwingDetector",
     "__version__",
 ]

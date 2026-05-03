@@ -217,6 +217,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("WeightedClosePrice", ("close", "high", "low")),
     IndicatorSpec("WeightedMovingAverage", ("value",)),
     IndicatorSpec("WilliamsR", ("close", "high", "low")),
+    IndicatorSpec("ZigZagSwingDetector", ("close",), batch_inputs=("close",)),
 )
 
 

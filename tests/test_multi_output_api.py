@@ -46,6 +46,7 @@ MULTI_OUTPUTS = {
     "SuperTrend": ("value", "direction", "upper", "lower"),
     "TwoFactorKalmanTrendFilter": ("short_trend", "long_trend", "value"),
     "Vortex": ("positive", "negative", "difference"),
+    "ZigZagSwingDetector": ("value", "direction", "pivot", "pivot_index"),
 }
 
 

@@ -47,6 +47,8 @@
   with weighted residual upper/lower bands.
 - Added `GaussianProcessRegressionBands`, a rolling RBF-kernel Gaussian
   process smoother that emits posterior mean and uncertainty bands.
+- Added `ZigZagSwingDetector`, a close-based percentage swing detector for
+  filtering noise and labeling confirmed pivots.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.
