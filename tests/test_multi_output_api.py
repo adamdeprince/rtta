@@ -39,6 +39,7 @@ MULTI_OUTPUTS = {
     "SavitzkyGolayFilter": ("smooth", "first_derivative", "second_derivative"),
     "KlingerVolumeOscillator": ("kvo", "signal", "histogram"),
     "MesaAdaptiveMovingAverage": ("mama", "fama"),
+    "NadarayaWatsonEnvelope": ("middle", "upper", "lower"),
     "ParticleFilterTrend": ("trend", "velocity", "signal", "effective_sample_size"),
     "Stochastic": ("slowk", "slowd"),
     "SuperTrend": ("value", "direction", "upper", "lower"),

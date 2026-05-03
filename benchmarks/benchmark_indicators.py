@@ -175,6 +175,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("MinusDirectionalMovement", ("high", "low")),
     IndicatorSpec("Momentum", ("close",)),
     IndicatorSpec("MoneyFlowIndex", ("close", "high", "low", "volume")),
+    IndicatorSpec("NadarayaWatsonEnvelope", ("close",), ctor_kwargs={"window": 32}, batch_inputs=("close",)),
     IndicatorSpec("NegativeVolumeIndex", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("NormalizedATR", ("close", "high", "low")),
     IndicatorSpec("OnBalanceVolume", ("close", "volume")),

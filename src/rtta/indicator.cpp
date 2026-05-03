@@ -967,6 +967,18 @@ struct SavitzkyGolayFilterBatchResult {
     nb::object second_derivative;
 };
 
+struct NadarayaWatsonEnvelopeResult {
+    double middle;
+    double upper;
+    double lower;
+};
+
+struct NadarayaWatsonEnvelopeBatchResult {
+    nb::object middle;
+    nb::object upper;
+    nb::object lower;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1116,6 +1128,10 @@ inline double result_checksum(const ParticleFilterTrendResult &value) {
 
 inline double result_checksum(const SavitzkyGolayFilterResult &value) {
     return value.smooth + value.first_derivative + value.second_derivative;
+}
+
+inline double result_checksum(const NadarayaWatsonEnvelopeResult &value) {
+    return value.middle + value.upper + value.lower;
 }
 
 class RollingExtremeQueue {
@@ -10001,6 +10017,94 @@ private:
     SavitzkyGolayFilterResult last_;
 };
 
+class NadarayaWatsonEnvelope {
+public:
+    NadarayaWatsonEnvelope(int window = 64, double bandwidth = 8.0, double multiplier = 2.0, bool fillna = true)
+        : window_(std::max(window, 1)),
+          bandwidth_(positive_scale(bandwidth, 8.0)),
+          multiplier_(std::isfinite(multiplier) ? std::abs(multiplier) : 2.0),
+          values_(window_),
+          weights_(static_cast<std::size_t>(window_)),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {
+        for (int age = 0; age < window_; ++age) {
+            const double scaled = static_cast<double>(age) / bandwidth_;
+            weights_[static_cast<std::size_t>(age)] = std::exp(-0.5 * scaled * scaled);
+        }
+    }
+
+    NadarayaWatsonEnvelopeResult update(double close) {
+        values_.push(close);
+        if (!fillna_ && !values_.full()) {
+            last_ = NadarayaWatsonEnvelopeResult{nan(), nan(), nan()};
+            return last_;
+        }
+
+        const std::size_t size = values_.size();
+        double weighted_sum = 0.0;
+        double weight_total = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            const std::size_t age = size - 1 - i;
+            const double weight = weights_[age];
+            weighted_sum += weight * values_.at(i);
+            weight_total += weight;
+        }
+        const double middle = weight_total > 0.0 ? weighted_sum / weight_total : close;
+
+        double variance = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            const std::size_t age = size - 1 - i;
+            const double diff = values_.at(i) - middle;
+            variance += weights_[age] * diff * diff;
+        }
+        variance = weight_total > 0.0 ? variance / weight_total : 0.0;
+        const double band = multiplier_ * std::sqrt(std::max(variance, 0.0));
+        last_ = NadarayaWatsonEnvelopeResult{middle, middle + band, middle - band};
+        return last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const NadarayaWatsonEnvelopeResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    NadarayaWatsonEnvelopeBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> middle(size);
+        std::vector<double> upper(size);
+        std::vector<double> lower(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const NadarayaWatsonEnvelopeResult out = update(static_cast<double>(values[i]));
+            middle[i] = out.middle;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+        }
+        return {
+            make_array(std::move(middle)),
+            make_array(std::move(upper)),
+            make_array(std::move(lower)),
+        };
+    }
+
+private:
+    static double positive_scale(double value, double fallback) {
+        return (!std::isfinite(value) || value <= 0.0) ? fallback : value;
+    }
+
+    int window_;
+    double bandwidth_;
+    double multiplier_;
+    RollingBuffer values_;
+    std::vector<double> weights_;
+    bool fillna_;
+    NadarayaWatsonEnvelopeResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -11824,6 +11928,16 @@ NB_MODULE(indicator, m) {
         .def_ro("first_derivative", &SavitzkyGolayFilterBatchResult::first_derivative)
         .def_ro("second_derivative", &SavitzkyGolayFilterBatchResult::second_derivative);
 
+    nb::class_<NadarayaWatsonEnvelopeResult>(m, "NadarayaWatsonEnvelopeResult")
+        .def_ro("middle", &NadarayaWatsonEnvelopeResult::middle)
+        .def_ro("upper", &NadarayaWatsonEnvelopeResult::upper)
+        .def_ro("lower", &NadarayaWatsonEnvelopeResult::lower);
+
+    nb::class_<NadarayaWatsonEnvelopeBatchResult>(m, "NadarayaWatsonEnvelopeBatchResult")
+        .def_ro("middle", &NadarayaWatsonEnvelopeBatchResult::middle)
+        .def_ro("upper", &NadarayaWatsonEnvelopeBatchResult::upper)
+        .def_ro("lower", &NadarayaWatsonEnvelopeBatchResult::lower);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -13584,6 +13698,55 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(smooth)),
                 make_array(std::move(first_derivative)),
                 make_array(std::move(second_derivative)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<NadarayaWatsonEnvelope>(m, "NadarayaWatsonEnvelope")
+        .def(nb::init<int, double, double, bool>(),
+             nb::arg("window") = 64,
+             nb::arg("bandwidth") = 8.0,
+             nb::arg("multiplier") = 2.0,
+             nb::arg("fillna") = true)
+        .def("update", &NadarayaWatsonEnvelope::update, nb::arg("close"))
+        .def("last", &NadarayaWatsonEnvelope::last)
+        RTTA_ADVANCE1(NadarayaWatsonEnvelope, close)
+        RTTA_REPLAY1(NadarayaWatsonEnvelope, close)
+        RTTA_FIELD1(NadarayaWatsonEnvelope, middle, close)
+        RTTA_FIELD1(NadarayaWatsonEnvelope, upper, close)
+        RTTA_FIELD1(NadarayaWatsonEnvelope, lower, close)
+        .def("replay_update_outputs", [](NadarayaWatsonEnvelope &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](NadarayaWatsonEnvelope &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](NadarayaWatsonEnvelope &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](NadarayaWatsonEnvelope &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](NadarayaWatsonEnvelope &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> middle = make_record_output(records);
+            std::vector<double> upper;
+            std::vector<double> lower;
+            upper.reserve(middle.capacity());
+            lower.reserve(middle.capacity());
+            for (nb::handle record : records) {
+                const NadarayaWatsonEnvelopeResult out = self.update(scalar_or_record_value(record, "close", 0));
+                middle.push_back(out.middle);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
+            }
+            return NadarayaWatsonEnvelopeBatchResult{
+                make_array(std::move(middle)),
+                make_array(std::move(upper)),
+                make_array(std::move(lower)),
             };
         }, nb::arg("records"));
 

@@ -86,6 +86,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `MinusDirectionalMovement` | Negative directional movement. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/average-directional-index-adx |
 | `Momentum` | Difference between current value and a prior value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
 | `MoneyFlowIndex` | Volume-weighted RSI-like money flow oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/money-flow-index-mfi |
+| `NadarayaWatsonEnvelope` | Gaussian-kernel Nadaraya-Watson smoother with weighted residual bands. | https://classic.d2l.ai/chapter_attention-mechanisms/nadaraya-watson.html |
 | `NegativeVolumeIndex` | Cumulative indicator that changes on lower-volume periods. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/negative-volume-index-nvi |
 | `NormalizedATR` | ATR normalized by close. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/average-true-range-atr-and-average-true-range-percent-atrp |
 | `OnBalanceVolume` | Cumulative volume added/subtracted by close direction. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/on-balance-volume-obv |

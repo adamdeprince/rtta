@@ -43,6 +43,8 @@
 - Added `SavitzkyGolayFilter`, a causal rolling polynomial smoother with
   precomputed endpoint convolution coefficients for smooth price, first
   derivative, and second derivative outputs.
+- Added `NadarayaWatsonEnvelope`, a Gaussian-kernel nonparametric smoother
+  with weighted residual upper/lower bands.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.
