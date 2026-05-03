@@ -49,6 +49,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `FisherTransform` | Ehlers transform of normalized recent high/low position into a turning-point oscillator. | https://trendspider.com/learning-center/fisher-transform-a-comprehensive-guide/ |
 | `ForceIndex` | Price-change times volume oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/force-index |
 | `FractalAdaptiveMovingAverage` | Ehlers FRAMA using fractal dimension to adapt EMA smoothing. | https://www.metatrader5.com/en/terminal/help/indicators/trend_indicators/fama |
+| `GaussianProcessRegressionBands` | Rolling RBF-kernel Gaussian process posterior mean with uncertainty bands. | https://www.luxalgo.com/library/indicator/machine-learning-gaussian-process-regression/ |
 | `High` | Rolling highest value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/highest-high-value |
 | `HighIndex` | Offset/index of the rolling highest value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/distance-to-highs |
 | `HighLow` | Combined rolling minimum and maximum values. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/high-low-bands |

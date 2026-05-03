@@ -138,6 +138,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("FisherTransform", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("ForceIndex", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("FractalAdaptiveMovingAverage", ("value",), ctor_kwargs={"window": 16}, batch_inputs=("input",)),
+    IndicatorSpec("GaussianProcessRegressionBands", ("close",), ctor_kwargs={"window": 16}, batch_inputs=("close",)),
     IndicatorSpec("High", ("value",), ctor_kwargs={"window": 30}),
     IndicatorSpec("HighIndex", ("value",)),
     IndicatorSpec("HighLow", ("value",)),

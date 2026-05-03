@@ -979,6 +979,18 @@ struct NadarayaWatsonEnvelopeBatchResult {
     nb::object lower;
 };
 
+struct GaussianProcessRegressionBandsResult {
+    double middle;
+    double upper;
+    double lower;
+};
+
+struct GaussianProcessRegressionBandsBatchResult {
+    nb::object middle;
+    nb::object upper;
+    nb::object lower;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1131,6 +1143,10 @@ inline double result_checksum(const SavitzkyGolayFilterResult &value) {
 }
 
 inline double result_checksum(const NadarayaWatsonEnvelopeResult &value) {
+    return value.middle + value.upper + value.lower;
+}
+
+inline double result_checksum(const GaussianProcessRegressionBandsResult &value) {
     return value.middle + value.upper + value.lower;
 }
 
@@ -10105,6 +10121,159 @@ private:
     NadarayaWatsonEnvelopeResult last_;
 };
 
+class GaussianProcessRegressionBands {
+public:
+    GaussianProcessRegressionBands(int window = 32,
+                                   double length_scale = 8.0,
+                                   double signal_variance = 1.0,
+                                   double noise_variance = 0.25,
+                                   double multiplier = 2.0,
+                                   bool fillna = true)
+        : window_(std::max(window, 1)),
+          length_scale_(positive_scale(length_scale, 8.0)),
+          signal_variance_(positive_scale(signal_variance, 1.0)),
+          noise_variance_(positive_scale(noise_variance, 0.25)),
+          multiplier_(std::isfinite(multiplier) ? std::abs(multiplier) : 2.0),
+          values_(window_),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    GaussianProcessRegressionBandsResult update(double close) {
+        values_.push(close);
+        if (!fillna_ && !values_.full()) {
+            last_ = GaussianProcessRegressionBandsResult{nan(), nan(), nan()};
+            return last_;
+        }
+
+        const std::size_t size = values_.size();
+        double mean = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            mean += values_.at(i);
+        }
+        mean /= static_cast<double>(size);
+
+        std::vector<double> matrix(size * size);
+        std::vector<double> target(size);
+        std::vector<double> centered(size);
+        for (std::size_t row = 0; row < size; ++row) {
+            const double x_row = static_cast<double>(row) - static_cast<double>(size - 1);
+            target[row] = kernel(x_row, 0.0);
+            centered[row] = values_.at(row) - mean;
+            for (std::size_t col = 0; col < size; ++col) {
+                const double x_col = static_cast<double>(col) - static_cast<double>(size - 1);
+                matrix[row * size + col] = kernel(x_row, x_col);
+            }
+            matrix[row * size + row] += noise_variance_;
+        }
+
+        const std::vector<double> alpha = solve_linear(matrix, centered, size);
+        const std::vector<double> variance_weights = solve_linear(std::move(matrix), target, size);
+
+        double posterior_mean = mean;
+        double explained_variance = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            posterior_mean += target[i] * alpha[i];
+            explained_variance += target[i] * variance_weights[i];
+        }
+
+        const double posterior_variance = std::max(signal_variance_ - explained_variance, 0.0);
+        const double band = multiplier_ * std::sqrt(posterior_variance);
+        last_ = GaussianProcessRegressionBandsResult{posterior_mean, posterior_mean + band, posterior_mean - band};
+        return last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const GaussianProcessRegressionBandsResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    GaussianProcessRegressionBandsBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> middle(size);
+        std::vector<double> upper(size);
+        std::vector<double> lower(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const GaussianProcessRegressionBandsResult out = update(static_cast<double>(values[i]));
+            middle[i] = out.middle;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+        }
+        return {
+            make_array(std::move(middle)),
+            make_array(std::move(upper)),
+            make_array(std::move(lower)),
+        };
+    }
+
+private:
+    static double positive_scale(double value, double fallback) {
+        return (!std::isfinite(value) || value <= 0.0) ? fallback : value;
+    }
+
+    double kernel(double left, double right) const {
+        const double scaled = (left - right) / length_scale_;
+        return signal_variance_ * std::exp(-0.5 * scaled * scaled);
+    }
+
+    static std::vector<double> solve_linear(std::vector<double> matrix, std::vector<double> rhs, std::size_t size) {
+        for (std::size_t col = 0; col < size; ++col) {
+            std::size_t pivot = col;
+            double pivot_abs = std::abs(matrix[pivot * size + col]);
+            for (std::size_t row = col + 1; row < size; ++row) {
+                const double candidate = std::abs(matrix[row * size + col]);
+                if (candidate > pivot_abs) {
+                    pivot = row;
+                    pivot_abs = candidate;
+                }
+            }
+            if (pivot_abs < 1.0e-14) {
+                throw nb::value_error("GaussianProcessRegressionBands kernel matrix is singular");
+            }
+            if (pivot != col) {
+                for (std::size_t item = col; item < size; ++item) {
+                    std::swap(matrix[col * size + item], matrix[pivot * size + item]);
+                }
+                std::swap(rhs[col], rhs[pivot]);
+            }
+
+            const double divisor = matrix[col * size + col];
+            for (std::size_t item = col; item < size; ++item) {
+                matrix[col * size + item] /= divisor;
+            }
+            rhs[col] /= divisor;
+
+            for (std::size_t row = 0; row < size; ++row) {
+                if (row == col) {
+                    continue;
+                }
+                const double factor = matrix[row * size + col];
+                if (factor == 0.0) {
+                    continue;
+                }
+                for (std::size_t item = col; item < size; ++item) {
+                    matrix[row * size + item] -= factor * matrix[col * size + item];
+                }
+                rhs[row] -= factor * rhs[col];
+            }
+        }
+        return rhs;
+    }
+
+    int window_;
+    double length_scale_;
+    double signal_variance_;
+    double noise_variance_;
+    double multiplier_;
+    RollingBuffer values_;
+    bool fillna_;
+    GaussianProcessRegressionBandsResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -11938,6 +12107,16 @@ NB_MODULE(indicator, m) {
         .def_ro("upper", &NadarayaWatsonEnvelopeBatchResult::upper)
         .def_ro("lower", &NadarayaWatsonEnvelopeBatchResult::lower);
 
+    nb::class_<GaussianProcessRegressionBandsResult>(m, "GaussianProcessRegressionBandsResult")
+        .def_ro("middle", &GaussianProcessRegressionBandsResult::middle)
+        .def_ro("upper", &GaussianProcessRegressionBandsResult::upper)
+        .def_ro("lower", &GaussianProcessRegressionBandsResult::lower);
+
+    nb::class_<GaussianProcessRegressionBandsBatchResult>(m, "GaussianProcessRegressionBandsBatchResult")
+        .def_ro("middle", &GaussianProcessRegressionBandsBatchResult::middle)
+        .def_ro("upper", &GaussianProcessRegressionBandsBatchResult::upper)
+        .def_ro("lower", &GaussianProcessRegressionBandsBatchResult::lower);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -13744,6 +13923,57 @@ NB_MODULE(indicator, m) {
                 lower.push_back(out.lower);
             }
             return NadarayaWatsonEnvelopeBatchResult{
+                make_array(std::move(middle)),
+                make_array(std::move(upper)),
+                make_array(std::move(lower)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<GaussianProcessRegressionBands>(m, "GaussianProcessRegressionBands")
+        .def(nb::init<int, double, double, double, double, bool>(),
+             nb::arg("window") = 32,
+             nb::arg("length_scale") = 8.0,
+             nb::arg("signal_variance") = 1.0,
+             nb::arg("noise_variance") = 0.25,
+             nb::arg("multiplier") = 2.0,
+             nb::arg("fillna") = true)
+        .def("update", &GaussianProcessRegressionBands::update, nb::arg("close"))
+        .def("last", &GaussianProcessRegressionBands::last)
+        RTTA_ADVANCE1(GaussianProcessRegressionBands, close)
+        RTTA_REPLAY1(GaussianProcessRegressionBands, close)
+        RTTA_FIELD1(GaussianProcessRegressionBands, middle, close)
+        RTTA_FIELD1(GaussianProcessRegressionBands, upper, close)
+        RTTA_FIELD1(GaussianProcessRegressionBands, lower, close)
+        .def("replay_update_outputs", [](GaussianProcessRegressionBands &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](GaussianProcessRegressionBands &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](GaussianProcessRegressionBands &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](GaussianProcessRegressionBands &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](GaussianProcessRegressionBands &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> middle = make_record_output(records);
+            std::vector<double> upper;
+            std::vector<double> lower;
+            upper.reserve(middle.capacity());
+            lower.reserve(middle.capacity());
+            for (nb::handle record : records) {
+                const GaussianProcessRegressionBandsResult out = self.update(scalar_or_record_value(record, "close", 0));
+                middle.push_back(out.middle);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
+            }
+            return GaussianProcessRegressionBandsBatchResult{
                 make_array(std::move(middle)),
                 make_array(std::move(upper)),
                 make_array(std::move(lower)),

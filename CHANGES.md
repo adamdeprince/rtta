@@ -45,6 +45,8 @@
   derivative, and second derivative outputs.
 - Added `NadarayaWatsonEnvelope`, a Gaussian-kernel nonparametric smoother
   with weighted residual upper/lower bands.
+- Added `GaussianProcessRegressionBands`, a rolling RBF-kernel Gaussian
+  process smoother that emits posterior mean and uncertainty bands.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.
