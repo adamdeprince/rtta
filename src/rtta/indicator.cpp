@@ -1162,6 +1162,18 @@ struct VolumeProfileBatchResult {
     nb::object value_area_low;
 };
 
+struct SpreadFeaturesResult {
+    double quoted_spread;
+    double effective_spread;
+    double realized_spread;
+};
+
+struct SpreadFeaturesBatchResult {
+    nb::object quoted_spread;
+    nb::object effective_spread;
+    nb::object realized_spread;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1335,6 +1347,10 @@ inline double result_checksum(const HeikinAshiTransformResult &value) {
 
 inline double result_checksum(const VolumeProfileResult &value) {
     return value.point_of_control + value.value_area_high + value.value_area_low;
+}
+
+inline double result_checksum(const SpreadFeaturesResult &value) {
+    return value.quoted_spread + value.effective_spread + value.realized_spread;
 }
 
 class RollingExtremeQueue {
@@ -5377,6 +5393,116 @@ private:
     bool has_previous_;
     bool fillna_;
     double last_;
+};
+
+class SpreadFeatures {
+public:
+    SpreadFeatures(int realized_horizon = 5, bool fillna = true)
+        : realized_horizon_(checked_horizon(realized_horizon)),
+          pending_trade_price_(std::max(realized_horizon_, 1)),
+          pending_side_(std::max(realized_horizon_, 1)),
+          previous_trade_price_(0.0),
+          has_previous_trade_(false),
+          fillna_(fillna),
+          last_{nan(), nan(), fillna ? 0.0 : nan()} {}
+
+    inline SpreadFeaturesResult update(double trade_price, double bid_price, double ask_price) {
+        const double midpoint = 0.5 * (bid_price + ask_price);
+        const double quoted_spread = ask_price - bid_price;
+        const double side = classify_side(trade_price, midpoint);
+        const double effective_spread = 2.0 * std::abs(trade_price - midpoint);
+        const double realized_spread = realized_spread_for_current_midpoint(midpoint, trade_price, side);
+
+        if (realized_horizon_ > 0) {
+            pending_trade_price_.push(trade_price);
+            pending_side_.push(side);
+        }
+        previous_trade_price_ = trade_price;
+        has_previous_trade_ = true;
+        last_ = SpreadFeaturesResult{quoted_spread, effective_spread, realized_spread};
+        return last_;
+    }
+
+    inline void advance(double trade_price, double bid_price, double ask_price) {
+        (void) update(trade_price, bid_price, ask_price);
+    }
+
+    inline const SpreadFeaturesResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    SpreadFeaturesBatchResult batch_array(const Array0 &trade_price, const Array1 &bid_price, const Array2 &ask_price) {
+        const std::size_t size = trade_price.shape(0);
+        require_same_size(size, bid_price.shape(0));
+        require_same_size(size, ask_price.shape(0));
+        std::vector<double> quoted_spread(size);
+        std::vector<double> effective_spread(size);
+        std::vector<double> realized_spread(size);
+        const auto *trade_price_values = trade_price.data();
+        const auto *bid_price_values = bid_price.data();
+        const auto *ask_price_values = ask_price.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const SpreadFeaturesResult out = update(
+                static_cast<double>(trade_price_values[i]),
+                static_cast<double>(bid_price_values[i]),
+                static_cast<double>(ask_price_values[i]));
+            quoted_spread[i] = out.quoted_spread;
+            effective_spread[i] = out.effective_spread;
+            realized_spread[i] = out.realized_spread;
+        }
+
+        return {
+            make_array(std::move(quoted_spread)),
+            make_array(std::move(effective_spread)),
+            make_array(std::move(realized_spread)),
+        };
+    }
+
+private:
+    static int checked_horizon(int realized_horizon) {
+        if (realized_horizon < 0) {
+            throw nb::value_error("realized_horizon must be non-negative");
+        }
+        return realized_horizon;
+    }
+
+    inline double classify_side(double trade_price, double midpoint) const {
+        if (trade_price > midpoint) {
+            return 1.0;
+        }
+        if (trade_price < midpoint) {
+            return -1.0;
+        }
+        if (has_previous_trade_) {
+            if (trade_price > previous_trade_price_) {
+                return 1.0;
+            }
+            if (trade_price < previous_trade_price_) {
+                return -1.0;
+            }
+        }
+        return 0.0;
+    }
+
+    inline double realized_spread_for_current_midpoint(double midpoint, double trade_price, double side) const {
+        if (realized_horizon_ == 0) {
+            return 2.0 * side * (trade_price - midpoint);
+        }
+        if (!pending_trade_price_.full()) {
+            return fillna_ ? 0.0 : nan();
+        }
+        return 2.0 * pending_side_.oldest() * (pending_trade_price_.oldest() - midpoint);
+    }
+
+    int realized_horizon_;
+    RollingBuffer pending_trade_price_;
+    RollingBuffer pending_side_;
+    double previous_trade_price_;
+    bool has_previous_trade_;
+    bool fillna_;
+    SpreadFeaturesResult last_;
 };
 
 class ChaikinMoneyFlow {
@@ -13198,6 +13324,16 @@ NB_MODULE(indicator, m) {
         .def_ro("value_area_high", &VolumeProfileBatchResult::value_area_high)
         .def_ro("value_area_low", &VolumeProfileBatchResult::value_area_low);
 
+    nb::class_<SpreadFeaturesResult>(m, "SpreadFeaturesResult")
+        .def_ro("quoted_spread", &SpreadFeaturesResult::quoted_spread)
+        .def_ro("effective_spread", &SpreadFeaturesResult::effective_spread)
+        .def_ro("realized_spread", &SpreadFeaturesResult::realized_spread);
+
+    nb::class_<SpreadFeaturesBatchResult>(m, "SpreadFeaturesBatchResult")
+        .def_ro("quoted_spread", &SpreadFeaturesBatchResult::quoted_spread)
+        .def_ro("effective_spread", &SpreadFeaturesBatchResult::effective_spread)
+        .def_ro("realized_spread", &SpreadFeaturesBatchResult::realized_spread);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -15710,6 +15846,55 @@ NB_MODULE(indicator, m) {
         RTTA_ADVANCE2(AmihudIlliquidity, close, volume)
         RTTA_REPLAY2(AmihudIlliquidity, close, volume)
         RTTA_BATCH2_ARRAY(AmihudIlliquidity, close, volume, "close", "volume");
+
+    nb::class_<SpreadFeatures>(m, "SpreadFeatures")
+        .def(nb::init<int, bool>(), nb::arg("realized_horizon") = 5, nb::arg("fillna") = true)
+        .def("update", &SpreadFeatures::update, nb::arg("trade_price"), nb::arg("bid_price"), nb::arg("ask_price"))
+        .def("last", &SpreadFeatures::last)
+        RTTA_ADVANCE3(SpreadFeatures, trade_price, bid_price, ask_price)
+        RTTA_REPLAY3(SpreadFeatures, trade_price, bid_price, ask_price)
+        RTTA_FIELD3(SpreadFeatures, quoted_spread, trade_price, bid_price, ask_price)
+        RTTA_FIELD3(SpreadFeatures, effective_spread, trade_price, bid_price, ask_price)
+        RTTA_FIELD3(SpreadFeatures, realized_spread, trade_price, bid_price, ask_price)
+        .def("replay_update_outputs", [](SpreadFeatures &self, const InputArray &trade_price, const InputArray &bid_price, const InputArray &ask_price) {
+            return self.batch_array(trade_price, bid_price, ask_price);
+        }, array_arg("trade_price"), array_arg("bid_price"), array_arg("ask_price"))
+        .def("replay_update_outputs", [](SpreadFeatures &self, const FloatInputArray &trade_price, const FloatInputArray &bid_price, const FloatInputArray &ask_price) {
+            return self.batch_array(trade_price, bid_price, ask_price);
+        }, array_arg("trade_price"), array_arg("bid_price"), array_arg("ask_price"))
+        .def("batch", [](SpreadFeatures &self, const InputArray &trade_price, const InputArray &bid_price, const InputArray &ask_price) {
+            return self.batch_array(trade_price, bid_price, ask_price);
+        }, array_arg("trade_price"), array_arg("bid_price"), array_arg("ask_price"))
+        .def("batch", [](SpreadFeatures &self, const FloatInputArray &trade_price, const FloatInputArray &bid_price, const FloatInputArray &ask_price) {
+            return self.batch_array(trade_price, bid_price, ask_price);
+        }, array_arg("trade_price"), array_arg("bid_price"), array_arg("ask_price"))
+        .def("batch", [](SpreadFeatures &self, nb::iterable records) {
+            if (table_has_column(records, "trade_price")) {
+                return dispatch_table3(self, records, "trade_price", "bid_price", "ask_price", [](auto &indicator, const auto &trade_price, const auto &bid_price, const auto &ask_price) {
+                    return indicator.batch_array(trade_price, bid_price, ask_price);
+                });
+            }
+
+            std::vector<double> quoted_spread = make_record_output(records);
+            std::vector<double> effective_spread;
+            std::vector<double> realized_spread;
+            effective_spread.reserve(quoted_spread.capacity());
+            realized_spread.reserve(quoted_spread.capacity());
+            for (nb::handle record : records) {
+                const SpreadFeaturesResult out = self.update(
+                    record_value(record, "trade_price", 0),
+                    record_value(record, "bid_price", 1),
+                    record_value(record, "ask_price", 2));
+                quoted_spread.push_back(out.quoted_spread);
+                effective_spread.push_back(out.effective_spread);
+                realized_spread.push_back(out.realized_spread);
+            }
+            return SpreadFeaturesBatchResult{
+                make_array(std::move(quoted_spread)),
+                make_array(std::move(effective_spread)),
+                make_array(std::move(realized_spread)),
+            };
+        }, nb::arg("records"));
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)

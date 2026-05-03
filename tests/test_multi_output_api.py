@@ -44,6 +44,7 @@ MULTI_OUTPUTS = {
     "MesaAdaptiveMovingAverage": ("mama", "fama"),
     "NadarayaWatsonEnvelope": ("middle", "upper", "lower"),
     "ParticleFilterTrend": ("trend", "velocity", "signal", "effective_sample_size"),
+    "SpreadFeatures": ("quoted_spread", "effective_spread", "realized_spread"),
     "Stochastic": ("slowk", "slowd"),
     "SuperTrend": ("value", "direction", "upper", "lower"),
     "TwoFactorKalmanTrendFilter": ("short_trend", "long_trend", "value"),

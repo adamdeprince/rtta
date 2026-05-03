@@ -63,6 +63,7 @@ class MarketRecord:
     real0: float
     real1: float
     signed_dollar_volume: float
+    trade_price: float
     bid_price: float
     bid_size: float
     ask_price: float
@@ -200,6 +201,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("RelativeVigorIndex", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
     IndicatorSpec("SavitzkyGolayFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("SchaffTrendCycle", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("SpreadFeatures", ("trade_price", "bid_price", "ask_price"), batch_inputs=("trade_price", "bid_price", "ask_price")),
     IndicatorSpec("StdDev", ("value",), ctor_kwargs={"window": 5}),
     IndicatorSpec("StochRSI", ("value",)),
     IndicatorSpec("Stochastic", ("close", "high", "low")),
@@ -251,6 +253,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
     quote_spread = rng.uniform(0.01, 0.05, samples)
     bid_price = close - 0.5 * quote_spread
     ask_price = close + 0.5 * quote_spread
+    trade_price = close + 0.5 * trade_direction * quote_spread
     bid_size = rng.integers(100, 10_000, samples).astype(np.float64)
     ask_size = rng.integers(100, 10_000, samples).astype(np.float64)
 
@@ -267,6 +270,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
         "real0": real0.astype(np.float64),
         "real1": real1.astype(np.float64),
         "signed_dollar_volume": signed_dollar_volume.astype(np.float64),
+        "trade_price": trade_price.astype(np.float64),
         "bid_price": bid_price.astype(np.float64),
         "bid_size": bid_size,
         "ask_price": ask_price.astype(np.float64),
@@ -299,6 +303,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             real0=float(arrays["real0"][i]),
             real1=float(arrays["real1"][i]),
             signed_dollar_volume=float(arrays["signed_dollar_volume"][i]),
+            trade_price=float(arrays["trade_price"][i]),
             bid_price=float(arrays["bid_price"][i]),
             bid_size=float(arrays["bid_size"][i]),
             ask_price=float(arrays["ask_price"][i]),
@@ -321,6 +326,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             "real0": record.real0,
             "real1": record.real1,
             "signed_dollar_volume": record.signed_dollar_volume,
+            "trade_price": record.trade_price,
             "bid_price": record.bid_price,
             "bid_size": record.bid_size,
             "ask_price": record.ask_price,

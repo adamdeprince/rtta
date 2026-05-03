@@ -63,6 +63,8 @@
   square-root dollar volume.
 - Added `AmihudIlliquidity`, a rolling absolute-return-per-dollar-volume
   liquidity estimator.
+- Added `SpreadFeatures`, a quote/trade execution-quality indicator with
+  quoted spread, effective spread, and delayed realized spread outputs.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.
