@@ -2,7 +2,7 @@
 requires = [
     "scikit-build-core>=0.12",
     "nanobind>=2.2",
-    "fast-kalman==0.2.2",
+    "fast-kalman==0.2.3",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -18,7 +18,7 @@ authors = [
     { name = "Adam DePrince", email = "adam.deprince@gmail.com" },
 ]
 dependencies = [
-    "fast-kalman==0.2.2",
+    "fast-kalman==0.2.3",
     "numpy>=2.0.2",
 ]
 classifiers = [
@@ -49,7 +49,7 @@ requires-poetry = ">=2.0"
 
 [tool.poetry.dependencies]
 python = ">=3.9.8,<4.0"
-fast-kalman = "0.2.2"
+fast-kalman = "0.2.3"
 
 [tool.poetry.group.build.dependencies]
 build = ">=1.2"
