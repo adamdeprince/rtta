@@ -23,6 +23,13 @@
   Kalman predicted measurement uncertainty.
 - Added `KalmanTrendSignal`, exposing a Kalman-filtered trend line and
   buy/sell signal based on price crossing the filtered trend.
+- Added `ConnorsRSI`, `RelativeVigorIndex`, `KlingerVolumeOscillator`,
+  `ElderRayIndex`, `CoppockCurve`, `FisherTransform`,
+  `FractalAdaptiveMovingAverage`, `MesaAdaptiveMovingAverage`, and
+  `EhlersOptimalTrackingFilter`.
+- Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
+  `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
+  pair regression and hybrid trend filtering.
 - Added `ALGOS.md`, cataloging public indicators with short descriptions and
   documentation links that prefer ChartSchool when a direct ChartSchool page
   exists.

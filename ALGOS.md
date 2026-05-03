@@ -28,7 +28,9 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `ChaikinOscillator` | MACD-style oscillator of the accumulation/distribution line. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/chaikin-oscillator |
 | `ChandeMomentumOscillator` | Momentum oscillator using sums of recent gains and losses. | https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/cmo |
 | `ChoppinessIndex` | CHOP range/trend measure based on true range versus high-low range. | https://www.angelone.in/knowledge-center/online-share-trading/choppiness-index-indicator |
+| `ConnorsRSI` | Composite oscillator averaging price RSI, streak RSI, and percent-rank of one-period price change. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/connorsrsi |
 | `CommodityChannelIndex` | CCI deviation of typical price from its moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/commodity-channel-index-cci |
+| `CoppockCurve` | Weighted moving average of long and short rate-of-change values. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/coppock-curve |
 | `Correlation` | Rolling Pearson correlation between two series. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/correlation-coefficient |
 | `CumulativeReturn` | Cumulative return from the first close. | https://technical-analysis-library-in-python.readthedocs.io/en/stable/ta.html |
 | `DailyLogReturn` | Log return between consecutive closes. | https://technical-analysis-library-in-python.readthedocs.io/en/stable/ta.html |
@@ -38,10 +40,14 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `DirectionalMovementIndex` | DX directional movement trend-strength indicator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/average-directional-index-adx |
 | `DoubleEMA` | DEMA lag-reduced moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/double-exponential-moving-average-dema |
 | `DonchianChannel` | Channel from rolling highest high and lowest low. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/donchian-channels |
+| `EhlersOptimalTrackingFilter` | Adaptive tracking filter using Ehlers' price uncertainty tracking index. | https://www.prorealcode.com/prorealtime-indicators/john-ehlers-optimal-tracking-filter/ |
+| `ElderRayIndex` | Bull and bear power as high/low distance from an EMA of close. | https://www.investopedia.com/articles/trading/03/022603.asp |
 | `EaseOfMovement` | Volume/range indicator for ease of price movement. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/ease-of-movement-emv |
 | `FastStochastic` | Fast stochastic %K/%D oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/stochastic-oscillator-fast-slow-and-full |
 | `FibonacciRetracementLevels` | Rolling Fibonacci retracement levels between recent high and low. | https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/fibonacci-retracement |
+| `FisherTransform` | Ehlers transform of normalized recent high/low position into a turning-point oscillator. | https://trendspider.com/learning-center/fisher-transform-a-comprehensive-guide/ |
 | `ForceIndex` | Price-change times volume oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/force-index |
+| `FractalAdaptiveMovingAverage` | Ehlers FRAMA using fractal dimension to adapt EMA smoothing. | https://www.metatrader5.com/en/terminal/help/indicators/trend_indicators/fama |
 | `High` | Rolling highest value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/highest-high-value |
 | `HighIndex` | Offset/index of the rolling highest value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/distance-to-highs |
 | `HighLow` | Combined rolling minimum and maximum values. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/high-low-bands |
@@ -49,15 +55,19 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `HullMovingAverage` | HMA lag-reduced weighted moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/hull-moving-average-hma |
 | `Ichimoku` | Ichimoku conversion, base, and leading span components. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/ichimoku-cloud |
 | `KSTOscillator` | Pring Know Sure Thing smoothed multi-ROC oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/pring-s-know-sure-thing-kst |
+| `KalmanExtremumTrend` | Kalman trend combined with stochastic-style position inside recent extrema. | https://arxiv.org/pdf/1808.03297 |
+| `KalmanHedgeRatio` | Online Kalman regression hedge ratio and pair spread. | https://www.quantstart.com/articles/Dynamic-Hedge-Ratio-Between-ETF-Pairs-Using-the-Kalman-Filter/ |
 | `KalmanInnovationZScore` | Signed measurement innovation normalized by the predicted innovation standard deviation. | https://www.cs.unc.edu/~welch/media/pdf/kalman_intro.pdf |
 | `KalmanLocalLinearTrend` | Kalman local level/trend state-space estimator. | https://www.statsmodels.org/v0.12.2/examples/notebooks/generated/statespace_local_linear_trend.html |
 | `KalmanMovingAverage` | Kalman price filter using a local linear price/velocity model. | https://arxiv.org/pdf/1808.03297 |
 | `KalmanPredictionBands` | One-step Kalman prediction with upper/lower bands from predicted measurement uncertainty. | https://www.cs.unc.edu/~welch/media/pdf/kalman_intro.pdf |
+| `KalmanRegressionChannel` | Online Kalman regression with prediction channel and spread. | https://www.quantstart.com/articles/Dynamic-Hedge-Ratio-Between-ETF-Pairs-Using-the-Kalman-Filter/ |
 | `KalmanTrendSignal` | Kalman-filtered trend line with buy/sell signal based on price versus filtered trend. | https://www.aimspress.com/aimspress-data/dsfe/2024/4/PDF/DSFE-04-04-023.pdf |
 | `KalmanVelocityOscillator` | Zero-centered velocity state from a constant-velocity Kalman price model. | https://arxiv.org/pdf/1808.03297 |
 | `Kama` | Kaufman Adaptive Moving Average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/kaufmans-adaptive-moving-average-kama |
 | `KeltnerChannel` | EMA/ATR volatility channel. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/keltner-channels |
 | `KeltnerChannelOriginal` | Original SMA/range Keltner channel variant. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/keltner-channels |
+| `KlingerVolumeOscillator` | Volume-force oscillator using fast and slow EMAs plus signal line. | https://trendspider.com/learning-center/introduction-to-klinger-oscillator/ |
 | `LinearRegression` | Rolling least-squares fitted value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/slope |
 | `LinearRegressionAngle` | Angle of the rolling linear-regression slope. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/slope |
 | `LinearRegressionIntercept` | Intercept of the rolling linear-regression fit. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/linear-regression-r2 |
@@ -67,6 +77,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `MACDFix` | MACD with fixed 12/26 moving-average periods. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/macd-moving-average-convergence-divergence-oscillator |
 | `MassIndex` | Range-expansion reversal indicator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/mass-index |
 | `MedianPrice` | Average of high and low. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/median-price |
+| `MesaAdaptiveMovingAverage` | Ehlers MAMA/FAMA adaptive moving averages driven by dominant cycle phase. | https://trendspider.com/learning-center/what-is-the-mesa-adaptive-moving-average-mama/ |
 | `MidPoint` | Midpoint of rolling high and low values for one series. | https://vectoralpha.dev/projects/ta/indicators/midpoint/ |
 | `MidPrice` | Midpoint of rolling high and low price series. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/high-low-bands |
 | `MinusDirectionalIndicator` | Negative directional indicator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/average-directional-index-adx |
@@ -84,6 +95,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `RateOfChangePercentage` | Period-over-period rate of change as a fraction. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
 | `RateOfChangeRatio` | Rate-of-change ratio against a prior value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
 | `RateOfChangeRatio100` | Rate-of-change ratio scaled by 100. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/rate-of-change-roc-and-momentum |
+| `RelativeVigorIndex` | Smoothed close-open momentum relative to high-low range with signal line. | https://www.investopedia.com/terms/r/relative_vigor_index.asp |
 | `SchaffTrendCycle` | MACD/stochastic cycle oscillator. | https://technical-analysis-library-in-python.readthedocs.io/en/stable/ta.html |
 | `StdDev` | Rolling standard deviation. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/standard-deviation-volatility |
 | `StochRSI` | Stochastic oscillator applied to RSI values. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/stochrsi |
@@ -92,6 +104,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `Summation` | Rolling sum. | https://pandas.pydata.org/docs/reference/api/pandas.core.window.rolling.Rolling.sum.html |
 | `T3MovingAverage` | Tillson T3 multi-EMA moving average. | https://efs.kb.esignal.com/hc/en-us/articles/6362957784603-T3-Average |
 | `TimeSeriesForecast` | Rolling linear-regression time-series forecast. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/slope |
+| `TwoFactorKalmanTrendFilter` | Two-state short/long Kalman trend contribution model. | https://arxiv.org/pdf/1808.03297 |
 | `TrueRange` | Maximum of high-low and gaps from previous close. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/true-range |
 | `TriangularMovingAverage` | Double-smoothed triangular moving average. | https://www.marketvolume.com/technicalanalysis/tma.asp |
 | `TripleEMA` | TEMA lag-reduced moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/triple-exponential-moving-average-tema |

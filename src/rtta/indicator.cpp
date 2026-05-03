@@ -811,6 +811,102 @@ struct KalmanLocalLinearTrendBatchResult {
     nb::object trend;
 };
 
+struct RelativeVigorIndexResult {
+    double rvi;
+    double signal;
+};
+
+struct RelativeVigorIndexBatchResult {
+    nb::object rvi;
+    nb::object signal;
+};
+
+struct KlingerVolumeOscillatorResult {
+    double kvo;
+    double signal;
+    double histogram;
+};
+
+struct KlingerVolumeOscillatorBatchResult {
+    nb::object kvo;
+    nb::object signal;
+    nb::object histogram;
+};
+
+struct ElderRayIndexResult {
+    double bull_power;
+    double bear_power;
+};
+
+struct ElderRayIndexBatchResult {
+    nb::object bull_power;
+    nb::object bear_power;
+};
+
+struct MesaAdaptiveMovingAverageResult {
+    double mama;
+    double fama;
+};
+
+struct MesaAdaptiveMovingAverageBatchResult {
+    nb::object mama;
+    nb::object fama;
+};
+
+struct KalmanRegressionChannelResult {
+    double slope;
+    double intercept;
+    double middle;
+    double upper;
+    double lower;
+    double spread;
+};
+
+struct KalmanRegressionChannelBatchResult {
+    nb::object slope;
+    nb::object intercept;
+    nb::object middle;
+    nb::object upper;
+    nb::object lower;
+    nb::object spread;
+};
+
+struct KalmanHedgeRatioResult {
+    double hedge_ratio;
+    double intercept;
+    double spread;
+};
+
+struct KalmanHedgeRatioBatchResult {
+    nb::object hedge_ratio;
+    nb::object intercept;
+    nb::object spread;
+};
+
+struct TwoFactorKalmanTrendFilterResult {
+    double short_trend;
+    double long_trend;
+    double value;
+};
+
+struct TwoFactorKalmanTrendFilterBatchResult {
+    nb::object short_trend;
+    nb::object long_trend;
+    nb::object value;
+};
+
+struct KalmanExtremumTrendResult {
+    double trend;
+    double oscillator;
+    double signal;
+};
+
+struct KalmanExtremumTrendBatchResult {
+    nb::object trend;
+    nb::object oscillator;
+    nb::object signal;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -911,6 +1007,38 @@ inline double result_checksum(const KalmanTrendSignalResult &value) {
 
 inline double result_checksum(const KalmanLocalLinearTrendResult &value) {
     return value.level + value.trend;
+}
+
+inline double result_checksum(const RelativeVigorIndexResult &value) {
+    return value.rvi + value.signal;
+}
+
+inline double result_checksum(const KlingerVolumeOscillatorResult &value) {
+    return value.kvo + value.signal + value.histogram;
+}
+
+inline double result_checksum(const ElderRayIndexResult &value) {
+    return value.bull_power + value.bear_power;
+}
+
+inline double result_checksum(const MesaAdaptiveMovingAverageResult &value) {
+    return value.mama + value.fama;
+}
+
+inline double result_checksum(const KalmanRegressionChannelResult &value) {
+    return value.slope + value.intercept + value.middle + value.upper + value.lower + value.spread;
+}
+
+inline double result_checksum(const KalmanHedgeRatioResult &value) {
+    return value.hedge_ratio + value.intercept + value.spread;
+}
+
+inline double result_checksum(const TwoFactorKalmanTrendFilterResult &value) {
+    return value.short_trend + value.long_trend + value.value;
+}
+
+inline double result_checksum(const KalmanExtremumTrendResult &value) {
+    return value.trend + value.oscillator + value.signal;
 }
 
 class RollingExtremeQueue {
@@ -7898,6 +8026,1058 @@ private:
     double low_;
 };
 
+class ConnorsRSI {
+public:
+    ConnorsRSI(int rsi_window = 3, int streak_rsi_window = 2, int rank_window = 100, bool fillna = true)
+        : price_rsi_(std::max(rsi_window, 1), fillna),
+          streak_rsi_(std::max(streak_rsi_window, 1), fillna),
+          changes_(std::max(rank_window, 1)),
+          rank_window_(std::max(rank_window, 1)),
+          previous_(0.0),
+          streak_(0.0),
+          first_(true),
+          fillna_(fillna),
+          last_(nan()) {}
+
+    double update(double close) {
+        const double rsi = price_rsi_.update(close);
+        double change = 0.0;
+        if (!first_) {
+            change = close - previous_;
+            if (change > 0.0) {
+                streak_ = streak_ > 0.0 ? streak_ + 1.0 : 1.0;
+            } else if (change < 0.0) {
+                streak_ = streak_ < 0.0 ? streak_ - 1.0 : -1.0;
+            } else {
+                streak_ = 0.0;
+            }
+        }
+
+        const double streak_rsi = streak_rsi_.update(streak_);
+        changes_.push(change);
+        std::size_t below = 0;
+        for (std::size_t i = 0; i < changes_.size(); ++i) {
+            if (changes_.at(i) < change) {
+                ++below;
+            }
+        }
+        const double percent_rank = 100.0 * static_cast<double>(below) / static_cast<double>(changes_.size());
+        previous_ = close;
+        first_ = false;
+
+        last_ = (!fillna_ && !changes_.full()) ? nan() : (rsi + streak_rsi + percent_rank) / 3.0;
+        return last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RSI price_rsi_;
+    RSI streak_rsi_;
+    RollingBuffer changes_;
+    int rank_window_;
+    double previous_;
+    double streak_;
+    bool first_;
+    bool fillna_;
+    double last_;
+};
+
+class RelativeVigorIndex {
+public:
+    RelativeVigorIndex(int window = 10, bool fillna = true)
+        : numerator_(std::max(window, 1)),
+          denominator_(std::max(window, 1)),
+          close_open_(4),
+          high_low_(4),
+          values_(4),
+          numerator_sum_(0.0),
+          denominator_sum_(0.0),
+          window_(std::max(window, 1)),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan()} {}
+
+    RelativeVigorIndexResult update(double open, double high, double low, double close) {
+        close_open_.push(close - open);
+        high_low_.push(high - low);
+        const double num = weighted_recent(close_open_);
+        const double den = weighted_recent(high_low_);
+        rolling_sum_push(numerator_, numerator_sum_, num);
+        rolling_sum_push(denominator_, denominator_sum_, den);
+
+        const double rvi = safe_divide(numerator_sum_, denominator_sum_);
+        values_.push(rvi);
+        const double signal = weighted_recent(values_);
+        ++count_;
+        if (!fillna_ && count_ < static_cast<std::size_t>(window_ + 3)) {
+            last_ = {nan(), nan()};
+        } else {
+            last_ = {rvi, signal};
+        }
+        return last_;
+    }
+
+    void advance(double open, double high, double low, double close) {
+        (void) update(open, high, low, close);
+    }
+
+    const RelativeVigorIndexResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    RelativeVigorIndexBatchResult batch_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        std::vector<double> rvi(size);
+        std::vector<double> signal(size);
+        const auto *open_values = open.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const auto *close_values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const RelativeVigorIndexResult out = update(
+                static_cast<double>(open_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]),
+                static_cast<double>(close_values[i]));
+            rvi[i] = out.rvi;
+            signal[i] = out.signal;
+        }
+        return {make_array(std::move(rvi)), make_array(std::move(signal))};
+    }
+
+private:
+    static double weighted_recent(const RollingBuffer &buffer) {
+        static constexpr double weights[4] = {1.0, 2.0, 2.0, 1.0};
+        double total = 0.0;
+        double denom = 0.0;
+        const std::size_t count = std::min<std::size_t>(buffer.size(), 4);
+        for (std::size_t i = 0; i < count; ++i) {
+            const double weight = weights[i];
+            total += weight * buffer.at(buffer.size() - 1 - i);
+            denom += weight;
+        }
+        return safe_divide(total, denom);
+    }
+
+    RollingBuffer numerator_;
+    RollingBuffer denominator_;
+    RollingBuffer close_open_;
+    RollingBuffer high_low_;
+    RollingBuffer values_;
+    double numerator_sum_;
+    double denominator_sum_;
+    int window_;
+    std::size_t count_;
+    bool fillna_;
+    RelativeVigorIndexResult last_;
+};
+
+class KlingerVolumeOscillator {
+public:
+    KlingerVolumeOscillator(int fast = 34, int slow = 55, int signal_window = 13, bool fillna = true)
+        : fast_(std::max(fast, 1), true),
+          slow_(std::max(slow, 1), true),
+          signal_(std::max(signal_window, 1), true),
+          previous_hlc_(0.0),
+          previous_dm_(0.0),
+          cumulative_measure_(0.0),
+          previous_trend_(1.0),
+          count_(0),
+          warmup_(std::max({std::max(fast, 1), std::max(slow, 1), std::max(signal_window, 1)})),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    KlingerVolumeOscillatorResult update(double close, double high, double low, double volume) {
+        const double hlc = high + low + close;
+        const double dm = high - low;
+        double trend = previous_trend_;
+        if (count_ > 0) {
+            trend = hlc > previous_hlc_ ? 1.0 : -1.0;
+        }
+        cumulative_measure_ = count_ == 0 ? dm : (trend == previous_trend_ ? cumulative_measure_ + dm : previous_dm_ + dm);
+        const double temp = cumulative_measure_ == 0.0 ? 0.0 : std::abs(2.0 * (dm / cumulative_measure_ - 1.0));
+        const double vf = volume * temp * trend * 100.0;
+        const double kvo = fast_.update_always_filled(vf) - slow_.update_always_filled(vf);
+        const double signal_value = signal_.update_always_filled(kvo);
+
+        previous_hlc_ = hlc;
+        previous_dm_ = dm;
+        previous_trend_ = trend;
+        ++count_;
+        if (!fillna_ && count_ < static_cast<std::size_t>(warmup_)) {
+            last_ = {nan(), nan(), nan()};
+        } else {
+            last_ = {kvo, signal_value, kvo - signal_value};
+        }
+        return last_;
+    }
+
+    void advance(double close, double high, double low, double volume) {
+        (void) update(close, high, low, volume);
+    }
+
+    const KlingerVolumeOscillatorResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    KlingerVolumeOscillatorBatchResult batch_array(const Array0 &close, const Array1 &high, const Array2 &low, const Array3 &volume) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
+        std::vector<double> kvo(size);
+        std::vector<double> signal(size);
+        std::vector<double> histogram(size);
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const auto *volume_values = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const KlingerVolumeOscillatorResult out = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]),
+                static_cast<double>(volume_values[i]));
+            kvo[i] = out.kvo;
+            signal[i] = out.signal;
+            histogram[i] = out.histogram;
+        }
+        return {
+            make_array(std::move(kvo)),
+            make_array(std::move(signal)),
+            make_array(std::move(histogram)),
+        };
+    }
+
+private:
+    EMA fast_;
+    EMA slow_;
+    EMA signal_;
+    double previous_hlc_;
+    double previous_dm_;
+    double cumulative_measure_;
+    double previous_trend_;
+    std::size_t count_;
+    int warmup_;
+    bool fillna_;
+    KlingerVolumeOscillatorResult last_;
+};
+
+class ElderRayIndex {
+public:
+    ElderRayIndex(int window = 13, bool fillna = true)
+        : ema_(std::max(window, 1), fillna),
+          last_{nan(), nan()} {}
+
+    ElderRayIndexResult update(double close, double high, double low) {
+        const double value = ema_.update(close);
+        last_ = {high - value, low - value};
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        (void) update(close, high, low);
+    }
+
+    const ElderRayIndexResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    ElderRayIndexBatchResult batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        std::vector<double> bull(size);
+        std::vector<double> bear(size);
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const ElderRayIndexResult out = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]));
+            bull[i] = out.bull_power;
+            bear[i] = out.bear_power;
+        }
+        return {make_array(std::move(bull)), make_array(std::move(bear))};
+    }
+
+private:
+    EMA ema_;
+    ElderRayIndexResult last_;
+};
+
+class CoppockCurve {
+public:
+    CoppockCurve(int wma_window = 10, int long_roc = 14, int short_roc = 11, bool fillna = true)
+        : long_delay_(std::max(long_roc, 1), fillna),
+          short_delay_(std::max(short_roc, 1), fillna),
+          wma_(std::max(wma_window, 1), fillna),
+          warmup_(std::max(long_roc, short_roc) + std::max(wma_window, 1) - 1),
+          count_(0),
+          fillna_(fillna),
+          last_(nan()) {}
+
+    double update(double close) {
+        const double long_previous = long_delay_.update(close);
+        const double short_previous = short_delay_.update(close);
+        const double value = safe_divide(close - long_previous, long_previous) * 100.0 +
+                             safe_divide(close - short_previous, short_previous) * 100.0;
+        last_ = wma_.update(value);
+        ++count_;
+        return (!fillna_ && count_ < warmup_) ? nan() : last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    Delay long_delay_;
+    Delay short_delay_;
+    WeightedMovingAverage wma_;
+    int warmup_;
+    int count_;
+    bool fillna_;
+    double last_;
+};
+
+class FisherTransform {
+public:
+    FisherTransform(int window = 10, bool fillna = true)
+        : highs_(std::max(window, 1), true),
+          lows_(std::max(window, 1), false),
+          value_(0.0),
+          fisher_(0.0),
+          fillna_(fillna),
+          last_(nan()) {}
+
+    double update(double high, double low) {
+        highs_.push(high);
+        lows_.push(low);
+        const double price = (high + low) * 0.5;
+        const double highest = highs_.value();
+        const double lowest = lows_.value();
+        double normalized = safe_divide(2.0 * (price - lowest), highest - lowest) - 1.0;
+        normalized = std::clamp(normalized, -0.999, 0.999);
+        value_ = std::clamp(0.33 * normalized + 0.67 * value_, -0.999, 0.999);
+        fisher_ = 0.5 * std::log((1.0 + value_) / (1.0 - value_)) + 0.5 * fisher_;
+        last_ = (!fillna_ && !highs_.full()) ? nan() : fisher_;
+        return last_;
+    }
+
+    void advance(double high, double low) {
+        (void) update(high, low);
+    }
+
+    double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(high_values[i]), static_cast<double>(low_values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    double value_;
+    double fisher_;
+    bool fillna_;
+    double last_;
+};
+
+class FractalAdaptiveMovingAverage {
+public:
+    FractalAdaptiveMovingAverage(int window = 16, bool fillna = true)
+        : window_(std::max(window, 2)),
+          half_(std::max(window_, 2) / 2),
+          values_(std::max(window_, 2)),
+          first_(true),
+          value_(nan()),
+          fillna_(fillna) {}
+
+    double update(double close) {
+        values_.push(close);
+        if (first_) {
+            value_ = close;
+            first_ = false;
+        }
+
+        if (!fillna_ && !values_.full()) {
+            return nan();
+        }
+
+        double alpha = 1.0;
+        if (values_.size() >= static_cast<std::size_t>(window_)) {
+            const auto first_half = range(0, static_cast<std::size_t>(half_));
+            const auto second_half = range(static_cast<std::size_t>(half_), static_cast<std::size_t>(window_ - half_));
+            const auto full = range(0, static_cast<std::size_t>(window_));
+            const double n1 = (first_half.second - first_half.first) / static_cast<double>(half_);
+            const double n2 = (second_half.second - second_half.first) / static_cast<double>(window_ - half_);
+            const double n3 = (full.second - full.first) / static_cast<double>(window_);
+            if (n1 > 0.0 && n2 > 0.0 && n3 > 0.0) {
+                const double dimension = (std::log(n1 + n2) - std::log(n3)) / std::log(2.0);
+                alpha = std::clamp(std::exp(-4.6 * (dimension - 1.0)), 0.01, 1.0);
+            }
+        }
+
+        value_ = alpha * close + (1.0 - alpha) * value_;
+        return value_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    double last() const {
+        return value_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    std::pair<double, double> range(std::size_t offset, std::size_t count) const {
+        const std::size_t available = values_.size();
+        const std::size_t start = available - static_cast<std::size_t>(window_) + offset;
+        double lowest = values_.at(start);
+        double highest = lowest;
+        for (std::size_t i = 1; i < count; ++i) {
+            const double value = values_.at(start + i);
+            lowest = std::min(lowest, value);
+            highest = std::max(highest, value);
+        }
+        return {lowest, highest};
+    }
+
+    int window_;
+    int half_;
+    RollingBuffer values_;
+    bool first_;
+    double value_;
+    bool fillna_;
+};
+
+class MesaAdaptiveMovingAverage {
+public:
+    MesaAdaptiveMovingAverage(double fast_limit = 0.5, double slow_limit = 0.05, bool fillna = true)
+        : fast_limit_(std::clamp(fast_limit, 0.01, 1.0)),
+          slow_limit_(std::clamp(slow_limit, 0.001, fast_limit_)),
+          prices_(7),
+          smooth_(7),
+          detrender_(7),
+          q1_(7),
+          i1_(7),
+          period_(6.0),
+          smooth_period_(6.0),
+          prev_i2_(0.0),
+          prev_q2_(0.0),
+          re_(0.0),
+          im_(0.0),
+          prev_phase_(0.0),
+          mama_(nan()),
+          fama_(nan()),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan()} {}
+
+    MesaAdaptiveMovingAverageResult update(double price) {
+        prices_.push(price);
+        const double smoothed = (4.0 * recent(prices_, 0) + 3.0 * recent(prices_, 1) + 2.0 * recent(prices_, 2) + recent(prices_, 3)) / 10.0;
+        smooth_.push(smoothed);
+
+        const double adjust = 0.075 * period_ + 0.54;
+        const double detrender = hilbert(smooth_, adjust);
+        detrender_.push(detrender);
+        const double q1 = hilbert(detrender_, adjust);
+        q1_.push(q1);
+        const double i1 = recent(detrender_, 3);
+        i1_.push(i1);
+        const double ji = hilbert(i1_, adjust);
+        const double jq = hilbert(q1_, adjust);
+
+        double i2 = i1 - jq;
+        double q2 = q1 + ji;
+        i2 = 0.2 * i2 + 0.8 * prev_i2_;
+        q2 = 0.2 * q2 + 0.8 * prev_q2_;
+        re_ = 0.2 * (i2 * prev_i2_ + q2 * prev_q2_) + 0.8 * re_;
+        im_ = 0.2 * (i2 * prev_q2_ - q2 * prev_i2_) + 0.8 * im_;
+
+        if (im_ != 0.0 && re_ != 0.0) {
+            double period = 360.0 / (std::atan(im_ / re_) * 180.0 / std::acos(-1.0));
+            period = std::clamp(period, 0.67 * period_, 1.5 * period_);
+            period_ = std::clamp(period, 6.0, 50.0);
+        }
+        smooth_period_ = 0.33 * period_ + 0.67 * smooth_period_;
+
+        const double phase = i1 != 0.0 ? std::atan(q1 / i1) * 180.0 / std::acos(-1.0) : prev_phase_;
+        double delta_phase = prev_phase_ - phase;
+        if (delta_phase < 1.0) {
+            delta_phase = 1.0;
+        }
+        const double alpha = std::max(fast_limit_ / delta_phase, slow_limit_);
+
+        if (count_ == 0) {
+            mama_ = price;
+            fama_ = price;
+        } else {
+            mama_ = alpha * price + (1.0 - alpha) * mama_;
+            fama_ = 0.5 * alpha * mama_ + (1.0 - 0.5 * alpha) * fama_;
+        }
+
+        prev_i2_ = i2;
+        prev_q2_ = q2;
+        prev_phase_ = phase;
+        ++count_;
+        last_ = (!fillna_ && count_ < 7) ? MesaAdaptiveMovingAverageResult{nan(), nan()} : MesaAdaptiveMovingAverageResult{mama_, fama_};
+        return last_;
+    }
+
+    void advance(double price) {
+        (void) update(price);
+    }
+
+    const MesaAdaptiveMovingAverageResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    MesaAdaptiveMovingAverageBatchResult batch_array(const Array &price) {
+        const std::size_t size = price.shape(0);
+        std::vector<double> mama(size);
+        std::vector<double> fama(size);
+        const auto *values = price.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const MesaAdaptiveMovingAverageResult out = update(static_cast<double>(values[i]));
+            mama[i] = out.mama;
+            fama[i] = out.fama;
+        }
+        return {make_array(std::move(mama)), make_array(std::move(fama))};
+    }
+
+private:
+    static double recent(const RollingBuffer &buffer, std::size_t offset) {
+        if (offset >= buffer.size()) {
+            return 0.0;
+        }
+        return buffer.at(buffer.size() - 1 - offset);
+    }
+
+    static double hilbert(const RollingBuffer &buffer, double adjust) {
+        return (0.0962 * recent(buffer, 0) + 0.5769 * recent(buffer, 2) -
+                0.5769 * recent(buffer, 4) - 0.0962 * recent(buffer, 6)) * adjust;
+    }
+
+    double fast_limit_;
+    double slow_limit_;
+    RollingBuffer prices_;
+    RollingBuffer smooth_;
+    RollingBuffer detrender_;
+    RollingBuffer q1_;
+    RollingBuffer i1_;
+    double period_;
+    double smooth_period_;
+    double prev_i2_;
+    double prev_q2_;
+    double re_;
+    double im_;
+    double prev_phase_;
+    double mama_;
+    double fama_;
+    std::size_t count_;
+    bool fillna_;
+    MesaAdaptiveMovingAverageResult last_;
+};
+
+class EhlersOptimalTrackingFilter {
+public:
+    explicit EhlersOptimalTrackingFilter(bool fillna = true)
+        : previous_price_(0.0),
+          value1_(0.0),
+          value2_(0.0),
+          value3_(nan()),
+          count_(0),
+          fillna_(fillna) {}
+
+    double update(double high, double low) {
+        const double price = (high + low) * 0.5;
+        if (count_ == 0) {
+            previous_price_ = price;
+            value3_ = price;
+        }
+        value1_ = 0.2 * (price - previous_price_) + 0.8 * value1_;
+        value2_ = 0.1 * (high - low) + 0.8 * value2_;
+        if (count_ > 5 && value2_ != 0.0) {
+            const double lambda = std::abs(value1_ / value2_);
+            const double lambda2 = lambda * lambda;
+            const double alpha = (-lambda2 + std::sqrt(lambda2 * lambda2 + 16.0 * lambda2)) / 8.0;
+            value3_ = alpha * price + (1.0 - alpha) * value3_;
+        } else {
+            value3_ = price;
+        }
+        previous_price_ = price;
+        ++count_;
+        return (!fillna_ && count_ <= 5) ? nan() : value3_;
+    }
+
+    void advance(double high, double low) {
+        (void) update(high, low);
+    }
+
+    double last() const {
+        return value3_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(high_values[i]), static_cast<double>(low_values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    double previous_price_;
+    double value1_;
+    double value2_;
+    double value3_;
+    std::size_t count_;
+    bool fillna_;
+};
+
+class KalmanHedgeRatio {
+public:
+    KalmanHedgeRatio(double initial_hedge_ratio = 1.0,
+                     double initial_intercept = 0.0,
+                     double initial_variance = 1.0,
+                     double process_variance = 1.0e-5,
+                     double measurement_variance = 1.0,
+                     bool fillna = true)
+        : initial_hedge_ratio_(initial_hedge_ratio),
+          initial_intercept_(initial_intercept),
+          initial_variance_(variance_floor(initial_variance)),
+          process_variance_(variance_floor(process_variance)),
+          measurement_variance_(variance_floor(measurement_variance)),
+          initialized_(false),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    KalmanHedgeRatioResult update(double x, double y) {
+        ensure_initialized();
+        filter_.H = kalman::Mat<1, 2>{x, 1.0};
+        (void) filter_.update(kalman::Vec<1>{y});
+        const double hedge_ratio = filter_.x[0];
+        const double intercept = filter_.x[1];
+        const double spread = y - (hedge_ratio * x + intercept);
+        ++count_;
+        last_ = (!fillna_ && count_ < 2) ? KalmanHedgeRatioResult{nan(), nan(), nan()} : KalmanHedgeRatioResult{hedge_ratio, intercept, spread};
+        return last_;
+    }
+
+    void advance(double x, double y) {
+        (void) update(x, y);
+    }
+
+    const KalmanHedgeRatioResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    KalmanHedgeRatioBatchResult batch_array(const Array0 &x, const Array1 &y) {
+        const std::size_t size = x.shape(0);
+        require_same_size(size, y.shape(0));
+        std::vector<double> hedge(size);
+        std::vector<double> intercept(size);
+        std::vector<double> spread(size);
+        const auto *x_values = x.data();
+        const auto *y_values = y.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const KalmanHedgeRatioResult out = update(static_cast<double>(x_values[i]), static_cast<double>(y_values[i]));
+            hedge[i] = out.hedge_ratio;
+            intercept[i] = out.intercept;
+            spread[i] = out.spread;
+        }
+        return {make_array(std::move(hedge)), make_array(std::move(intercept)), make_array(std::move(spread))};
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        return (!std::isfinite(value) || value < minimum) ? minimum : value;
+    }
+
+    void ensure_initialized() {
+        if (initialized_) {
+            return;
+        }
+        filter_.x = kalman::Vec<2>{initial_hedge_ratio_, initial_intercept_};
+        filter_.P = kalman::Mat<2, 2>{initial_variance_, 0.0, 0.0, initial_variance_};
+        filter_.F = kalman::Mat<2, 2>::identity();
+        filter_.Q = kalman::Mat<2, 2>{process_variance_, 0.0, 0.0, process_variance_};
+        filter_.R = kalman::Mat<1, 1>{measurement_variance_};
+        initialized_ = true;
+    }
+
+    double initial_hedge_ratio_;
+    double initial_intercept_;
+    double initial_variance_;
+    double process_variance_;
+    double measurement_variance_;
+    kalman::LinearKalmanFilter<2, 1> filter_;
+    bool initialized_;
+    std::size_t count_;
+    bool fillna_;
+    KalmanHedgeRatioResult last_;
+};
+
+class KalmanRegressionChannel {
+public:
+    KalmanRegressionChannel(double initial_slope = 1.0,
+                            double initial_intercept = 0.0,
+                            double initial_variance = 1.0,
+                            double process_variance = 1.0e-5,
+                            double measurement_variance = 1.0,
+                            double multiplier = 2.0,
+                            bool fillna = true)
+        : initial_slope_(initial_slope),
+          initial_intercept_(initial_intercept),
+          initial_variance_(variance_floor(initial_variance)),
+          process_variance_(variance_floor(process_variance)),
+          measurement_variance_(variance_floor(measurement_variance)),
+          multiplier_(std::isfinite(multiplier) ? std::abs(multiplier) : 2.0),
+          initialized_(false),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    KalmanRegressionChannelResult update(double x, double y) {
+        ensure_initialized();
+        filter_.H = kalman::Mat<1, 2>{x, 1.0};
+        const auto stats = filter_.update(kalman::Vec<1>{y});
+        const double slope = filter_.x[0];
+        const double intercept = filter_.x[1];
+        const double middle = slope * x + intercept;
+        const double spread = y - middle;
+        const double band = multiplier_ * std::sqrt(std::max(stats.S(0, 0), 0.0));
+        ++count_;
+        last_ = (!fillna_ && count_ < 2) ? KalmanRegressionChannelResult{nan(), nan(), nan(), nan(), nan(), nan()} :
+            KalmanRegressionChannelResult{slope, intercept, middle, middle + band, middle - band, spread};
+        return last_;
+    }
+
+    void advance(double x, double y) {
+        (void) update(x, y);
+    }
+
+    const KalmanRegressionChannelResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    KalmanRegressionChannelBatchResult batch_array(const Array0 &x, const Array1 &y) {
+        const std::size_t size = x.shape(0);
+        require_same_size(size, y.shape(0));
+        std::vector<double> slope(size);
+        std::vector<double> intercept(size);
+        std::vector<double> middle(size);
+        std::vector<double> upper(size);
+        std::vector<double> lower(size);
+        std::vector<double> spread(size);
+        const auto *x_values = x.data();
+        const auto *y_values = y.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const KalmanRegressionChannelResult out = update(static_cast<double>(x_values[i]), static_cast<double>(y_values[i]));
+            slope[i] = out.slope;
+            intercept[i] = out.intercept;
+            middle[i] = out.middle;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+            spread[i] = out.spread;
+        }
+        return {
+            make_array(std::move(slope)),
+            make_array(std::move(intercept)),
+            make_array(std::move(middle)),
+            make_array(std::move(upper)),
+            make_array(std::move(lower)),
+            make_array(std::move(spread)),
+        };
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        return (!std::isfinite(value) || value < minimum) ? minimum : value;
+    }
+
+    void ensure_initialized() {
+        if (initialized_) {
+            return;
+        }
+        filter_.x = kalman::Vec<2>{initial_slope_, initial_intercept_};
+        filter_.P = kalman::Mat<2, 2>{initial_variance_, 0.0, 0.0, initial_variance_};
+        filter_.F = kalman::Mat<2, 2>::identity();
+        filter_.Q = kalman::Mat<2, 2>{process_variance_, 0.0, 0.0, process_variance_};
+        filter_.R = kalman::Mat<1, 1>{measurement_variance_};
+        initialized_ = true;
+    }
+
+    double initial_slope_;
+    double initial_intercept_;
+    double initial_variance_;
+    double process_variance_;
+    double measurement_variance_;
+    double multiplier_;
+    kalman::LinearKalmanFilter<2, 1> filter_;
+    bool initialized_;
+    std::size_t count_;
+    bool fillna_;
+    KalmanRegressionChannelResult last_;
+};
+
+class TwoFactorKalmanTrendFilter {
+public:
+    TwoFactorKalmanTrendFilter(double short_persistence = 0.55,
+                               double short_to_long = 0.45,
+                               double long_persistence = 0.98,
+                               double short_loading = 1.0,
+                               double long_loading = 1.0,
+                               double process_short_variance = 1.0e-3,
+                               double process_long_variance = 1.0e-5,
+                               double measurement_variance = 0.25,
+                               bool fillna = true)
+        : short_persistence_(short_persistence),
+          short_to_long_(short_to_long),
+          long_persistence_(long_persistence),
+          short_loading_(short_loading),
+          long_loading_(long_loading),
+          process_short_variance_(variance_floor(process_short_variance)),
+          process_long_variance_(variance_floor(process_long_variance)),
+          measurement_variance_(variance_floor(measurement_variance)),
+          initialized_(false),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    TwoFactorKalmanTrendFilterResult update(double close) {
+        if (!initialized_) {
+            initialize(close);
+        }
+        (void) filter_.update(kalman::Vec<1>{close});
+        ++count_;
+        const double value = short_loading_ * filter_.x[0] + long_loading_ * filter_.x[1];
+        last_ = (!fillna_ && count_ < 2) ? TwoFactorKalmanTrendFilterResult{nan(), nan(), nan()} :
+            TwoFactorKalmanTrendFilterResult{filter_.x[0], filter_.x[1], value};
+        return last_;
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+
+    const TwoFactorKalmanTrendFilterResult &last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    TwoFactorKalmanTrendFilterBatchResult batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> short_trend(size);
+        std::vector<double> long_trend(size);
+        std::vector<double> value(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const TwoFactorKalmanTrendFilterResult out = update(static_cast<double>(values[i]));
+            short_trend[i] = out.short_trend;
+            long_trend[i] = out.long_trend;
+            value[i] = out.value;
+        }
+        return {make_array(std::move(short_trend)), make_array(std::move(long_trend)), make_array(std::move(value))};
+    }
+
+private:
+    static double variance_floor(double value, double minimum = kalman::kDefaultVarianceFloor) {
+        return (!std::isfinite(value) || value < minimum) ? minimum : value;
+    }
+
+    void initialize(double close) {
+        const double denom = std::abs(short_loading_) + std::abs(long_loading_);
+        const double seed = denom == 0.0 ? close : close / denom;
+        filter_.x = kalman::Vec<2>{seed, seed};
+        filter_.P = kalman::Mat<2, 2>{1.0, 0.0, 0.0, 1.0};
+        filter_.F = kalman::Mat<2, 2>{short_persistence_, short_to_long_, 0.0, long_persistence_};
+        filter_.Q = kalman::Mat<2, 2>{process_short_variance_, 0.0, 0.0, process_long_variance_};
+        filter_.H = kalman::Mat<1, 2>{short_loading_, long_loading_};
+        filter_.R = kalman::Mat<1, 1>{measurement_variance_};
+        initialized_ = true;
+    }
+
+    double short_persistence_;
+    double short_to_long_;
+    double long_persistence_;
+    double short_loading_;
+    double long_loading_;
+    double process_short_variance_;
+    double process_long_variance_;
+    double measurement_variance_;
+    kalman::LinearKalmanFilter<2, 1> filter_;
+    bool initialized_;
+    std::size_t count_;
+    bool fillna_;
+    TwoFactorKalmanTrendFilterResult last_;
+};
+
+class KalmanExtremumTrend {
+public:
+    KalmanExtremumTrend(int window = 14,
+                        double initial_price = nan(),
+                        double initial_velocity = 0.0,
+                        double dt = 1.0,
+                        double position_variance = 1.0,
+                        double velocity_variance = 1.0,
+                        double process_position_variance = 1.0e-4,
+                        double process_velocity_variance = 1.0e-3,
+                        double measurement_variance = 0.25,
+                        bool fillna = true)
+        : trend_(initial_price,
+                 initial_velocity,
+                 dt,
+                 position_variance,
+                 velocity_variance,
+                 process_position_variance,
+                 process_velocity_variance,
+                 measurement_variance,
+                 fillna),
+          highs_(std::max(window, 1), true),
+          lows_(std::max(window, 1), false),
+          previous_trend_(nan()),
+          count_(0),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    KalmanExtremumTrendResult update(double close, double high, double low) {
+        const double trend = trend_.update(close);
+        highs_.push(high);
+        lows_.push(low);
+        const double oscillator = safe_divide(100.0 * (close - lows_.value()), highs_.value() - lows_.value(), 50.0);
+        double signal = 0.0;
+        if (std::isfinite(previous_trend_)) {
+            if (trend > previous_trend_ && oscillator >= 50.0) {
+                signal = 1.0;
+            } else if (trend < previous_trend_ && oscillator < 50.0) {
+                signal = -1.0;
+            }
+        }
+        previous_trend_ = trend;
+        ++count_;
+        last_ = (!fillna_ && !highs_.full()) ? KalmanExtremumTrendResult{nan(), nan(), nan()} :
+            KalmanExtremumTrendResult{trend, oscillator, signal};
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        (void) update(close, high, low);
+    }
+
+    const KalmanExtremumTrendResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    KalmanExtremumTrendBatchResult batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        std::vector<double> trend(size);
+        std::vector<double> oscillator(size);
+        std::vector<double> signal(size);
+        const auto *close_values = close.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const KalmanExtremumTrendResult out = update(
+                static_cast<double>(close_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]));
+            trend[i] = out.trend;
+            oscillator[i] = out.oscillator;
+            signal[i] = out.signal;
+        }
+        return {make_array(std::move(trend)), make_array(std::move(oscillator)), make_array(std::move(signal))};
+    }
+
+private:
+    KalmanMovingAverage trend_;
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    double previous_trend_;
+    std::size_t count_;
+    bool fillna_;
+    KalmanExtremumTrendResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -9259,6 +10439,14 @@ inline double call_advance_checksum(Indicator &self, double arg0, double arg1, d
         return self.last().FIELD; \
     })
 
+#define RTTA_FIELD4(TYPE, FIELD, ARG0, ARG1, ARG2, ARG3) \
+    .def("update_" #FIELD, [](TYPE &self, double ARG0, double ARG1, double ARG2, double ARG3) { \
+        return self.update(ARG0, ARG1, ARG2, ARG3).FIELD; \
+    }, nb::arg(#ARG0), nb::arg(#ARG1), nb::arg(#ARG2), nb::arg(#ARG3)) \
+    .def("last_" #FIELD, [](const TYPE &self) { \
+        return self.last().FIELD; \
+    })
+
 #define RTTA_REPLAY_OUTPUTS1(TYPE, ARG0, BATCH_FUNC) \
     .def("replay_update_outputs", [](TYPE &self, const InputArray &ARG0) { \
         return BATCH_FUNC(self, ARG0); \
@@ -9282,6 +10470,14 @@ inline double call_advance_checksum(Indicator &self, double arg0, double arg1, d
     .def("replay_update_outputs", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2) { \
         return BATCH_FUNC(self, ARG0, ARG1, ARG2); \
     }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2))
+
+#define RTTA_REPLAY_OUTPUTS4(TYPE, ARG0, ARG1, ARG2, ARG3, BATCH_FUNC) \
+    .def("replay_update_outputs", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2, const InputArray &ARG3) { \
+        return BATCH_FUNC(self, ARG0, ARG1, ARG2, ARG3); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3)) \
+    .def("replay_update_outputs", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2, const FloatInputArray &ARG3) { \
+        return BATCH_FUNC(self, ARG0, ARG1, ARG2, ARG3); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3))
 
 #define RTTA_BATCH1(TYPE, ARG0, FIELD0) \
     .def("batch", [](TYPE &self, const InputArray &ARG0) { \
@@ -9575,6 +10771,86 @@ NB_MODULE(indicator, m) {
         .def_ro("level", &KalmanLocalLinearTrendBatchResult::level)
         .def_ro("trend", &KalmanLocalLinearTrendBatchResult::trend);
 
+    nb::class_<RelativeVigorIndexResult>(m, "RelativeVigorIndexResult")
+        .def_ro("rvi", &RelativeVigorIndexResult::rvi)
+        .def_ro("signal", &RelativeVigorIndexResult::signal);
+
+    nb::class_<RelativeVigorIndexBatchResult>(m, "RelativeVigorIndexBatchResult")
+        .def_ro("rvi", &RelativeVigorIndexBatchResult::rvi)
+        .def_ro("signal", &RelativeVigorIndexBatchResult::signal);
+
+    nb::class_<KlingerVolumeOscillatorResult>(m, "KlingerVolumeOscillatorResult")
+        .def_ro("kvo", &KlingerVolumeOscillatorResult::kvo)
+        .def_ro("signal", &KlingerVolumeOscillatorResult::signal)
+        .def_ro("histogram", &KlingerVolumeOscillatorResult::histogram);
+
+    nb::class_<KlingerVolumeOscillatorBatchResult>(m, "KlingerVolumeOscillatorBatchResult")
+        .def_ro("kvo", &KlingerVolumeOscillatorBatchResult::kvo)
+        .def_ro("signal", &KlingerVolumeOscillatorBatchResult::signal)
+        .def_ro("histogram", &KlingerVolumeOscillatorBatchResult::histogram);
+
+    nb::class_<ElderRayIndexResult>(m, "ElderRayIndexResult")
+        .def_ro("bull_power", &ElderRayIndexResult::bull_power)
+        .def_ro("bear_power", &ElderRayIndexResult::bear_power);
+
+    nb::class_<ElderRayIndexBatchResult>(m, "ElderRayIndexBatchResult")
+        .def_ro("bull_power", &ElderRayIndexBatchResult::bull_power)
+        .def_ro("bear_power", &ElderRayIndexBatchResult::bear_power);
+
+    nb::class_<MesaAdaptiveMovingAverageResult>(m, "MesaAdaptiveMovingAverageResult")
+        .def_ro("mama", &MesaAdaptiveMovingAverageResult::mama)
+        .def_ro("fama", &MesaAdaptiveMovingAverageResult::fama);
+
+    nb::class_<MesaAdaptiveMovingAverageBatchResult>(m, "MesaAdaptiveMovingAverageBatchResult")
+        .def_ro("mama", &MesaAdaptiveMovingAverageBatchResult::mama)
+        .def_ro("fama", &MesaAdaptiveMovingAverageBatchResult::fama);
+
+    nb::class_<KalmanRegressionChannelResult>(m, "KalmanRegressionChannelResult")
+        .def_ro("slope", &KalmanRegressionChannelResult::slope)
+        .def_ro("intercept", &KalmanRegressionChannelResult::intercept)
+        .def_ro("middle", &KalmanRegressionChannelResult::middle)
+        .def_ro("upper", &KalmanRegressionChannelResult::upper)
+        .def_ro("lower", &KalmanRegressionChannelResult::lower)
+        .def_ro("spread", &KalmanRegressionChannelResult::spread);
+
+    nb::class_<KalmanRegressionChannelBatchResult>(m, "KalmanRegressionChannelBatchResult")
+        .def_ro("slope", &KalmanRegressionChannelBatchResult::slope)
+        .def_ro("intercept", &KalmanRegressionChannelBatchResult::intercept)
+        .def_ro("middle", &KalmanRegressionChannelBatchResult::middle)
+        .def_ro("upper", &KalmanRegressionChannelBatchResult::upper)
+        .def_ro("lower", &KalmanRegressionChannelBatchResult::lower)
+        .def_ro("spread", &KalmanRegressionChannelBatchResult::spread);
+
+    nb::class_<KalmanHedgeRatioResult>(m, "KalmanHedgeRatioResult")
+        .def_ro("hedge_ratio", &KalmanHedgeRatioResult::hedge_ratio)
+        .def_ro("intercept", &KalmanHedgeRatioResult::intercept)
+        .def_ro("spread", &KalmanHedgeRatioResult::spread);
+
+    nb::class_<KalmanHedgeRatioBatchResult>(m, "KalmanHedgeRatioBatchResult")
+        .def_ro("hedge_ratio", &KalmanHedgeRatioBatchResult::hedge_ratio)
+        .def_ro("intercept", &KalmanHedgeRatioBatchResult::intercept)
+        .def_ro("spread", &KalmanHedgeRatioBatchResult::spread);
+
+    nb::class_<TwoFactorKalmanTrendFilterResult>(m, "TwoFactorKalmanTrendFilterResult")
+        .def_ro("short_trend", &TwoFactorKalmanTrendFilterResult::short_trend)
+        .def_ro("long_trend", &TwoFactorKalmanTrendFilterResult::long_trend)
+        .def_ro("value", &TwoFactorKalmanTrendFilterResult::value);
+
+    nb::class_<TwoFactorKalmanTrendFilterBatchResult>(m, "TwoFactorKalmanTrendFilterBatchResult")
+        .def_ro("short_trend", &TwoFactorKalmanTrendFilterBatchResult::short_trend)
+        .def_ro("long_trend", &TwoFactorKalmanTrendFilterBatchResult::long_trend)
+        .def_ro("value", &TwoFactorKalmanTrendFilterBatchResult::value);
+
+    nb::class_<KalmanExtremumTrendResult>(m, "KalmanExtremumTrendResult")
+        .def_ro("trend", &KalmanExtremumTrendResult::trend)
+        .def_ro("oscillator", &KalmanExtremumTrendResult::oscillator)
+        .def_ro("signal", &KalmanExtremumTrendResult::signal);
+
+    nb::class_<KalmanExtremumTrendBatchResult>(m, "KalmanExtremumTrendBatchResult")
+        .def_ro("trend", &KalmanExtremumTrendBatchResult::trend)
+        .def_ro("oscillator", &KalmanExtremumTrendBatchResult::oscillator)
+        .def_ro("signal", &KalmanExtremumTrendBatchResult::signal);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -9851,6 +11127,177 @@ NB_MODULE(indicator, m) {
                 });
             }
             return batch_records_three(self, records, "close", "high", "low");
+        }, nb::arg("records"));
+
+    nb::class_<ConnorsRSI>(m, "ConnorsRSI")
+        .def(nb::init<int, int, int, bool>(),
+             nb::arg("rsi_window") = 3,
+             nb::arg("streak_rsi_window") = 2,
+             nb::arg("rank_window") = 100,
+             nb::arg("fillna") = true)
+        .def("update", &ConnorsRSI::update, nb::arg("close"))
+        .def("last", &ConnorsRSI::last)
+        RTTA_ADVANCE1(ConnorsRSI, close)
+        RTTA_REPLAY1(ConnorsRSI, close)
+        RTTA_BATCH1_ARRAY(ConnorsRSI, close, "close");
+
+    nb::class_<CoppockCurve>(m, "CoppockCurve")
+        .def(nb::init<int, int, int, bool>(),
+             nb::arg("wma_window") = 10,
+             nb::arg("long_roc") = 14,
+             nb::arg("short_roc") = 11,
+             nb::arg("fillna") = true)
+        .def("update", &CoppockCurve::update, nb::arg("close"))
+        .def("last", &CoppockCurve::last)
+        RTTA_ADVANCE1(CoppockCurve, close)
+        RTTA_REPLAY1(CoppockCurve, close)
+        RTTA_BATCH1_ARRAY(CoppockCurve, close, "close");
+
+    nb::class_<ElderRayIndex>(m, "ElderRayIndex")
+        .def(nb::init<int, bool>(), nb::arg("window") = 13, nb::arg("fillna") = true)
+        .def("update", &ElderRayIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        .def("last", &ElderRayIndex::last)
+        RTTA_ADVANCE3(ElderRayIndex, close, high, low)
+        RTTA_REPLAY3(ElderRayIndex, close, high, low)
+        RTTA_FIELD3(ElderRayIndex, bull_power, close, high, low)
+        RTTA_FIELD3(ElderRayIndex, bear_power, close, high, low)
+        .def("replay_update_outputs", [](ElderRayIndex &self, const InputArray &close, const InputArray &high, const InputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("replay_update_outputs", [](ElderRayIndex &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](ElderRayIndex &self, const InputArray &close, const InputArray &high, const InputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](ElderRayIndex &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](ElderRayIndex &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table3(self, records, "close", "high", "low", [](auto &indicator, const auto &close, const auto &high, const auto &low) {
+                    return indicator.batch_array(close, high, low);
+                });
+            }
+            std::vector<double> bull = make_record_output(records);
+            std::vector<double> bear;
+            bear.reserve(bull.capacity());
+            for (nb::handle record : records) {
+                const ElderRayIndexResult out = self.update(record_value(record, "close", 0), record_value(record, "high", 1), record_value(record, "low", 2));
+                bull.push_back(out.bull_power);
+                bear.push_back(out.bear_power);
+            }
+            return ElderRayIndexBatchResult{make_array(std::move(bull)), make_array(std::move(bear))};
+        }, nb::arg("records"));
+
+    nb::class_<FisherTransform>(m, "FisherTransform")
+        .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
+        .def("update", &FisherTransform::update, nb::arg("high"), nb::arg("low"))
+        .def("last", &FisherTransform::last)
+        RTTA_ADVANCE2(FisherTransform, high, low)
+        RTTA_REPLAY2(FisherTransform, high, low)
+        RTTA_BATCH2_ARRAY(FisherTransform, high, low, "high", "low");
+
+    nb::class_<FractalAdaptiveMovingAverage>(m, "FractalAdaptiveMovingAverage")
+        .def(nb::init<int, bool>(), nb::arg("window") = 16, nb::arg("fillna") = true)
+        .def("update", &FractalAdaptiveMovingAverage::update, nb::arg("value"))
+        .def("last", &FractalAdaptiveMovingAverage::last)
+        RTTA_ADVANCE1(FractalAdaptiveMovingAverage, value)
+        RTTA_REPLAY1(FractalAdaptiveMovingAverage, value)
+        RTTA_BATCH1_ARRAY(FractalAdaptiveMovingAverage, value, "value");
+
+    nb::class_<RelativeVigorIndex>(m, "RelativeVigorIndex")
+        .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
+        .def("update", &RelativeVigorIndex::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &RelativeVigorIndex::last)
+        RTTA_ADVANCE4(RelativeVigorIndex, open, high, low, close)
+        RTTA_REPLAY4(RelativeVigorIndex, open, high, low, close)
+        RTTA_FIELD4(RelativeVigorIndex, rvi, open, high, low, close)
+        RTTA_FIELD4(RelativeVigorIndex, signal, open, high, low, close)
+        .def("replay_update_outputs", [](RelativeVigorIndex &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("replay_update_outputs", [](RelativeVigorIndex &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](RelativeVigorIndex &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](RelativeVigorIndex &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](RelativeVigorIndex &self, nb::iterable records) {
+            if (table_has_column(records, "open")) {
+                return dispatch_table4(self, records, "open", "high", "low", "close", [](auto &indicator, const auto &open, const auto &high, const auto &low, const auto &close) {
+                    return indicator.batch_array(open, high, low, close);
+                });
+            }
+            std::vector<double> rvi = make_record_output(records);
+            std::vector<double> signal;
+            signal.reserve(rvi.capacity());
+            for (nb::handle record : records) {
+                const RelativeVigorIndexResult out = self.update(
+                    record_value(record, "open", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2),
+                    record_value(record, "close", 3));
+                rvi.push_back(out.rvi);
+                signal.push_back(out.signal);
+            }
+            return RelativeVigorIndexBatchResult{make_array(std::move(rvi)), make_array(std::move(signal))};
+        }, nb::arg("records"));
+
+    nb::class_<KlingerVolumeOscillator>(m, "KlingerVolumeOscillator")
+        .def(nb::init<int, int, int, bool>(),
+             nb::arg("fast") = 34,
+             nb::arg("slow") = 55,
+             nb::arg("signal_window") = 13,
+             nb::arg("fillna") = true)
+        .def("update", &KlingerVolumeOscillator::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        .def("last", &KlingerVolumeOscillator::last)
+        RTTA_ADVANCE4(KlingerVolumeOscillator, close, high, low, volume)
+        RTTA_REPLAY4(KlingerVolumeOscillator, close, high, low, volume)
+        RTTA_FIELD4(KlingerVolumeOscillator, kvo, close, high, low, volume)
+        RTTA_FIELD4(KlingerVolumeOscillator, signal, close, high, low, volume)
+        RTTA_FIELD4(KlingerVolumeOscillator, histogram, close, high, low, volume)
+        .def("replay_update_outputs", [](KlingerVolumeOscillator &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume) {
+            return self.batch_array(close, high, low, volume);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
+        .def("replay_update_outputs", [](KlingerVolumeOscillator &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume) {
+            return self.batch_array(close, high, low, volume);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
+        .def("batch", [](KlingerVolumeOscillator &self, const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume) {
+            return self.batch_array(close, high, low, volume);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
+        .def("batch", [](KlingerVolumeOscillator &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &volume) {
+            return self.batch_array(close, high, low, volume);
+        }, array_arg("close"), array_arg("high"), array_arg("low"), array_arg("volume"))
+        .def("batch", [](KlingerVolumeOscillator &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table4(self, records, "close", "high", "low", "volume", [](auto &indicator, const auto &close, const auto &high, const auto &low, const auto &volume) {
+                    return indicator.batch_array(close, high, low, volume);
+                });
+            }
+            std::vector<double> kvo = make_record_output(records);
+            std::vector<double> signal;
+            std::vector<double> histogram;
+            signal.reserve(kvo.capacity());
+            histogram.reserve(kvo.capacity());
+            for (nb::handle record : records) {
+                const KlingerVolumeOscillatorResult out = self.update(
+                    record_value(record, "close", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2),
+                    record_value(record, "volume", 3));
+                kvo.push_back(out.kvo);
+                signal.push_back(out.signal);
+                histogram.push_back(out.histogram);
+            }
+            return KlingerVolumeOscillatorBatchResult{
+                make_array(std::move(kvo)),
+                make_array(std::move(signal)),
+                make_array(std::move(histogram)),
+            };
         }, nb::arg("records"));
 
     nb::class_<Correlation>(m, "Correlation")
@@ -10699,6 +12146,284 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(trend)),
             };
         }, nb::arg("records"));
+
+    nb::class_<KalmanHedgeRatio>(m, "KalmanHedgeRatio")
+        .def(nb::init<double, double, double, double, double, bool>(),
+             nb::arg("initial_hedge_ratio") = 1.0,
+             nb::arg("initial_intercept") = 0.0,
+             nb::arg("initial_variance") = 1.0,
+             nb::arg("process_variance") = 1.0e-5,
+             nb::arg("measurement_variance") = 1.0,
+             nb::arg("fillna") = true)
+        .def("update", &KalmanHedgeRatio::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &KalmanHedgeRatio::last)
+        RTTA_ADVANCE2(KalmanHedgeRatio, real0, real1)
+        RTTA_REPLAY2(KalmanHedgeRatio, real0, real1)
+        RTTA_FIELD2(KalmanHedgeRatio, hedge_ratio, real0, real1)
+        RTTA_FIELD2(KalmanHedgeRatio, intercept, real0, real1)
+        RTTA_FIELD2(KalmanHedgeRatio, spread, real0, real1)
+        .def("replay_update_outputs", [](KalmanHedgeRatio &self, const InputArray &real0, const InputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("replay_update_outputs", [](KalmanHedgeRatio &self, const FloatInputArray &real0, const FloatInputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("batch", [](KalmanHedgeRatio &self, const InputArray &real0, const InputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("batch", [](KalmanHedgeRatio &self, const FloatInputArray &real0, const FloatInputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("batch", [](KalmanHedgeRatio &self, nb::iterable records) {
+            if (table_has_column(records, "real0")) {
+                return dispatch_table2(self, records, "real0", "real1", [](auto &indicator, const auto &real0, const auto &real1) {
+                    return indicator.batch_array(real0, real1);
+                });
+            }
+            std::vector<double> hedge = make_record_output(records);
+            std::vector<double> intercept;
+            std::vector<double> spread;
+            intercept.reserve(hedge.capacity());
+            spread.reserve(hedge.capacity());
+            for (nb::handle record : records) {
+                const KalmanHedgeRatioResult out = self.update(record_value(record, "real0", 0), record_value(record, "real1", 1));
+                hedge.push_back(out.hedge_ratio);
+                intercept.push_back(out.intercept);
+                spread.push_back(out.spread);
+            }
+            return KalmanHedgeRatioBatchResult{
+                make_array(std::move(hedge)),
+                make_array(std::move(intercept)),
+                make_array(std::move(spread)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<KalmanRegressionChannel>(m, "KalmanRegressionChannel")
+        .def(nb::init<double, double, double, double, double, double, bool>(),
+             nb::arg("initial_slope") = 1.0,
+             nb::arg("initial_intercept") = 0.0,
+             nb::arg("initial_variance") = 1.0,
+             nb::arg("process_variance") = 1.0e-5,
+             nb::arg("measurement_variance") = 1.0,
+             nb::arg("multiplier") = 2.0,
+             nb::arg("fillna") = true)
+        .def("update", &KalmanRegressionChannel::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &KalmanRegressionChannel::last)
+        RTTA_ADVANCE2(KalmanRegressionChannel, real0, real1)
+        RTTA_REPLAY2(KalmanRegressionChannel, real0, real1)
+        RTTA_FIELD2(KalmanRegressionChannel, slope, real0, real1)
+        RTTA_FIELD2(KalmanRegressionChannel, intercept, real0, real1)
+        RTTA_FIELD2(KalmanRegressionChannel, middle, real0, real1)
+        RTTA_FIELD2(KalmanRegressionChannel, upper, real0, real1)
+        RTTA_FIELD2(KalmanRegressionChannel, lower, real0, real1)
+        RTTA_FIELD2(KalmanRegressionChannel, spread, real0, real1)
+        .def("replay_update_outputs", [](KalmanRegressionChannel &self, const InputArray &real0, const InputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("replay_update_outputs", [](KalmanRegressionChannel &self, const FloatInputArray &real0, const FloatInputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("batch", [](KalmanRegressionChannel &self, const InputArray &real0, const InputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("batch", [](KalmanRegressionChannel &self, const FloatInputArray &real0, const FloatInputArray &real1) {
+            return self.batch_array(real0, real1);
+        }, array_arg("real0"), array_arg("real1"))
+        .def("batch", [](KalmanRegressionChannel &self, nb::iterable records) {
+            if (table_has_column(records, "real0")) {
+                return dispatch_table2(self, records, "real0", "real1", [](auto &indicator, const auto &real0, const auto &real1) {
+                    return indicator.batch_array(real0, real1);
+                });
+            }
+            std::vector<double> slope = make_record_output(records);
+            std::vector<double> intercept;
+            std::vector<double> middle;
+            std::vector<double> upper;
+            std::vector<double> lower;
+            std::vector<double> spread;
+            intercept.reserve(slope.capacity());
+            middle.reserve(slope.capacity());
+            upper.reserve(slope.capacity());
+            lower.reserve(slope.capacity());
+            spread.reserve(slope.capacity());
+            for (nb::handle record : records) {
+                const KalmanRegressionChannelResult out = self.update(record_value(record, "real0", 0), record_value(record, "real1", 1));
+                slope.push_back(out.slope);
+                intercept.push_back(out.intercept);
+                middle.push_back(out.middle);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
+                spread.push_back(out.spread);
+            }
+            return KalmanRegressionChannelBatchResult{
+                make_array(std::move(slope)),
+                make_array(std::move(intercept)),
+                make_array(std::move(middle)),
+                make_array(std::move(upper)),
+                make_array(std::move(lower)),
+                make_array(std::move(spread)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<TwoFactorKalmanTrendFilter>(m, "TwoFactorKalmanTrendFilter")
+        .def(nb::init<double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("short_persistence") = 0.55,
+             nb::arg("short_to_long") = 0.45,
+             nb::arg("long_persistence") = 0.98,
+             nb::arg("short_loading") = 1.0,
+             nb::arg("long_loading") = 1.0,
+             nb::arg("process_short_variance") = 1.0e-3,
+             nb::arg("process_long_variance") = 1.0e-5,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def("update", &TwoFactorKalmanTrendFilter::update, nb::arg("close"))
+        .def("last", &TwoFactorKalmanTrendFilter::last)
+        RTTA_ADVANCE1(TwoFactorKalmanTrendFilter, close)
+        RTTA_REPLAY1(TwoFactorKalmanTrendFilter, close)
+        RTTA_FIELD1(TwoFactorKalmanTrendFilter, short_trend, close)
+        RTTA_FIELD1(TwoFactorKalmanTrendFilter, long_trend, close)
+        RTTA_FIELD1(TwoFactorKalmanTrendFilter, value, close)
+        .def("replay_update_outputs", [](TwoFactorKalmanTrendFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("replay_update_outputs", [](TwoFactorKalmanTrendFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](TwoFactorKalmanTrendFilter &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](TwoFactorKalmanTrendFilter &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](TwoFactorKalmanTrendFilter &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table1(self, records, "close", [](auto &indicator, const auto &close) {
+                    return indicator.batch_array(close);
+                });
+            }
+            std::vector<double> short_trend = make_record_output(records);
+            std::vector<double> long_trend;
+            std::vector<double> value;
+            long_trend.reserve(short_trend.capacity());
+            value.reserve(short_trend.capacity());
+            for (nb::handle record : records) {
+                const TwoFactorKalmanTrendFilterResult out = self.update(scalar_or_record_value(record, "close", 0));
+                short_trend.push_back(out.short_trend);
+                long_trend.push_back(out.long_trend);
+                value.push_back(out.value);
+            }
+            return TwoFactorKalmanTrendFilterBatchResult{
+                make_array(std::move(short_trend)),
+                make_array(std::move(long_trend)),
+                make_array(std::move(value)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<KalmanExtremumTrend>(m, "KalmanExtremumTrend")
+        .def(nb::init<int, double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("window") = 14,
+             nb::arg("initial_price") = nan(),
+             nb::arg("initial_velocity") = 0.0,
+             nb::arg("dt") = 1.0,
+             nb::arg("position_variance") = 1.0,
+             nb::arg("velocity_variance") = 1.0,
+             nb::arg("process_position_variance") = 1.0e-4,
+             nb::arg("process_velocity_variance") = 1.0e-3,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def("update", &KalmanExtremumTrend::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        .def("last", &KalmanExtremumTrend::last)
+        RTTA_ADVANCE3(KalmanExtremumTrend, close, high, low)
+        RTTA_REPLAY3(KalmanExtremumTrend, close, high, low)
+        RTTA_FIELD3(KalmanExtremumTrend, trend, close, high, low)
+        RTTA_FIELD3(KalmanExtremumTrend, oscillator, close, high, low)
+        RTTA_FIELD3(KalmanExtremumTrend, signal, close, high, low)
+        .def("replay_update_outputs", [](KalmanExtremumTrend &self, const InputArray &close, const InputArray &high, const InputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("replay_update_outputs", [](KalmanExtremumTrend &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](KalmanExtremumTrend &self, const InputArray &close, const InputArray &high, const InputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](KalmanExtremumTrend &self, const FloatInputArray &close, const FloatInputArray &high, const FloatInputArray &low) {
+            return self.batch_array(close, high, low);
+        }, array_arg("close"), array_arg("high"), array_arg("low"))
+        .def("batch", [](KalmanExtremumTrend &self, nb::iterable records) {
+            if (table_has_column(records, "close")) {
+                return dispatch_table3(self, records, "close", "high", "low", [](auto &indicator, const auto &close, const auto &high, const auto &low) {
+                    return indicator.batch_array(close, high, low);
+                });
+            }
+            std::vector<double> trend = make_record_output(records);
+            std::vector<double> oscillator;
+            std::vector<double> signal;
+            oscillator.reserve(trend.capacity());
+            signal.reserve(trend.capacity());
+            for (nb::handle record : records) {
+                const KalmanExtremumTrendResult out = self.update(
+                    record_value(record, "close", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2));
+                trend.push_back(out.trend);
+                oscillator.push_back(out.oscillator);
+                signal.push_back(out.signal);
+            }
+            return KalmanExtremumTrendBatchResult{
+                make_array(std::move(trend)),
+                make_array(std::move(oscillator)),
+                make_array(std::move(signal)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<MesaAdaptiveMovingAverage>(m, "MesaAdaptiveMovingAverage")
+        .def(nb::init<double, double, bool>(),
+             nb::arg("fast_limit") = 0.5,
+             nb::arg("slow_limit") = 0.05,
+             nb::arg("fillna") = true)
+        .def("update", &MesaAdaptiveMovingAverage::update, nb::arg("value"))
+        .def("last", &MesaAdaptiveMovingAverage::last)
+        RTTA_ADVANCE1(MesaAdaptiveMovingAverage, value)
+        RTTA_REPLAY1(MesaAdaptiveMovingAverage, value)
+        RTTA_FIELD1(MesaAdaptiveMovingAverage, mama, value)
+        RTTA_FIELD1(MesaAdaptiveMovingAverage, fama, value)
+        .def("replay_update_outputs", [](MesaAdaptiveMovingAverage &self, const InputArray &value) {
+            return self.batch_array(value);
+        }, array_arg("value"))
+        .def("replay_update_outputs", [](MesaAdaptiveMovingAverage &self, const FloatInputArray &value) {
+            return self.batch_array(value);
+        }, array_arg("value"))
+        .def("batch", [](MesaAdaptiveMovingAverage &self, const InputArray &value) {
+            return self.batch_array(value);
+        }, array_arg("value"))
+        .def("batch", [](MesaAdaptiveMovingAverage &self, const FloatInputArray &value) {
+            return self.batch_array(value);
+        }, array_arg("value"))
+        .def("batch", [](MesaAdaptiveMovingAverage &self, nb::iterable records) {
+            if (table_has_column(records, "value")) {
+                return dispatch_table1(self, records, "value", [](auto &indicator, const auto &value) {
+                    return indicator.batch_array(value);
+                });
+            }
+            std::vector<double> mama = make_record_output(records);
+            std::vector<double> fama;
+            fama.reserve(mama.capacity());
+            for (nb::handle record : records) {
+                const MesaAdaptiveMovingAverageResult out = self.update(scalar_or_record_value(record, "value", 0));
+                mama.push_back(out.mama);
+                fama.push_back(out.fama);
+            }
+            return MesaAdaptiveMovingAverageBatchResult{make_array(std::move(mama)), make_array(std::move(fama))};
+        }, nb::arg("records"));
+
+    nb::class_<EhlersOptimalTrackingFilter>(m, "EhlersOptimalTrackingFilter")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &EhlersOptimalTrackingFilter::update, nb::arg("high"), nb::arg("low"))
+        .def("last", &EhlersOptimalTrackingFilter::last)
+        RTTA_ADVANCE2(EhlersOptimalTrackingFilter, high, low)
+        RTTA_REPLAY2(EhlersOptimalTrackingFilter, high, low)
+        RTTA_BATCH2_ARRAY(EhlersOptimalTrackingFilter, high, low, "high", "low");
 
     nb::class_<VariableIndexDynamicAverage>(m, "VariableIndexDynamicAverage")
         .def(nb::init<int, int, bool>(),
