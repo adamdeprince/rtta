@@ -143,6 +143,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("HighIndex", ("value",)),
     IndicatorSpec("HighLow", ("value",)),
     IndicatorSpec("HighLowIndex", ("value",)),
+    IndicatorSpec("HeikinAshiTransform", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
     IndicatorSpec("HullMovingAverage", ("value",), ctor_kwargs={"window": 30}, batch_inputs=("input",)),
     IndicatorSpec("Ichimoku", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("InteractingMultipleModelFilter", ("close",), batch_inputs=("close",)),

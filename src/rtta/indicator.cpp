@@ -1021,6 +1021,20 @@ struct RenkoBrickGeneratorBatchResult {
     nb::object reversal;
 };
 
+struct HeikinAshiTransformResult {
+    double open;
+    double high;
+    double low;
+    double close;
+};
+
+struct HeikinAshiTransformBatchResult {
+    nb::object open;
+    nb::object high;
+    nb::object low;
+    nb::object close;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1186,6 +1200,10 @@ inline double result_checksum(const ZigZagSwingDetectorResult &value) {
 
 inline double result_checksum(const RenkoBrickGeneratorResult &value) {
     return value.brick_open + value.brick_close + value.direction + value.bricks + value.reversal;
+}
+
+inline double result_checksum(const HeikinAshiTransformResult &value) {
+    return value.open + value.high + value.low + value.close;
 }
 
 class RollingExtremeQueue {
@@ -10521,6 +10539,74 @@ private:
     RenkoBrickGeneratorResult last_;
 };
 
+class HeikinAshiTransform {
+public:
+    HeikinAshiTransform()
+        : initialized_(false),
+          previous_open_(0.0),
+          previous_close_(0.0),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    HeikinAshiTransformResult update(double open, double high, double low, double close) {
+        const double ha_close = 0.25 * (open + high + low + close);
+        const double ha_open = initialized_ ? 0.5 * (previous_open_ + previous_close_) : 0.5 * (open + close);
+        const double ha_high = std::max(high, std::max(ha_open, ha_close));
+        const double ha_low = std::min(low, std::min(ha_open, ha_close));
+        previous_open_ = ha_open;
+        previous_close_ = ha_close;
+        initialized_ = true;
+        last_ = HeikinAshiTransformResult{ha_open, ha_high, ha_low, ha_close};
+        return last_;
+    }
+
+    void advance(double open, double high, double low, double close) {
+        (void) update(open, high, low, close);
+    }
+
+    const HeikinAshiTransformResult &last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    HeikinAshiTransformBatchResult batch_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        std::vector<double> out_open(size);
+        std::vector<double> out_high(size);
+        std::vector<double> out_low(size);
+        std::vector<double> out_close(size);
+        const auto *open_values = open.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const auto *close_values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const HeikinAshiTransformResult out = update(
+                static_cast<double>(open_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]),
+                static_cast<double>(close_values[i]));
+            out_open[i] = out.open;
+            out_high[i] = out.high;
+            out_low[i] = out.low;
+            out_close[i] = out.close;
+        }
+        return {
+            make_array(std::move(out_open)),
+            make_array(std::move(out_high)),
+            make_array(std::move(out_low)),
+            make_array(std::move(out_close)),
+        };
+    }
+
+private:
+    bool initialized_;
+    double previous_open_;
+    double previous_close_;
+    HeikinAshiTransformResult last_;
+};
+
 class High {
 public:
     explicit High(int window = 1, bool fillna = true)
@@ -12389,6 +12475,18 @@ NB_MODULE(indicator, m) {
         .def_ro("direction", &RenkoBrickGeneratorBatchResult::direction)
         .def_ro("bricks", &RenkoBrickGeneratorBatchResult::bricks)
         .def_ro("reversal", &RenkoBrickGeneratorBatchResult::reversal);
+
+    nb::class_<HeikinAshiTransformResult>(m, "HeikinAshiTransformResult")
+        .def_ro("open", &HeikinAshiTransformResult::open)
+        .def_ro("high", &HeikinAshiTransformResult::high)
+        .def_ro("low", &HeikinAshiTransformResult::low)
+        .def_ro("close", &HeikinAshiTransformResult::close);
+
+    nb::class_<HeikinAshiTransformBatchResult>(m, "HeikinAshiTransformBatchResult")
+        .def_ro("open", &HeikinAshiTransformBatchResult::open)
+        .def_ro("high", &HeikinAshiTransformBatchResult::high)
+        .def_ro("low", &HeikinAshiTransformBatchResult::low)
+        .def_ro("close", &HeikinAshiTransformBatchResult::close);
 
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
@@ -14355,6 +14453,60 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(direction)),
                 make_array(std::move(bricks)),
                 make_array(std::move(reversal)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<HeikinAshiTransform>(m, "HeikinAshiTransform")
+        .def(nb::init<>())
+        .def("update", &HeikinAshiTransform::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &HeikinAshiTransform::last)
+        RTTA_ADVANCE4(HeikinAshiTransform, open, high, low, close)
+        RTTA_REPLAY4(HeikinAshiTransform, open, high, low, close)
+        RTTA_FIELD4(HeikinAshiTransform, open, open, high, low, close)
+        RTTA_FIELD4(HeikinAshiTransform, high, open, high, low, close)
+        RTTA_FIELD4(HeikinAshiTransform, low, open, high, low, close)
+        RTTA_FIELD4(HeikinAshiTransform, close, open, high, low, close)
+        .def("replay_update_outputs", [](HeikinAshiTransform &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("replay_update_outputs", [](HeikinAshiTransform &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](HeikinAshiTransform &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](HeikinAshiTransform &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](HeikinAshiTransform &self, nb::iterable records) {
+            if (table_has_column(records, "open")) {
+                return dispatch_table4(self, records, "open", "high", "low", "close", [](auto &indicator, const auto &open, const auto &high, const auto &low, const auto &close) {
+                    return indicator.batch_array(open, high, low, close);
+                });
+            }
+            std::vector<double> out_open = make_record_output(records);
+            std::vector<double> out_high;
+            std::vector<double> out_low;
+            std::vector<double> out_close;
+            out_high.reserve(out_open.capacity());
+            out_low.reserve(out_open.capacity());
+            out_close.reserve(out_open.capacity());
+            for (nb::handle record : records) {
+                const HeikinAshiTransformResult out = self.update(
+                    record_value(record, "open", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2),
+                    record_value(record, "close", 3));
+                out_open.push_back(out.open);
+                out_high.push_back(out.high);
+                out_low.push_back(out.low);
+                out_close.push_back(out.close);
+            }
+            return HeikinAshiTransformBatchResult{
+                make_array(std::move(out_open)),
+                make_array(std::move(out_high)),
+                make_array(std::move(out_low)),
+                make_array(std::move(out_close)),
             };
         }, nb::arg("records"));
 

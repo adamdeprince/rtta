@@ -51,6 +51,8 @@
   filtering noise and labeling confirmed pivots.
 - Added `RenkoBrickGenerator`, an event-driven close-price transform that
   reports signed brick counts, current brick state, direction, and reversals.
+- Added `HeikinAshiTransform`, an incremental OHLC candle transform that emits
+  Heikin-Ashi open, high, low, and close values.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

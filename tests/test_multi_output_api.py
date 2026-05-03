@@ -21,6 +21,7 @@ MULTI_OUTPUTS = {
     "FastStochastic": ("fastk", "fastd"),
     "FibonacciRetracementLevels": ("level0", "level236", "level382", "level500", "level618", "level100"),
     "GaussianProcessRegressionBands": ("middle", "upper", "lower"),
+    "HeikinAshiTransform": ("open", "high", "low", "close"),
     "HighLow": ("min", "max"),
     "HighLowIndex": ("min_index", "max_index"),
     "Ichimoku": ("conversion", "base", "span_a", "span_b"),
