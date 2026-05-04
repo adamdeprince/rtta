@@ -20,6 +20,7 @@ namespace {
 
 using InputArray = nb::ndarray<nb::numpy, const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using FloatInputArray = nb::ndarray<nb::numpy, const float, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using IndexInputArray = nb::ndarray<nb::numpy, const std::int64_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using OutputArray = nb::ndarray<nb::numpy, double, nb::ndim<1>>;
 
 enum class InputDType {
@@ -1737,7 +1738,9 @@ public:
         : values_(static_cast<std::size_t>(std::max(window, 1)), nan()),
           quantile_(quantile),
           next_(0),
-          count_(0) {
+          count_(0),
+          cached_value_(nan()),
+          dirty_(true) {
         if (window <= 0) {
             throw nb::value_error("window must be positive");
         }
@@ -1755,12 +1758,15 @@ public:
         if (count_ < values_.size()) {
             ++count_;
         }
+        dirty_ = true;
     }
 
     inline void reset() {
         std::fill(values_.begin(), values_.end(), nan());
         next_ = 0;
         count_ = 0;
+        cached_value_ = nan();
+        dirty_ = true;
     }
 
     inline std::size_t size() const {
@@ -1768,6 +1774,9 @@ public:
     }
 
     inline double value() const {
+        if (!dirty_) {
+            return cached_value_;
+        }
         std::vector<double> finite_values;
         finite_values.reserve(count_);
         for (std::size_t i = 0; i < count_; ++i) {
@@ -1776,13 +1785,17 @@ public:
             }
         }
         if (finite_values.empty()) {
-            return nan();
+            cached_value_ = nan();
+            dirty_ = false;
+            return cached_value_;
         }
 
         const double index = quantile_ * static_cast<double>(finite_values.size() - 1);
         const std::size_t selected = static_cast<std::size_t>(std::ceil(index));
         std::nth_element(finite_values.begin(), finite_values.begin() + selected, finite_values.end());
-        return finite_values[selected];
+        cached_value_ = finite_values[selected];
+        dirty_ = false;
+        return cached_value_;
     }
 
 private:
@@ -1790,6 +1803,8 @@ private:
     double quantile_;
     std::size_t next_;
     std::size_t count_;
+    mutable double cached_value_;
+    mutable bool dirty_;
 };
 
 class PendingMatchedFlowPredictions {
@@ -6229,8 +6244,8 @@ public:
         (void) open;
         if (reset_session) {
             reset_intraday(previous_session_close);
-        } else if (positive(previous_session_close) && !positive(anchor_close_)) {
-            anchor_close_ = previous_session_close;
+        } else if (positive(previous_session_close) && !std::isfinite(anchor_log_close_)) {
+            anchor_log_close_ = std::log(previous_session_close);
         }
 
         ClosePressureReversalSignalResult result = empty_result();
@@ -6241,8 +6256,9 @@ public:
             last_ = result;
             return last_;
         }
-        if (!positive(anchor_close_)) {
-            anchor_close_ = close;
+        const double log_close = std::log(close);
+        if (!std::isfinite(anchor_log_close_)) {
+            anchor_log_close_ = log_close;
         }
 
         const double positive_volume = std::max(0.0, zero_if_nan(volume));
@@ -6252,7 +6268,7 @@ public:
         session_price_volume_ += bar_vwap * positive_volume;
         session_volume_ += positive_volume;
         const double session_vwap = positive(session_volume_) ? session_price_volume_ / session_volume_ : close;
-        const double ret1 = positive(previous_close_) ? std::log(close / previous_close_) : 0.0;
+        const double ret1 = std::isfinite(previous_log_close_) ? log_close - previous_log_close_ : 0.0;
 
         if (bar_number <= cutoff_after_bars_) {
             ret_sum_to_cutoff_ += ret1;
@@ -6260,7 +6276,7 @@ public:
             ++ret_count_to_cutoff_;
         }
 
-        result.rod_return = std::log(close / anchor_close_);
+        result.rod_return = log_close - anchor_log_close_;
         if (!frozen_ && bar_number >= cutoff_after_bars_) {
             frozen_rod_return_ = result.rod_return;
             frozen_ = true;
@@ -6364,19 +6380,19 @@ public:
 
         result.max_trade_dollars = participation_cap_ * effective_normal_dv;
         if (result.exit_window && pending_prediction_valid_) {
-            const double realized = std::log(close / pending_entry_close_);
+            const double realized = log_close - pending_entry_log_close_;
             result.realized_error = std::abs(realized - pending_prediction_);
             residuals_.push(result.realized_error);
             pending_prediction_valid_ = false;
         }
         if (result.entry_window && !pending_prediction_valid_ && features_ready && std::isfinite(internal_prediction)) {
-            pending_entry_close_ = close;
+            pending_entry_log_close_ = log_close;
             pending_prediction_ = internal_prediction;
             pending_prediction_valid_ = true;
         }
 
         update_ewmas(dollar_volume, transactions, range);
-        previous_close_ = close;
+        previous_log_close_ = log_close;
         bar_count_ = bar_number;
         last_ = result;
         return last_;
@@ -6565,8 +6581,8 @@ private:
 
     void reset_intraday(double previous_session_close) {
         bar_count_ = 0;
-        anchor_close_ = positive(previous_session_close) ? previous_session_close : nan();
-        previous_close_ = nan();
+        anchor_log_close_ = positive(previous_session_close) ? std::log(previous_session_close) : nan();
+        previous_log_close_ = nan();
         frozen_ = false;
         frozen_rod_return_ = nan();
         ret_sum_to_cutoff_ = 0.0;
@@ -6575,7 +6591,7 @@ private:
         session_price_volume_ = 0.0;
         session_volume_ = 0.0;
         pending_prediction_valid_ = false;
-        pending_entry_close_ = nan();
+        pending_entry_log_close_ = nan();
         pending_prediction_ = nan();
     }
 
@@ -6728,8 +6744,8 @@ private:
     double max_volume_shock_;
     RollingQuantile residuals_;
     std::size_t bar_count_ = 0;
-    double anchor_close_ = nan();
-    double previous_close_ = nan();
+    double anchor_log_close_ = nan();
+    double previous_log_close_ = nan();
     bool frozen_ = false;
     double frozen_rod_return_ = nan();
     double ret_sum_to_cutoff_ = 0.0;
@@ -6744,9 +6760,160 @@ private:
     double range_ewma_ = nan();
     bool range_ewma_ready_ = false;
     bool pending_prediction_valid_ = false;
-    double pending_entry_close_ = nan();
+    double pending_entry_log_close_ = nan();
     double pending_prediction_ = nan();
     ClosePressureReversalSignalResult last_;
+};
+
+class ClosePressureReversalUniverse {
+public:
+    ClosePressureReversalUniverse(
+        int size,
+        int cutoff_after_bars = 66,
+        int entry_start_after_bars = 72,
+        int entry_end_after_bars = 75,
+        int exit_after_bars = 77,
+        int calibration_window = 120,
+        double calibration_quantile = 0.80,
+        double reversal_slope = 0.025,
+        double entry_z = 1.0,
+        double cost_buffer = 0.0005,
+        double max_abs_target_fraction = 0.04,
+        double participation_cap = 0.02,
+        bool allow_short_winners = false,
+        bool fillna = false,
+        double max_loser_z = 6.0,
+        double max_range_z = 5.0,
+        double max_volume_shock = 6.0) {
+        if (size <= 0) {
+            throw nb::value_error("size must be positive");
+        }
+        const std::size_t universe_size = static_cast<std::size_t>(size);
+        signals_.reserve(universe_size);
+        for (std::size_t i = 0; i < universe_size; ++i) {
+            signals_.emplace_back(
+                cutoff_after_bars,
+                entry_start_after_bars,
+                entry_end_after_bars,
+                exit_after_bars,
+                calibration_window,
+                calibration_quantile,
+                reversal_slope,
+                entry_z,
+                cost_buffer,
+                max_abs_target_fraction,
+                participation_cap,
+                allow_short_winners,
+                fillna,
+                max_loser_z,
+                max_range_z,
+                max_volume_shock);
+        }
+        previous_session_close_.assign(universe_size, nan());
+        first_bar_.assign(universe_size, 1);
+    }
+
+    void reset() {
+        for (ClosePressureReversalSignal &signal : signals_) {
+            signal.reset();
+        }
+        std::fill(previous_session_close_.begin(), previous_session_close_.end(), nan());
+        std::fill(first_bar_.begin(), first_bar_.end(), 1);
+    }
+
+    void begin_session(const IndexInputArray &indices) {
+        for (std::size_t i = 0; i < indices.shape(0); ++i) {
+            first_bar_[checked_index(indices.data()[i])] = 1;
+        }
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4, typename Array5, typename Array6>
+    nb::tuple update_array(
+        const IndexInputArray &indices,
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume,
+        const Array5 &vwap,
+        const Array6 &transactions,
+        double top_fraction) {
+        if (top_fraction <= 0.0 || top_fraction > 1.0) {
+            throw nb::value_error("top_fraction must be in (0, 1]");
+        }
+
+        const std::size_t size = indices.shape(0);
+        require_same_size(size, open.shape(0));
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        require_same_size(size, vwap.shape(0));
+        require_same_size(size, transactions.shape(0));
+
+        std::vector<std::pair<double, std::size_t>> candidates;
+        std::vector<std::size_t> exits;
+        candidates.reserve(size);
+        exits.reserve(size);
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const std::size_t index = checked_index(indices.data()[i]);
+            const double close_value = static_cast<double>(close.data()[i]);
+            const ClosePressureReversalSignalResult result = signals_[index].update(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                close_value,
+                static_cast<double>(volume.data()[i]),
+                static_cast<double>(vwap.data()[i]),
+                static_cast<double>(transactions.data()[i]),
+                previous_session_close_[index],
+                nan(),
+                nan(),
+                first_bar_[index] != 0);
+            first_bar_[index] = 0;
+            if (std::isfinite(close_value) && close_value > 0.0) {
+                previous_session_close_[index] = close_value;
+            }
+
+            if (result.exit_window) {
+                exits.push_back(index);
+            }
+            if (result.entry_window && !result.news_guard && std::isfinite(result.score) && result.score > 0.0) {
+                candidates.emplace_back(result.score, index);
+            }
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const auto &left, const auto &right) {
+            return left.first > right.first;
+        });
+
+        const std::size_t selected_count = std::min<std::size_t>(
+            candidates.size(),
+            static_cast<std::size_t>(std::ceil(static_cast<double>(candidates.size()) * top_fraction)));
+
+        nb::list selected;
+        nb::list exit_list;
+        for (std::size_t i = 0; i < selected_count; ++i) {
+            selected.append(nb::cast(candidates[i].second));
+        }
+        for (std::size_t index : exits) {
+            exit_list.append(nb::cast(index));
+        }
+        return nb::make_tuple(selected, exit_list);
+    }
+
+private:
+    std::size_t checked_index(std::int64_t index) const {
+        if (index < 0 || static_cast<std::size_t>(index) >= signals_.size()) {
+            throw nb::value_error("universe index is out of range");
+        }
+        return static_cast<std::size_t>(index);
+    }
+
+    std::vector<ClosePressureReversalSignal> signals_;
+    std::vector<double> previous_session_close_;
+    std::vector<unsigned char> first_bar_;
 };
 
 class ChaikinMoneyFlow {
@@ -17533,6 +17700,34 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(news_guard)),
             };
         }, nb::arg("records"));
+
+    nb::class_<ClosePressureReversalUniverse>(m, "ClosePressureReversalUniverse")
+        .def(nb::init<int, int, int, int, int, int, double, double, double, double, double, double, bool, bool, double, double, double>(),
+             nb::arg("size"),
+             nb::arg("cutoff_after_bars") = 66,
+             nb::arg("entry_start_after_bars") = 72,
+             nb::arg("entry_end_after_bars") = 75,
+             nb::arg("exit_after_bars") = 77,
+             nb::arg("calibration_window") = 120,
+             nb::arg("calibration_quantile") = 0.80,
+             nb::arg("reversal_slope") = 0.025,
+             nb::arg("entry_z") = 1.0,
+             nb::arg("cost_buffer") = 0.0005,
+             nb::arg("max_abs_target_fraction") = 0.04,
+             nb::arg("participation_cap") = 0.02,
+             nb::arg("allow_short_winners") = false,
+             nb::arg("fillna") = false,
+             nb::arg("max_loser_z") = 6.0,
+             nb::arg("max_range_z") = 5.0,
+             nb::arg("max_volume_shock") = 6.0)
+        .def("reset", &ClosePressureReversalUniverse::reset)
+        .def("begin_session", &ClosePressureReversalUniverse::begin_session, array_arg("indices"))
+        .def("update", [](ClosePressureReversalUniverse &self, const IndexInputArray &indices, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume, const InputArray &vwap, const InputArray &transactions, double top_fraction) {
+            return self.update_array(indices, open, high, low, close, volume, vwap, transactions, top_fraction);
+        }, array_arg("indices"), array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"), array_arg("vwap"), array_arg("transactions"), nb::arg("top_fraction") = 0.10)
+        .def("update", [](ClosePressureReversalUniverse &self, const IndexInputArray &indices, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume, const FloatInputArray &vwap, const FloatInputArray &transactions, double top_fraction) {
+            return self.update_array(indices, open, high, low, close, volume, vwap, transactions, top_fraction);
+        }, array_arg("indices"), array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"), array_arg("vwap"), array_arg("transactions"), nb::arg("top_fraction") = 0.10);
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)

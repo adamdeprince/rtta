@@ -4,17 +4,50 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import heapq
 import math
+import sys
 from pathlib import Path
 
 import massive_speedup
+import numpy as np
 import rtta
 
 
 # Populate this with the production universe, e.g. 100-300 liquid stock symbols.
-SYMBOLS: list[str] = []
+SYMBOLS: list[str] = [
+    'TNA', 'TQQQ', 'DIA', 'XLV', 'VOO', 'SOXX', 'RSP', 'IVV', 'UDOW', 'USO', 'XLI',
+    'UCO', 'QQQM', 'SPXU', 'VTV', 'TSLA', 'ARKK', 'IAU', 'QLD', 'KRE', 'EFA',
+    'XLY', 'MSTZ', 'SIVR', 'VTWO', 'IBIT', 'FBTC', 'SPXS', 'GOOGL', 'SPXL', 'ITOT',
+    'VXX', 'NVDL', 'AMZU', 'VT', 'IGV', 'IVW', 'EMXC', 'GLDM', 'TSLL', 'GOOG',
+    'BNO', 'TSLQ', 'SDS', 'XBI', 'SMH', 'ACWI', 'PLTR', 'NFLX', 'ETHU', 'INTC',
+    'XLC', 'IXUS', 'AMZN', 'SPYG', 'GBTC', 'AAPL', 'IEMG', 'IYR', 'VIXY', 'SDOW',
+    'GLD', 'IEFA', 'AAPU', 'SPYM', 'IWD', 'ZSL', 'URTY', 'SSO', 'SOXQ', 'VNQ',
+    'ETHA', 'FNGU', 'SVXY', 'EWJ', 'UPRO', 'BITX', 'EFG', 'MAGS', 'VONG', 'UGL',
+    'BITB', 'USMV', 'XLE', 'TECS', 'GDX', 'IJH', 'XLF', 'VTI', 'BBJP', 'PTIR',
+    'SCZ', 'SILJ', 'TLH', 'SRTY', 'LABD', 'VEA', 'EFV', 'KBE', 'XRT', 'TSLT',
+    'EEM', 'IWR', 'BMNR', 'VGT', 'ETH', 'AMDL', 'MOAT', 'METU', 'ACWX', 'IYW',
+    'ARKG', 'PFSA', 'QID', 'TECL', 'VPL', 'AIXI', 'VGK', 'ETHE', 'DGRO', 'KOLD',
+    'VXUS', 'XLP', 'EWZ', 'TSLR', 'NVDQ', 'IUSG', 'MSFU', 'BTC', 'SH', 'FETH',
+    'OEF', 'TSLZ', 'MU', 'DYNF', 'IREN', 'AVDE', 'PLTZ', 'EWY', 'IWB', 'SPHQ',
+    'UVIX', 'USB', 'AG', 'AVEM', 'MDY', 'SBIT', 'SPTM', 'PSLV', 'RDVY', 'SPMD',
+    'SVIX', 'TZA', 'ARKB', 'GLL', 'EWT', 'TSDD', 'NVDX', 'FBL', 'IAUM', 'IYK',
+    'IDEV', 'SCHG', 'XLG', 'COWZ', 'QBTS', 'YANG', 'KGC', 'SGOL', 'XLB', 'FCX',
+    'ILF', 'STM', 'IYE', 'HODL', 'FEZ', 'VIG', 'BOIL', 'RGTI', 'UWM', 'BITO',
+    'BITU', 'TWM', 'IUSV', 'TSLS', 'HIBS', 'VUG', 'NOBL', 'SPYU', 'HOOD', 'DGRW',
+    'PAVE', 'XOM', 'SPEM', 'VYMI', 'PAAS', 'KBWB', 'IVE', 'IWY', 'VLUE', 'IVES',
+    'CIFR', 'DFUS', 'SMCI', 'SARK', 'EWQ', 'BAC', 'YINN', 'PLTU', 'CDE', 'SPSM',
+    'IWF', 'SPYV', 'EZU', 'WULF', 'XLRE', 'BITI', 'QUAL', 'LUNR', 'JEPQ', 'FDL',
+    'DFUV', 'COMT', 'TLT', 'ETHW', 'WCLD', 'MRVL', 'BULZ', 'IYH', 'CNQ', 'FPX',
+    'ORCX', 'VDE', 'GGLL', 'HIMS', 'AIQ', 'MGK', 'PSQ', 'IONQ', 'EWU', 'EUFN',
+    'AGQ', 'SPLV', 'EWC', 'PHYS', 'ESGU', 'RWM', 'VEU', 'ETHV', 'HL', 'IEUR', 'B',
+    'CONL', 'THRO', 'SOFI', 'LABU', 'MSTU', 'AAAU', 'BTCO', 'CVE', 'DFAI', 'GSG',
+    'EZBC', 'RDW', 'CSCO', 'DUST', 'PBW', 'IHI', 'CMCI', 'VWO', 'QQQI', 'TOPT',
+    'EZET', 'EWW', 'SPYD', 'LQD', 'JQUA', 'TFC', 'HIBL', 'VYM', 'SPMO', 'CGGR',
+    'KO', 'ETHT', 'RPG', 'RWR', 'NKE', 'TMF', 'DFAC', 'AIB'][:200]
+
 
 NANOSECONDS_PER_SECOND = 1_000_000_000
 
@@ -57,6 +90,13 @@ def quote_at_or_after(quotes, timestamp_ns: int):
     return quotes[quote_index]
 
 
+def quote_at_or_before(quotes, timestamp_ns: int):
+    quote_index = quotes.index_before_timestamp(timestamp_ns)
+    if quote_index < 0:
+        return None
+    return quotes[quote_index]
+
+
 def push_next(heap, symbol, iterator):
     try:
         bar = next(iterator)
@@ -68,9 +108,10 @@ def push_next(heap, symbol, iterator):
 def aggregate_groups(trade_databases, *, interval_seconds: int, offset_seconds: int):
     heap = []
     for symbol, trades in trade_databases.items():
+        rows = trades.iterate_bounded(trades.market_open, trades.market_close)
         iterator = iter(
             massive_speedup.StockTradeAggregator(
-                trades,
+                rows,
                 interval_seconds=interval_seconds,
                 offset_seconds=offset_seconds,
             )
@@ -87,15 +128,62 @@ def aggregate_groups(trade_databases, *, interval_seconds: int, offset_seconds: 
         yield window_start, bars
 
 
-def finite_score(result) -> float:
-    score = float(result.score)
-    if math.isfinite(score):
-        return score
-    return -math.inf
+def fmt(value: float) -> str:
+    if not math.isfinite(value):
+        return "nan"
+    return f"{value:.10g}"
 
 
-def current_portfolio_value(cash: float, holdings: set[str], latest_close: dict[str, float]) -> float:
-    return cash + sum(latest_close.get(symbol, 0.0) for symbol in holdings)
+def write_trade(
+    writer,
+    date: dt.date,
+    symbol: str,
+    buy_time: int,
+    buy_price: float,
+    sell_time: int,
+    sell_price: float,
+    daily_profit: float,
+    total_profit: float,
+) -> None:
+    profit = sell_price - buy_price
+    profit_pct = 100.0 * profit / buy_price if buy_price > 0.0 else float("nan")
+    writer.writerow(
+        [
+            "trade",
+            date.isoformat(),
+            symbol,
+            buy_time,
+            fmt(buy_price),
+            sell_time,
+            fmt(sell_price),
+            fmt(profit),
+            fmt(profit_pct),
+            fmt(daily_profit),
+            fmt(total_profit),
+        ]
+    )
+
+
+def write_daily_summary(writer, date: dt.date, daily_profit: float, total_profit: float) -> None:
+    writer.writerow(
+        [
+            "daily",
+            date.isoformat(),
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            fmt(daily_profit),
+            fmt(total_profit),
+        ]
+    )
+
+
+def write_total_summary(writer, total_profit: float) -> None:
+    writer.writerow(["total", "", "", "", "", "", "", "", "", "", fmt(total_profit)])
 
 
 def main() -> int:
@@ -126,38 +214,40 @@ def main() -> int:
         parser.error("--top-fraction must be in (0, 1]")
 
     symbols = load_symbols(args)
-    indicators = {
-        symbol: rtta.ClosePressureReversalSignal(
-            cutoff_after_bars=args.cutoff_after_bars,
-            entry_start_after_bars=args.entry_start_after_bars,
-            entry_end_after_bars=args.entry_end_after_bars,
-            exit_after_bars=args.exit_after_bars,
-            calibration_window=args.calibration_window,
-            fillna=True,
-        )
-        for symbol in symbols
-    }
-    first_bar = {symbol: True for symbol in symbols}
-    previous_session_close: dict[str, float] = {}
-    latest_close: dict[str, float] = {}
-    first_seen_price: dict[str, float] = {}
-    holdings: set[str] = set()
-    cash = 0.0
-    trade_count = 0
+    universe = rtta.ClosePressureReversalUniverse(
+        len(symbols),
+        cutoff_after_bars=args.cutoff_after_bars,
+        entry_start_after_bars=args.entry_start_after_bars,
+        entry_end_after_bars=args.entry_end_after_bars,
+        exit_after_bars=args.exit_after_bars,
+        calibration_window=args.calibration_window,
+        fillna=True,
+    )
+    positions: dict[int, tuple[int, float]] = {}
+    total_profit = 0.0
 
-    print(
-        "date,window_start,symbol,rank,selected,open,high,low,close,volume,"
-        "rod_return,prediction,radius,score,signal,target_fraction,"
-        "entry_window,exit_window,news_guard,execution_timestamp,execution_bid,"
-        "execution_ask,action,cash_delta,cash,current_value,"
-        "current_value_pct_initial,holding,trade_count"
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    writer.writerow(
+        [
+            "row_type",
+            "date",
+            "symbol",
+            "buy_time_ns",
+            "buy_price",
+            "sell_time_ns",
+            "sell_price",
+            "profit",
+            "profit_pct",
+            "daily_profit",
+            "total_profit",
+        ]
     )
 
     interval_ns = args.interval * NANOSECONDS_PER_SECOND
     for current_date in date_range(start_date, stop_date):
         trade_databases = {}
         quote_databases = {}
-        for symbol in symbols:
+        for index, symbol in enumerate(symbols):
             try:
                 trades = massive_speedup.StockTradeDatabase(args.database, current_date.isoformat(), symbol)
                 quotes = massive_speedup.StockQuoteDatabase(args.database, current_date.isoformat(), symbol)
@@ -165,129 +255,130 @@ def main() -> int:
                 continue
             if len(quotes) == 0:
                 continue
-            trade_databases[symbol] = trades
-            quote_databases[symbol] = quotes
+            trade_databases[index] = trades
+            quote_databases[index] = quotes
 
         if not trade_databases:
             continue
 
+        universe.begin_session(np.fromiter(trade_databases.keys(), dtype=np.int64))
+        daily_profit = 0.0
         for window_start, bars in aggregate_groups(
             trade_databases,
             interval_seconds=args.interval,
             offset_seconds=args.offset,
         ):
-            outputs = {}
-            for symbol, bar in bars.items():
-                if bar.transactions == 0 or bar.volume == 0:
+            valid_bars = [(index, bar) for index, bar in bars.items() if bar.transactions != 0 and bar.volume != 0]
+            if not valid_bars:
+                continue
+
+            indices = np.empty(len(valid_bars), dtype=np.int64)
+            open_values = np.empty(len(valid_bars), dtype=np.float64)
+            high_values = np.empty(len(valid_bars), dtype=np.float64)
+            low_values = np.empty(len(valid_bars), dtype=np.float64)
+            close_values = np.empty(len(valid_bars), dtype=np.float64)
+            volume_values = np.empty(len(valid_bars), dtype=np.float64)
+            vwap_values = np.empty(len(valid_bars), dtype=np.float64)
+            transaction_values = np.empty(len(valid_bars), dtype=np.float64)
+            for offset, (index, bar) in enumerate(valid_bars):
+                indices[offset] = index
+                open_values[offset] = float(bar.open)
+                high_values[offset] = float(bar.high)
+                low_values[offset] = float(bar.low)
+                close_values[offset] = float(bar.close)
+                volume_values[offset] = float(bar.volume)
+                vwap_values[offset] = float(bar.volume_weighted_avg)
+                transaction_values[offset] = float(bar.transactions)
+
+            selected, exits = universe.update(
+                indices,
+                open_values,
+                high_values,
+                low_values,
+                close_values,
+                volume_values,
+                vwap_values,
+                transaction_values,
+                args.top_fraction,
+            )
+            execution_timestamp = int(window_start) + interval_ns + args.trade_delay_ns
+
+            for index in exits:
+                index = int(index)
+                if index not in positions:
                     continue
-
-                close = float(bar.close)
-                if close > 0.0:
-                    latest_close[symbol] = close
-                    first_seen_price.setdefault(symbol, close)
-
-                outputs[symbol] = indicators[symbol].update(
-                    float(bar.open),
-                    float(bar.high),
-                    float(bar.low),
-                    close,
-                    float(bar.volume),
-                    vwap=float(bar.volume_weighted_avg),
-                    transactions=float(bar.transactions),
-                    previous_session_close=previous_session_close.get(symbol, float("nan")),
-                    reset_session=first_bar.get(symbol, True),
-                )
-                first_bar[symbol] = False
-                previous_session_close[symbol] = close
-
-            candidates = [
-                (symbol, result)
-                for symbol, result in outputs.items()
-                if float(result.signal) > 0.0 and not bool(result.news_guard)
-            ]
-            candidates.sort(key=lambda item: finite_score(item[1]), reverse=True)
-            selected_count = math.ceil(len(candidates) * args.top_fraction)
-            selected = {symbol for symbol, _ in candidates[:selected_count]}
-            ranks = {symbol: index + 1 for index, (symbol, _) in enumerate(candidates)}
-
-            for symbol, result in sorted(outputs.items()):
-                bar = bars[symbol]
-                close = float(bar.close)
-                quotes = quote_databases.get(symbol)
-                execution_timestamp = int(window_start) + interval_ns + args.trade_delay_ns
-                delayed_quote = quote_at_or_after(quotes, execution_timestamp) if quotes is not None else None
-                execution_bid = float("nan")
-                execution_ask = float("nan")
-                cash_delta = 0.0
-                action = "none"
-
-                if delayed_quote is not None:
-                    execution_bid = float(delayed_quote.bid_price)
-                    execution_ask = float(delayed_quote.ask_price)
-                    if symbol in holdings and symbol not in selected and execution_bid > 0.0:
-                        cash_delta = execution_bid
-                        cash += cash_delta
-                        holdings.remove(symbol)
-                        action = "sell"
-                    elif symbol not in holdings and symbol in selected and execution_ask > 0.0:
-                        cash_delta = -execution_ask
-                        cash += cash_delta
-                        holdings.add(symbol)
-                        trade_count += 1
-                        action = "buy"
-
-                if cash_delta == 0.0:
-                    execution_timestamp = 0
-                initial_reference_value = sum(first_seen_price.get(symbol, 0.0) for symbol in first_seen_price)
-                current_value = current_portfolio_value(cash, holdings, latest_close)
-                current_value_pct_initial = (
-                    current_value / initial_reference_value
-                    if initial_reference_value > 0.0
-                    else float("nan")
+                quotes = quote_databases.get(index)
+                if quotes is None or len(quotes) == 0:
+                    continue
+                delayed_quote = quote_at_or_after(quotes, execution_timestamp)
+                if delayed_quote is None:
+                    continue
+                execution_bid = float(delayed_quote.bid_price)
+                if execution_bid <= 0.0:
+                    continue
+                buy_time, buy_price = positions.pop(index)
+                profit = execution_bid - buy_price
+                daily_profit += profit
+                total_profit += profit
+                write_trade(
+                    writer,
+                    current_date,
+                    symbols[index],
+                    buy_time,
+                    buy_price,
+                    execution_timestamp,
+                    execution_bid,
+                    daily_profit,
+                    total_profit,
                 )
 
-                print(
-                    f"{current_date.isoformat()},{window_start},{symbol},"
-                    f"{ranks.get(symbol, 0)},{int(symbol in selected)},"
-                    f"{float(bar.open):.6f},{float(bar.high):.6f},"
-                    f"{float(bar.low):.6f},{close:.6f},{int(bar.volume)},"
-                    f"{float(result.rod_return):.10g},{float(result.prediction):.10g},"
-                    f"{float(result.radius):.10g},{float(result.score):.10g},"
-                    f"{float(result.signal):.0f},{float(result.target_fraction):.10g},"
-                    f"{int(bool(result.entry_window))},{int(bool(result.exit_window))},"
-                    f"{int(bool(result.news_guard))},{execution_timestamp},"
-                    f"{execution_bid:.10g},{execution_ask:.10g},{action},"
-                    f"{cash_delta:.10g},{cash:.10g},{current_value:.10g},"
-                    f"{current_value_pct_initial:.10g},{int(symbol in holdings)},"
-                    f"{trade_count}"
-                )
+            for index in selected:
+                index = int(index)
+                if index in positions:
+                    continue
+                quotes = quote_databases.get(index)
+                if quotes is None or len(quotes) == 0:
+                    continue
+                delayed_quote = quote_at_or_after(quotes, execution_timestamp)
+                if delayed_quote is None:
+                    continue
+                execution_ask = float(delayed_quote.ask_price)
+                if execution_ask > 0.0:
+                    positions[index] = (execution_timestamp, execution_ask)
 
-        for symbol in sorted(list(holdings)):
-            quotes = quote_databases.get(symbol)
+        for index in sorted(list(positions)):
+            quotes = quote_databases.get(index)
             if quotes is None or len(quotes) == 0:
                 continue
-            final_quote = quotes[len(quotes) - 1]
+            trades = trade_databases.get(index)
+            if trades is None:
+                continue
+            final_quote = quote_at_or_before(quotes, int(trades.market_close))
+            if final_quote is None:
+                continue
             execution_bid = float(final_quote.bid_price)
             if execution_bid <= 0.0:
                 continue
             execution_timestamp = int(final_quote.sip_timestamp)
-            cash_delta = execution_bid
-            cash += cash_delta
-            holdings.remove(symbol)
-            initial_reference_value = sum(first_seen_price.get(symbol, 0.0) for symbol in first_seen_price)
-            current_value = current_portfolio_value(cash, holdings, latest_close)
-            current_value_pct_initial = (
-                current_value / initial_reference_value
-                if initial_reference_value > 0.0
-                else float("nan")
+            buy_time, buy_price = positions.pop(index)
+            profit = execution_bid - buy_price
+            daily_profit += profit
+            total_profit += profit
+            write_trade(
+                writer,
+                current_date,
+                symbols[index],
+                buy_time,
+                buy_price,
+                execution_timestamp,
+                execution_bid,
+                daily_profit,
+                total_profit,
             )
-            print(
-                f"{current_date.isoformat()},closeout,{symbol},0,0,"
-                f"nan,nan,nan,nan,0,nan,nan,nan,nan,0,nan,0,1,0,"
-                f"{execution_timestamp},{execution_bid:.10g},nan,closeout,"
-                f"{cash_delta:.10g},{cash:.10g},{current_value:.10g},"
-                f"{current_value_pct_initial:.10g},0,{trade_count}"
-            )
+
+        write_daily_summary(writer, current_date, daily_profit, total_profit)
+
+    write_total_summary(writer, total_profit)
 
     return 0
 

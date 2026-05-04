@@ -11,9 +11,6 @@ import massive_speedup
 import rtta
 
 
-BAR_INTERVAL_SECONDS = 300
-BAR_INTERVAL_NS = BAR_INTERVAL_SECONDS * 1_000_000_000
-
 
 def date_range(start: dt.date, stop: dt.date):
     for offset in range((stop - start).days + 1):
@@ -43,6 +40,8 @@ def main() -> int:
     parser.add_argument("--normal-dollar-alpha", type=float, default=0.05)
     parser.add_argument("--horizon-bars", type=int, default=12)
     parser.add_argument("--calibration-window", type=int, default=250)
+    parser.add_argument('--interval', type=int, default=300)
+    parser.add_argument('--offset', type=int, default=0)
     args = parser.parse_args()
 
     start_date = dt.date.fromisoformat(args.start_date)
@@ -88,7 +87,7 @@ def main() -> int:
             continue
 
         first_bar = True
-        for bar in massive_speedup.StockTradeAggregator(trades, interval_seconds=BAR_INTERVAL_SECONDS):
+        for bar in massive_speedup.StockTradeAggregator(trades, interval_seconds=args.interval, offset_seconds=args.offset):
             if bar.transactions == 0 or bar.volume == 0:
                 continue
 
@@ -118,7 +117,7 @@ def main() -> int:
             direction = float(result.signal)
             execution_timestamp, execution_quote = delayed_quote(
                 quotes,
-                int(bar.window_start) + BAR_INTERVAL_NS,
+                int(bar.window_start) + args.interval * 1_000_000_000,
                 args.trade_delay_ns,
             )
             execution_bid = float("nan")

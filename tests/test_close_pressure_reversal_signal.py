@@ -235,3 +235,67 @@ def test_advance_replay_and_replay_update_outputs():
     batch = rtta.ClosePressureReversalSignal(**kwargs).batch(*args)
     replay = rtta.ClosePressureReversalSignal(**kwargs).replay_update_outputs(*args)
     _assert_batch_close(replay, batch)
+
+
+def test_universe_update_matches_scalar_selection_and_exit_windows():
+    import rtta
+
+    base = _market_bars(32)
+    other = _market_bars(32, seed=4405)
+    kwargs = dict(
+        cutoff_after_bars=8,
+        entry_start_after_bars=10,
+        entry_end_after_bars=14,
+        exit_after_bars=18,
+        calibration_window=16,
+        fillna=True,
+    )
+    universe = rtta.ClosePressureReversalUniverse(2, **kwargs)
+    scalars = [rtta.ClosePressureReversalSignal(**kwargs), rtta.ClosePressureReversalSignal(**kwargs)]
+    universe.begin_session(np.array([0, 1], dtype=np.int64))
+
+    for offset in range(32):
+        open_values = np.array([base["open"][offset], other["open"][offset]], dtype=np.float64)
+        high_values = np.array([base["high"][offset], other["high"][offset]], dtype=np.float64)
+        low_values = np.array([base["low"][offset], other["low"][offset]], dtype=np.float64)
+        close_values = np.array([base["close"][offset], other["close"][offset]], dtype=np.float64)
+        volume_values = np.array([base["volume"][offset], other["volume"][offset]], dtype=np.float64)
+        vwap_values = close_values.copy()
+        transaction_values = np.array([1000.0, 1200.0], dtype=np.float64)
+
+        scalar_outputs = [
+            scalars[index].update(
+                float(open_values[index]),
+                float(high_values[index]),
+                float(low_values[index]),
+                float(close_values[index]),
+                float(volume_values[index]),
+                vwap=float(vwap_values[index]),
+                transactions=float(transaction_values[index]),
+                reset_session=(offset == 0),
+            )
+            for index in range(2)
+        ]
+        candidates = [
+            (float(result.score), index)
+            for index, result in enumerate(scalar_outputs)
+            if result.entry_window and not result.news_guard and np.isfinite(float(result.score)) and result.score > 0.0
+        ]
+        candidates.sort(reverse=True)
+        selected_count = int(np.ceil(len(candidates) * 0.5))
+        expected_selected = [index for _, index in candidates[:selected_count]]
+        expected_exits = [index for index, result in enumerate(scalar_outputs) if result.exit_window]
+
+        selected, exits = universe.update(
+            np.array([0, 1], dtype=np.int64),
+            open_values,
+            high_values,
+            low_values,
+            close_values,
+            volume_values,
+            vwap_values,
+            transaction_values,
+            0.5,
+        )
+        assert list(selected) == expected_selected
+        assert list(exits) == expected_exits
