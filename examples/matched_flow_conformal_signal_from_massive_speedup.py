@@ -20,15 +20,16 @@ def date_range(start: dt.date, stop: dt.date):
         yield start + dt.timedelta(days=offset)
 
 
-def quote_at_or_after(quotes, timestamp_ns: int):
-    quote_index = quotes.index_before_timestamp(timestamp_ns)
+def delayed_quote(quotes, timestamp_ns: int, delay_ns: int):
+    execution_timestamp = timestamp_ns + delay_ns
+    quote_index = quotes.index_before_timestamp(execution_timestamp)
     if quote_index < 0:
         quote_index = 0
-    elif quotes[quote_index].sip_timestamp < timestamp_ns:
+    elif quotes[quote_index].sip_timestamp < execution_timestamp:
         quote_index += 1
     if quote_index >= len(quotes):
-        return None
-    return quotes[quote_index]
+        return execution_timestamp, None
+    return execution_timestamp, quotes[quote_index]
 
 
 def main() -> int:
@@ -56,13 +57,15 @@ def main() -> int:
     )
     normal_dollar_volume = float("nan")
     holding = False
-    profit = 0.0
+    cash = 0.0
+    first_seen_price = None
     trade_count = 0
 
     print(
         "date,window_start,open,high,low,close,volume,prediction,radius,score,"
         "signal,target_fraction,max_trade_dollars,realized_error,execution_timestamp,"
-        "execution_bid,execution_ask,profit_delta,profit,holding,trade_count"
+        "execution_bid,execution_ask,cash_delta,cash,current_value,"
+        "current_value_pct_initial,holding,trade_count"
     )
     for current_date in date_range(start_date, stop_date):
         try:
@@ -110,29 +113,40 @@ def main() -> int:
                     )
 
             close = float(bar.close)
+            if first_seen_price is None and close > 0.0:
+                first_seen_price = close
             direction = float(result.signal)
-            execution_timestamp = int(bar.window_start) + BAR_INTERVAL_NS + args.trade_delay_ns
-            delayed_quote = quote_at_or_after(quotes, execution_timestamp)
+            execution_timestamp, execution_quote = delayed_quote(
+                quotes,
+                int(bar.window_start) + BAR_INTERVAL_NS,
+                args.trade_delay_ns,
+            )
             execution_bid = float("nan")
             execution_ask = float("nan")
-            profit_delta = 0.0
+            cash_delta = 0.0
 
-            if delayed_quote is not None:
-                execution_bid = float(delayed_quote.bid_price)
-                execution_ask = float(delayed_quote.ask_price)
+            if execution_quote is not None:
+                execution_bid = float(execution_quote.bid_price)
+                execution_ask = float(execution_quote.ask_price)
                 if holding:
                     if direction < 0.0 and execution_bid > 0.0:
-                        profit_delta = execution_bid
-                        profit += profit_delta
+                        cash_delta = execution_bid
+                        cash += cash_delta
                         holding = False
                 else:
                     if direction > 0.0 and execution_ask > 0.0:
-                        profit_delta = -execution_ask
-                        profit += profit_delta
+                        cash_delta = -execution_ask
+                        cash += cash_delta
                         holding = True
                         trade_count += 1
-            if profit_delta == 0.0:
+            if cash_delta == 0.0:
                 execution_timestamp = 0
+            current_value = cash + close if holding else cash
+            current_value_pct_initial = (
+                current_value / first_seen_price
+                if first_seen_price is not None and first_seen_price > 0.0
+                else float("nan")
+            )
 
             print(
                 f"{current_date.isoformat()},{int(bar.window_start)},"
@@ -144,7 +158,8 @@ def main() -> int:
                 f"{float(result.max_trade_dollars):.10g},"
                 f"{float(result.realized_error):.10g},"
                 f"{execution_timestamp},{execution_bid:.10g},{execution_ask:.10g},"
-                f"{profit_delta:.10g},{profit:.10g},{int(holding)},{trade_count}"
+                f"{cash_delta:.10g},{cash:.10g},{current_value:.10g},"
+                f"{current_value_pct_initial:.10g},{int(holding)},{trade_count}"
             )
             first_bar = False
 
@@ -153,15 +168,22 @@ def main() -> int:
             execution_timestamp = int(final_quote.sip_timestamp)
             execution_bid = float(final_quote.bid_price)
             if execution_bid > 0.0:
-                profit_delta = execution_bid
-                profit += profit_delta
+                cash_delta = execution_bid
+                cash += cash_delta
                 holding = False
+                current_value = cash
+                current_value_pct_initial = (
+                    current_value / first_seen_price
+                    if first_seen_price is not None and first_seen_price > 0.0
+                    else float("nan")
+                )
                 print(
                     f"{current_date.isoformat()},closeout,"
                     f"nan,nan,nan,nan,0,"
                     f"nan,nan,nan,0,nan,nan,nan,"
                     f"{execution_timestamp},{execution_bid:.10g},nan,"
-                    f"{profit_delta:.10g},{profit:.10g},0,{trade_count}"
+                    f"{cash_delta:.10g},{cash:.10g},{current_value:.10g},"
+                    f"{current_value_pct_initial:.10g},0,{trade_count}"
                 )
 
     return 0
