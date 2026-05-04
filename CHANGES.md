@@ -65,6 +65,9 @@
   liquidity estimator.
 - Added `SpreadFeatures`, a quote/trade execution-quality indicator with
   quoted spread, effective spread, and delayed realized spread outputs.
+- Added `MatchedFlowConformalSignal`, an intraday OHLCV matched-flow signal
+  with conformal-style rolling prediction error bands, scalar accessors, and
+  batch/replay paths.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

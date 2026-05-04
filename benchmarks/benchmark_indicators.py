@@ -175,6 +175,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("LowIndex", ("value",)),
     IndicatorSpec("MACDFix", ("close",)),
     IndicatorSpec("MassIndex", ("high", "low")),
+    IndicatorSpec("MatchedFlowConformalSignal", ("open", "high", "low", "close", "volume"), batch_inputs=("open", "high", "low", "close", "volume")),
     IndicatorSpec("MedianPrice", ("high", "low")),
     IndicatorSpec("MesaAdaptiveMovingAverage", ("value",), batch_inputs=("input",)),
     IndicatorSpec("MidPoint", ("value",)),

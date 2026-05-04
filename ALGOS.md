@@ -83,6 +83,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `LowIndex` | Offset/index of the rolling lowest value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/distance-to-lows |
 | `MACDFix` | MACD with fixed 12/26 moving-average periods. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/macd-moving-average-convergence-divergence-oscillator |
 | `MassIndex` | Range-expansion reversal indicator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/mass-index |
+| `MatchedFlowConformalSignal` | Intraday OHLCV matched-flow signal with conformal-style rolling error bands and target sizing diagnostics. | algorithms/matched_flow_conformal_signal.md |
 | `MedianPrice` | Average of high and low. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/median-price |
 | `MesaAdaptiveMovingAverage` | Ehlers MAMA/FAMA adaptive moving averages driven by dominant cycle phase. | https://trendspider.com/learning-center/what-is-the-mesa-adaptive-moving-average-mama/ |
 | `MidPoint` | Midpoint of rolling high and low values for one series. | https://vectoralpha.dev/projects/ta/indicators/midpoint/ |

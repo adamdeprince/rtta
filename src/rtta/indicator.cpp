@@ -1174,6 +1174,40 @@ struct SpreadFeaturesBatchResult {
     nb::object realized_spread;
 };
 
+struct MatchedFlowConformalSignalResult {
+    double prediction;
+    double radius;
+    double score;
+    double signal;
+    double target_fraction;
+    double alpha_flow;
+    double participation;
+    double flow_score;
+    double momentum;
+    double volatility;
+    double vwap_gap;
+    double rel_dollar_volume;
+    double max_trade_dollars;
+    double realized_error;
+};
+
+struct MatchedFlowConformalSignalBatchResult {
+    nb::object prediction;
+    nb::object radius;
+    nb::object score;
+    nb::object signal;
+    nb::object target_fraction;
+    nb::object alpha_flow;
+    nb::object participation;
+    nb::object flow_score;
+    nb::object momentum;
+    nb::object volatility;
+    nb::object vwap_gap;
+    nb::object rel_dollar_volume;
+    nb::object max_trade_dollars;
+    nb::object realized_error;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1353,6 +1387,15 @@ inline double result_checksum(const SpreadFeaturesResult &value) {
     return value.quoted_spread + value.effective_spread + value.realized_spread;
 }
 
+inline double result_checksum(const MatchedFlowConformalSignalResult &value) {
+    auto finite = [](double x) { return std::isfinite(x) ? x : 0.0; };
+    return finite(value.prediction) + finite(value.radius) + finite(value.score) + finite(value.signal) +
+           finite(value.target_fraction) + finite(value.alpha_flow) + finite(value.participation) +
+           finite(value.flow_score) + finite(value.momentum) + finite(value.volatility) +
+           finite(value.vwap_gap) + finite(value.rel_dollar_volume) + finite(value.max_trade_dollars) +
+           finite(value.realized_error);
+}
+
 class RollingExtremeQueue {
 public:
     RollingExtremeQueue(std::size_t capacity, bool maximum)
@@ -1459,11 +1502,13 @@ public:
           next_(0),
           count_(0),
           sequence_(0),
-          sum_(0.0) {}
+          sum_(0.0),
+          sumsq_(0.0) {}
 
     inline void push(double value) {
         if (count_ == values_.size()) {
             sum_ -= values_[next_];
+            sumsq_ -= values_[next_] * values_[next_];
         } else {
             ++count_;
         }
@@ -1472,6 +1517,7 @@ public:
         values_[next_] = value;
         next_ = (next_ + 1) % values_.size();
         sum_ += value;
+        sumsq_ += value * value;
 
         min_.push(value, index);
         max_.push(value, index);
@@ -1508,6 +1554,15 @@ public:
         return sum_;
     }
 
+    inline double stddev() const {
+        if (count_ < 2) {
+            return 0.0;
+        }
+        const double n = static_cast<double>(count_);
+        const double variance = std::max(0.0, (sumsq_ / n) - (sum_ / n) * (sum_ / n));
+        return std::sqrt(variance);
+    }
+
     inline double min() const {
         return min_.value();
     }
@@ -1522,6 +1577,17 @@ public:
 
     inline std::size_t max_offset() const {
         return max_.index() - oldest_index();
+    }
+
+    inline void reset() {
+        std::fill(values_.begin(), values_.end(), 0.0);
+        min_ = RollingExtremeQueue(values_.size() + 1, false);
+        max_ = RollingExtremeQueue(values_.size() + 1, true);
+        next_ = 0;
+        count_ = 0;
+        sequence_ = 0;
+        sum_ = 0.0;
+        sumsq_ = 0.0;
     }
 
 private:
@@ -1542,6 +1608,7 @@ private:
     std::size_t count_;
     std::size_t sequence_;
     double sum_;
+    double sumsq_;
 };
 
 class RollingBuffer {
@@ -1585,6 +1652,14 @@ public:
         return values_[(start + oldest_offset) % values_.size()];
     }
 
+    inline bool has_lag(std::size_t bars_back) const {
+        return bars_back > 0 && count_ >= bars_back;
+    }
+
+    inline double lag(std::size_t bars_back) const {
+        return has_lag(bars_back) ? at(count_ - bars_back) : nan();
+    }
+
     inline void reset() {
         next_ = 0;
         count_ = 0;
@@ -1593,6 +1668,115 @@ public:
 private:
     std::vector<double> values_;
     std::size_t next_;
+    std::size_t count_;
+};
+
+class RollingQuantile {
+public:
+    RollingQuantile(int window, double quantile)
+        : values_(static_cast<std::size_t>(std::max(window, 1)), nan()),
+          quantile_(quantile),
+          next_(0),
+          count_(0) {
+        if (window <= 0) {
+            throw nb::value_error("window must be positive");
+        }
+        if (quantile < 0.0 || quantile > 1.0) {
+            throw nb::value_error("quantile must be in [0, 1]");
+        }
+    }
+
+    inline void push(double value) {
+        if (!std::isfinite(value)) {
+            return;
+        }
+        values_[next_] = value;
+        next_ = (next_ + 1) % values_.size();
+        if (count_ < values_.size()) {
+            ++count_;
+        }
+    }
+
+    inline void reset() {
+        std::fill(values_.begin(), values_.end(), nan());
+        next_ = 0;
+        count_ = 0;
+    }
+
+    inline std::size_t size() const {
+        return count_;
+    }
+
+    inline double value() const {
+        std::vector<double> finite_values;
+        finite_values.reserve(count_);
+        for (std::size_t i = 0; i < count_; ++i) {
+            if (std::isfinite(values_[i])) {
+                finite_values.push_back(values_[i]);
+            }
+        }
+        if (finite_values.empty()) {
+            return nan();
+        }
+
+        const double index = quantile_ * static_cast<double>(finite_values.size() - 1);
+        const std::size_t selected = static_cast<std::size_t>(std::ceil(index));
+        std::nth_element(finite_values.begin(), finite_values.begin() + selected, finite_values.end());
+        return finite_values[selected];
+    }
+
+private:
+    std::vector<double> values_;
+    double quantile_;
+    std::size_t next_;
+    std::size_t count_;
+};
+
+class PendingMatchedFlowPredictions {
+public:
+    explicit PendingMatchedFlowPredictions(int horizon)
+        : close_(static_cast<std::size_t>(std::max(horizon, 1)), nan()),
+          prediction_(static_cast<std::size_t>(std::max(horizon, 1)), nan()),
+          head_(0),
+          count_(0) {
+        if (horizon <= 0) {
+            throw nb::value_error("horizon_bars must be positive");
+        }
+    }
+
+    inline bool matured() const {
+        return count_ >= close_.size();
+    }
+
+    inline std::pair<double, double> pop() {
+        const std::pair<double, double> value{close_[head_], prediction_[head_]};
+        head_ = (head_ + 1) % close_.size();
+        --count_;
+        return value;
+    }
+
+    inline void push(double close, double prediction) {
+        const std::size_t index = (head_ + count_) % close_.size();
+        close_[index] = close;
+        prediction_[index] = prediction;
+        if (count_ < close_.size()) {
+            ++count_;
+        } else {
+            head_ = (head_ + 1) % close_.size();
+        }
+    }
+
+    inline void reset() {
+        std::fill(close_.begin(), close_.end(), nan());
+        std::fill(prediction_.begin(), prediction_.end(), nan());
+        head_ = 0;
+        count_ = 0;
+    }
+
+private:
+    std::vector<double> close_;
+    std::vector<double> prediction_;
+    std::size_t head_;
     std::size_t count_;
 };
 
@@ -1626,6 +1810,13 @@ public:
 
     inline double sum() const {
         return sum_;
+    }
+
+    inline void reset() {
+        std::fill(values_.begin(), values_.end(), 0.0);
+        next_ = 0;
+        count_ = 0;
+        sum_ = 0.0;
     }
 
 private:
@@ -5503,6 +5694,418 @@ private:
     bool has_previous_trade_;
     bool fillna_;
     SpreadFeaturesResult last_;
+};
+
+class MatchedFlowConformalSignal {
+public:
+    MatchedFlowConformalSignal(
+        int horizon_bars = 12,
+        int calibration_window = 250,
+        double calibration_quantile = 0.80,
+        double entry_z = 1.0,
+        double cost_buffer = 0.0005,
+        double max_abs_target_fraction = 0.05,
+        double participation_cap = 0.02,
+        bool fillna = false)
+        : horizon_(checked_positive(horizon_bars, "horizon_bars")),
+          calibration_window_(checked_positive(calibration_window, "calibration_window")),
+          calibration_quantile_(checked_quantile(calibration_quantile)),
+          entry_z_(checked_positive_double(entry_z, "entry_z")),
+          cost_buffer_(checked_non_negative(cost_buffer, "cost_buffer")),
+          max_abs_target_fraction_(checked_non_negative(max_abs_target_fraction, "max_abs_target_fraction")),
+          participation_cap_(checked_non_negative(participation_cap, "participation_cap")),
+          fillna_(fillna),
+          close_lag_(std::max(64, horizon_bars + 16)),
+          ret_vol_6_(6),
+          ret_vol_12_(12),
+          alpha_flow_3_(3),
+          alpha_flow_6_(6),
+          alpha_flow_12_(12),
+          part_flow_3_(3),
+          part_flow_6_(6),
+          residuals_(calibration_window, calibration_quantile),
+          pending_(horizon_bars),
+          last_{nan(), nan(), nan(), 0.0, 0.0, nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    MatchedFlowConformalSignalResult update(
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        double normal_dollar_volume = nan(),
+        double market_cap = nan(),
+        bool reset_session = false) {
+        (void) open;
+        if (reset_session) {
+            reset_intraday();
+        }
+
+        MatchedFlowConformalSignalResult result{nan(), nan(), nan(), 0.0, 0.0, nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+        result.realized_error = mature_pending_prediction(close);
+
+        if (!positive(close) || !std::isfinite(volume)) {
+            last_ = result;
+            return last_;
+        }
+
+        const double positive_volume = std::max(0.0, volume);
+        const double dollar_volume = close * positive_volume;
+        const double normal_dv = effective_normal_dollar_volume(dollar_volume, normal_dollar_volume);
+        update_normal_dollar_volume_ewma(dollar_volume);
+
+        const double previous_close = close_lag_.has_lag(1) ? close_lag_.lag(1) : nan();
+        const double ret1 = positive(previous_close) ? std::log(close / previous_close) : 0.0;
+        const double signed_bar = signum(ret1);
+
+        session_price_volume_ += close * positive_volume;
+        session_volume_ += positive_volume;
+        const double session_vwap = positive(session_volume_) ? session_price_volume_ / session_volume_ : close;
+
+        result.vwap_gap = positive(session_vwap) ? close / session_vwap - 1.0 : 0.0;
+        result.rel_dollar_volume = dollar_volume / std::max(1e-12, normal_dv);
+        result.alpha_flow = signed_bar * dollar_volume / (positive(market_cap) ? market_cap : std::max(1e-12, normal_dv));
+        result.participation = signed_bar * dollar_volume / std::max(1e-12, normal_dv);
+        result.alpha_flow = std::clamp(result.alpha_flow, -10.0, 10.0);
+        result.participation = std::clamp(result.participation, -10.0, 10.0);
+
+        alpha_flow_3_.push(result.alpha_flow);
+        alpha_flow_6_.push(result.alpha_flow);
+        alpha_flow_12_.push(result.alpha_flow);
+        part_flow_3_.push(result.participation);
+        part_flow_6_.push(result.participation);
+        ret_vol_6_.push(ret1);
+        ret_vol_12_.push(ret1);
+
+        const double mom3 = positive(close_lag_.lag(3)) ? std::log(close / close_lag_.lag(3)) : nan();
+        const double mom6 = positive(close_lag_.lag(6)) ? std::log(close / close_lag_.lag(6)) : nan();
+        const double mom12 = positive(close_lag_.lag(12)) ? std::log(close / close_lag_.lag(12)) : nan();
+        result.momentum = 0.20 * zero_if_nan(mom3) + 0.35 * zero_if_nan(mom6) + 0.45 * zero_if_nan(mom12);
+        result.volatility = ret_vol_12_.stddev();
+
+        const double alpha_norm = positive(market_cap) ? 0.005 : 6.0;
+        result.flow_score = std::tanh(std::clamp(alpha_flow_12_.sum() / alpha_norm + 0.50 * part_flow_6_.sum() / 6.0, -20.0, 20.0));
+        const double activity_score = std::tanh(std::clamp((result.rel_dollar_volume - 1.0) / 2.0, -20.0, 20.0));
+        const double spread_proxy = positive(close) ? std::max(0.0, high - low) / close : 0.0;
+        const double spread_dampen = 1.0 / (1.0 + 25.0 * spread_proxy);
+        const bool features_ready = close_lag_.size() >= 12 && ret_vol_12_.full();
+
+        const double raw_prediction = 0.35 * result.momentum +
+                                      0.0010 * result.flow_score +
+                                      0.05 * zero_if_nan(result.vwap_gap) +
+                                      0.0005 * activity_score;
+        result.prediction = spread_dampen * raw_prediction;
+
+        const double fallback_radius = std::max(
+            2.0 * cost_buffer_,
+            std::max(0.0007, 1.25 * result.volatility * std::sqrt(static_cast<double>(horizon_))));
+        const bool calibration_ready = residuals_.size() >= std::min<std::size_t>(30, calibration_window_);
+        result.radius = calibration_ready ? std::max(residuals_.value(), cost_buffer_) : fallback_radius;
+
+        if (!fillna_ && (!features_ready || !calibration_ready)) {
+            result.prediction = nan();
+            result.radius = nan();
+            result.score = nan();
+            result.signal = 0.0;
+            result.target_fraction = 0.0;
+        } else {
+            const double denominator = result.radius + cost_buffer_ + 1e-12;
+            result.score = result.prediction / denominator;
+            if (result.prediction > entry_z_ * denominator) {
+                result.signal = 1.0;
+            } else if (result.prediction < -entry_z_ * denominator) {
+                result.signal = -1.0;
+            } else {
+                result.signal = 0.0;
+            }
+            result.target_fraction = result.signal == 0.0
+                ? 0.0
+                : max_abs_target_fraction_ * std::clamp(result.score / 3.0, -1.0, 1.0);
+        }
+
+        result.max_trade_dollars = participation_cap_ * normal_dv;
+        if (features_ready && std::isfinite(raw_prediction)) {
+            pending_.push(close, spread_dampen * raw_prediction);
+        }
+        close_lag_.push(close);
+
+        last_ = result;
+        return last_;
+    }
+
+    void advance(
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        double normal_dollar_volume = nan(),
+        double market_cap = nan(),
+        bool reset_session = false) {
+        (void) update(open, high, low, close, volume, normal_dollar_volume, market_cap, reset_session);
+    }
+
+    const MatchedFlowConformalSignalResult &last() const {
+        return last_;
+    }
+
+    void reset() {
+        reset_intraday();
+        residuals_.reset();
+        normal_dollar_ewma_ = nan();
+        normal_dollar_ewma_ready_ = false;
+        last_ = MatchedFlowConformalSignalResult{nan(), nan(), nan(), 0.0, 0.0, nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+    }
+
+    void reset_intraday() {
+        close_lag_.reset();
+        ret_vol_6_.reset();
+        ret_vol_12_.reset();
+        alpha_flow_3_.reset();
+        alpha_flow_6_.reset();
+        alpha_flow_12_.reset();
+        part_flow_3_.reset();
+        part_flow_6_.reset();
+        pending_.reset();
+        session_price_volume_ = 0.0;
+        session_volume_ = 0.0;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    MatchedFlowConformalSignalBatchResult batch_array(
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume) {
+        return batch_array_with_optional<Array0, Array1, Array2, Array3, Array4, Array0, Array0, Array0>(
+            open, high, low, close, volume, nullptr, nullptr, nullptr);
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4, typename Array5, typename Array6, typename Array7>
+    MatchedFlowConformalSignalBatchResult batch_array(
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume,
+        const Array5 &normal_dollar_volume,
+        const Array6 &market_cap,
+        const Array7 &reset_session) {
+        return batch_array_with_optional(open, high, low, close, volume, &normal_dollar_volume, &market_cap, &reset_session);
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_update_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close, const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            checksum += result_checksum(update(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i])));
+        }
+        return checksum;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_advance_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close, const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            advance(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i]));
+            checksum += result_checksum(last_);
+        }
+        return checksum;
+    }
+
+private:
+    static int checked_positive(int value, const char *name) {
+        if (value <= 0) {
+            throw nb::value_error((std::string(name) + " must be positive").c_str());
+        }
+        return value;
+    }
+
+    static double checked_positive_double(double value, const char *name) {
+        if (value <= 0.0) {
+            throw nb::value_error((std::string(name) + " must be positive").c_str());
+        }
+        return value;
+    }
+
+    static double checked_non_negative(double value, const char *name) {
+        if (value < 0.0) {
+            throw nb::value_error((std::string(name) + " must be non-negative").c_str());
+        }
+        return value;
+    }
+
+    static double checked_quantile(double value) {
+        if (value < 0.0 || value > 1.0) {
+            throw nb::value_error("calibration_quantile must be in [0, 1]");
+        }
+        return value;
+    }
+
+    static inline bool positive(double value) {
+        return std::isfinite(value) && value > 0.0;
+    }
+
+    static inline double zero_if_nan(double value) {
+        return std::isfinite(value) ? value : 0.0;
+    }
+
+    static inline double signum(double value) {
+        return static_cast<double>((value > 0.0) - (value < 0.0));
+    }
+
+    double effective_normal_dollar_volume(double dollar_volume, double supplied) const {
+        if (positive(supplied)) {
+            return supplied;
+        }
+        if (normal_dollar_ewma_ready_ && positive(normal_dollar_ewma_)) {
+            return normal_dollar_ewma_;
+        }
+        return positive(dollar_volume) ? dollar_volume : 1.0;
+    }
+
+    void update_normal_dollar_volume_ewma(double dollar_volume) {
+        if (!positive(dollar_volume)) {
+            return;
+        }
+        constexpr double alpha = 0.05;
+        if (!normal_dollar_ewma_ready_) {
+            normal_dollar_ewma_ = dollar_volume;
+            normal_dollar_ewma_ready_ = true;
+        } else {
+            normal_dollar_ewma_ = alpha * dollar_volume + (1.0 - alpha) * normal_dollar_ewma_;
+        }
+    }
+
+    double mature_pending_prediction(double current_close) {
+        if (!positive(current_close) || !pending_.matured()) {
+            return nan();
+        }
+        const auto [old_close, old_prediction] = pending_.pop();
+        if (!positive(old_close) || !std::isfinite(old_prediction)) {
+            return nan();
+        }
+        const double realized = std::log(current_close / old_close);
+        const double error = std::abs(realized - old_prediction);
+        residuals_.push(error);
+        return error;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4, typename Array5, typename Array6, typename Array7>
+    MatchedFlowConformalSignalBatchResult batch_array_with_optional(
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume,
+        const Array5 *normal_dollar_volume,
+        const Array6 *market_cap,
+        const Array7 *reset_session) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        if (normal_dollar_volume != nullptr) {
+            require_same_size(size, normal_dollar_volume->shape(0));
+        }
+        if (market_cap != nullptr) {
+            require_same_size(size, market_cap->shape(0));
+        }
+        if (reset_session != nullptr) {
+            require_same_size(size, reset_session->shape(0));
+        }
+
+        std::vector<double> prediction(size), radius(size), score(size), signal(size), target_fraction(size);
+        std::vector<double> alpha_flow(size), participation(size), flow_score(size), momentum(size), volatility(size);
+        std::vector<double> vwap_gap(size), rel_dollar_volume(size), max_trade_dollars(size), realized_error(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            const MatchedFlowConformalSignalResult out = update(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i]),
+                normal_dollar_volume == nullptr ? nan() : static_cast<double>(normal_dollar_volume->data()[i]),
+                market_cap == nullptr ? nan() : static_cast<double>(market_cap->data()[i]),
+                reset_session != nullptr && static_cast<double>(reset_session->data()[i]) != 0.0);
+            prediction[i] = out.prediction;
+            radius[i] = out.radius;
+            score[i] = out.score;
+            signal[i] = out.signal;
+            target_fraction[i] = out.target_fraction;
+            alpha_flow[i] = out.alpha_flow;
+            participation[i] = out.participation;
+            flow_score[i] = out.flow_score;
+            momentum[i] = out.momentum;
+            volatility[i] = out.volatility;
+            vwap_gap[i] = out.vwap_gap;
+            rel_dollar_volume[i] = out.rel_dollar_volume;
+            max_trade_dollars[i] = out.max_trade_dollars;
+            realized_error[i] = out.realized_error;
+        }
+        return {
+            make_array(std::move(prediction)),
+            make_array(std::move(radius)),
+            make_array(std::move(score)),
+            make_array(std::move(signal)),
+            make_array(std::move(target_fraction)),
+            make_array(std::move(alpha_flow)),
+            make_array(std::move(participation)),
+            make_array(std::move(flow_score)),
+            make_array(std::move(momentum)),
+            make_array(std::move(volatility)),
+            make_array(std::move(vwap_gap)),
+            make_array(std::move(rel_dollar_volume)),
+            make_array(std::move(max_trade_dollars)),
+            make_array(std::move(realized_error)),
+        };
+    }
+
+    std::size_t horizon_;
+    std::size_t calibration_window_;
+    double calibration_quantile_;
+    double entry_z_;
+    double cost_buffer_;
+    double max_abs_target_fraction_;
+    double participation_cap_;
+    bool fillna_;
+    RollingBuffer close_lag_;
+    RollingWindow ret_vol_6_;
+    RollingWindow ret_vol_12_;
+    RollingSumWindow alpha_flow_3_;
+    RollingSumWindow alpha_flow_6_;
+    RollingSumWindow alpha_flow_12_;
+    RollingSumWindow part_flow_3_;
+    RollingSumWindow part_flow_6_;
+    RollingQuantile residuals_;
+    PendingMatchedFlowPredictions pending_;
+    double session_price_volume_ = 0.0;
+    double session_volume_ = 0.0;
+    double normal_dollar_ewma_ = nan();
+    bool normal_dollar_ewma_ready_ = false;
+    MatchedFlowConformalSignalResult last_;
 };
 
 class ChaikinMoneyFlow {
@@ -12802,6 +13405,14 @@ inline double call_advance_checksum(Indicator &self, double arg0, double arg1, d
         return self.last().FIELD; \
     })
 
+#define RTTA_FIELD5(TYPE, FIELD, ARG0, ARG1, ARG2, ARG3, ARG4) \
+    .def("update_" #FIELD, [](TYPE &self, double ARG0, double ARG1, double ARG2, double ARG3, double ARG4) { \
+        return self.update(ARG0, ARG1, ARG2, ARG3, ARG4).FIELD; \
+    }, nb::arg(#ARG0), nb::arg(#ARG1), nb::arg(#ARG2), nb::arg(#ARG3), nb::arg(#ARG4)) \
+    .def("last_" #FIELD, [](const TYPE &self) { \
+        return self.last().FIELD; \
+    })
+
 #define RTTA_REPLAY_OUTPUTS1(TYPE, ARG0, BATCH_FUNC) \
     .def("replay_update_outputs", [](TYPE &self, const InputArray &ARG0) { \
         return BATCH_FUNC(self, ARG0); \
@@ -13333,6 +13944,38 @@ NB_MODULE(indicator, m) {
         .def_ro("quoted_spread", &SpreadFeaturesBatchResult::quoted_spread)
         .def_ro("effective_spread", &SpreadFeaturesBatchResult::effective_spread)
         .def_ro("realized_spread", &SpreadFeaturesBatchResult::realized_spread);
+
+    nb::class_<MatchedFlowConformalSignalResult>(m, "MatchedFlowConformalSignalResult")
+        .def_ro("prediction", &MatchedFlowConformalSignalResult::prediction)
+        .def_ro("radius", &MatchedFlowConformalSignalResult::radius)
+        .def_ro("score", &MatchedFlowConformalSignalResult::score)
+        .def_ro("signal", &MatchedFlowConformalSignalResult::signal)
+        .def_ro("target_fraction", &MatchedFlowConformalSignalResult::target_fraction)
+        .def_ro("alpha_flow", &MatchedFlowConformalSignalResult::alpha_flow)
+        .def_ro("participation", &MatchedFlowConformalSignalResult::participation)
+        .def_ro("flow_score", &MatchedFlowConformalSignalResult::flow_score)
+        .def_ro("momentum", &MatchedFlowConformalSignalResult::momentum)
+        .def_ro("volatility", &MatchedFlowConformalSignalResult::volatility)
+        .def_ro("vwap_gap", &MatchedFlowConformalSignalResult::vwap_gap)
+        .def_ro("rel_dollar_volume", &MatchedFlowConformalSignalResult::rel_dollar_volume)
+        .def_ro("max_trade_dollars", &MatchedFlowConformalSignalResult::max_trade_dollars)
+        .def_ro("realized_error", &MatchedFlowConformalSignalResult::realized_error);
+
+    nb::class_<MatchedFlowConformalSignalBatchResult>(m, "MatchedFlowConformalSignalBatchResult")
+        .def_ro("prediction", &MatchedFlowConformalSignalBatchResult::prediction)
+        .def_ro("radius", &MatchedFlowConformalSignalBatchResult::radius)
+        .def_ro("score", &MatchedFlowConformalSignalBatchResult::score)
+        .def_ro("signal", &MatchedFlowConformalSignalBatchResult::signal)
+        .def_ro("target_fraction", &MatchedFlowConformalSignalBatchResult::target_fraction)
+        .def_ro("alpha_flow", &MatchedFlowConformalSignalBatchResult::alpha_flow)
+        .def_ro("participation", &MatchedFlowConformalSignalBatchResult::participation)
+        .def_ro("flow_score", &MatchedFlowConformalSignalBatchResult::flow_score)
+        .def_ro("momentum", &MatchedFlowConformalSignalBatchResult::momentum)
+        .def_ro("volatility", &MatchedFlowConformalSignalBatchResult::volatility)
+        .def_ro("vwap_gap", &MatchedFlowConformalSignalBatchResult::vwap_gap)
+        .def_ro("rel_dollar_volume", &MatchedFlowConformalSignalBatchResult::rel_dollar_volume)
+        .def_ro("max_trade_dollars", &MatchedFlowConformalSignalBatchResult::max_trade_dollars)
+        .def_ro("realized_error", &MatchedFlowConformalSignalBatchResult::realized_error);
 
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
@@ -15893,6 +16536,151 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(quoted_spread)),
                 make_array(std::move(effective_spread)),
                 make_array(std::move(realized_spread)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<MatchedFlowConformalSignal>(m, "MatchedFlowConformalSignal")
+        .def(nb::init<int, int, double, double, double, double, double, bool>(),
+             nb::arg("horizon_bars") = 12,
+             nb::arg("calibration_window") = 250,
+             nb::arg("calibration_quantile") = 0.80,
+             nb::arg("entry_z") = 1.0,
+             nb::arg("cost_buffer") = 0.0005,
+             nb::arg("max_abs_target_fraction") = 0.05,
+             nb::arg("participation_cap") = 0.02,
+             nb::arg("fillna") = false)
+        .def("update",
+             &MatchedFlowConformalSignal::update,
+             nb::arg("open"),
+             nb::arg("high"),
+             nb::arg("low"),
+             nb::arg("close"),
+             nb::arg("volume"),
+             nb::arg("normal_dollar_volume") = nan(),
+             nb::arg("market_cap") = nan(),
+             nb::arg("reset_session") = false)
+        .def("advance",
+             &MatchedFlowConformalSignal::advance,
+             nb::arg("open"),
+             nb::arg("high"),
+             nb::arg("low"),
+             nb::arg("close"),
+             nb::arg("volume"),
+             nb::arg("normal_dollar_volume") = nan(),
+             nb::arg("market_cap") = nan(),
+             nb::arg("reset_session") = false)
+        .def("last", &MatchedFlowConformalSignal::last)
+        .def("reset", &MatchedFlowConformalSignal::reset)
+        .def("reset_intraday", &MatchedFlowConformalSignal::reset_intraday)
+        RTTA_FIELD5(MatchedFlowConformalSignal, prediction, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, radius, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, score, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, signal, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, target_fraction, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, alpha_flow, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, participation, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, flow_score, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, momentum, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, volatility, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, vwap_gap, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, rel_dollar_volume, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, max_trade_dollars, open, high, low, close, volume)
+        RTTA_FIELD5(MatchedFlowConformalSignal, realized_error, open, high, low, close, volume)
+        .def("replay_update", [](MatchedFlowConformalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.replay_update_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update", [](MatchedFlowConformalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.replay_update_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_advance", [](MatchedFlowConformalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.replay_advance_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_advance", [](MatchedFlowConformalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.replay_advance_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update_outputs", [](MatchedFlowConformalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update_outputs", [](MatchedFlowConformalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](MatchedFlowConformalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](MatchedFlowConformalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](MatchedFlowConformalSignal &self, nb::iterable records) {
+            if (table_has_column(records, "open")) {
+                return dispatch_table5(self, records, "open", "high", "low", "close", "volume", [](auto &indicator, const auto &open, const auto &high, const auto &low, const auto &close, const auto &volume) {
+                    return indicator.batch_array(open, high, low, close, volume);
+                });
+            }
+
+            std::vector<double> prediction = make_record_output(records);
+            std::vector<double> radius;
+            std::vector<double> score;
+            std::vector<double> signal;
+            std::vector<double> target_fraction;
+            std::vector<double> alpha_flow;
+            std::vector<double> participation;
+            std::vector<double> flow_score;
+            std::vector<double> momentum;
+            std::vector<double> volatility;
+            std::vector<double> vwap_gap;
+            std::vector<double> rel_dollar_volume;
+            std::vector<double> max_trade_dollars;
+            std::vector<double> realized_error;
+            radius.reserve(prediction.capacity());
+            score.reserve(prediction.capacity());
+            signal.reserve(prediction.capacity());
+            target_fraction.reserve(prediction.capacity());
+            alpha_flow.reserve(prediction.capacity());
+            participation.reserve(prediction.capacity());
+            flow_score.reserve(prediction.capacity());
+            momentum.reserve(prediction.capacity());
+            volatility.reserve(prediction.capacity());
+            vwap_gap.reserve(prediction.capacity());
+            rel_dollar_volume.reserve(prediction.capacity());
+            max_trade_dollars.reserve(prediction.capacity());
+            realized_error.reserve(prediction.capacity());
+            for (nb::handle record : records) {
+                const MatchedFlowConformalSignalResult out = self.update(
+                    record_value(record, "open", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2),
+                    record_value(record, "close", 3),
+                    record_value(record, "volume", 4));
+                prediction.push_back(out.prediction);
+                radius.push_back(out.radius);
+                score.push_back(out.score);
+                signal.push_back(out.signal);
+                target_fraction.push_back(out.target_fraction);
+                alpha_flow.push_back(out.alpha_flow);
+                participation.push_back(out.participation);
+                flow_score.push_back(out.flow_score);
+                momentum.push_back(out.momentum);
+                volatility.push_back(out.volatility);
+                vwap_gap.push_back(out.vwap_gap);
+                rel_dollar_volume.push_back(out.rel_dollar_volume);
+                max_trade_dollars.push_back(out.max_trade_dollars);
+                realized_error.push_back(out.realized_error);
+            }
+            return MatchedFlowConformalSignalBatchResult{
+                make_array(std::move(prediction)),
+                make_array(std::move(radius)),
+                make_array(std::move(score)),
+                make_array(std::move(signal)),
+                make_array(std::move(target_fraction)),
+                make_array(std::move(alpha_flow)),
+                make_array(std::move(participation)),
+                make_array(std::move(flow_score)),
+                make_array(std::move(momentum)),
+                make_array(std::move(volatility)),
+                make_array(std::move(vwap_gap)),
+                make_array(std::move(rel_dollar_volume)),
+                make_array(std::move(max_trade_dollars)),
+                make_array(std::move(realized_error)),
             };
         }, nb::arg("records"));
 
