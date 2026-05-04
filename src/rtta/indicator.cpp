@@ -1208,6 +1208,54 @@ struct MatchedFlowConformalSignalBatchResult {
     nb::object realized_error;
 };
 
+struct ClosePressureReversalSignalResult {
+    double bar_number;
+    double rod_return;
+    double frozen_rod_return;
+    double loser_z;
+    double winner_z;
+    double range_z;
+    double volume_shock;
+    double transaction_shock;
+    double vwap_gap;
+    double pressure_score;
+    double prediction;
+    double radius;
+    double score;
+    double signal;
+    double target_fraction;
+    double max_trade_dollars;
+    double realized_error;
+    bool entry_window;
+    bool exit_window;
+    bool frozen;
+    bool news_guard;
+};
+
+struct ClosePressureReversalSignalBatchResult {
+    nb::object bar_number;
+    nb::object rod_return;
+    nb::object frozen_rod_return;
+    nb::object loser_z;
+    nb::object winner_z;
+    nb::object range_z;
+    nb::object volume_shock;
+    nb::object transaction_shock;
+    nb::object vwap_gap;
+    nb::object pressure_score;
+    nb::object prediction;
+    nb::object radius;
+    nb::object score;
+    nb::object signal;
+    nb::object target_fraction;
+    nb::object max_trade_dollars;
+    nb::object realized_error;
+    nb::object entry_window;
+    nb::object exit_window;
+    nb::object frozen;
+    nb::object news_guard;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1394,6 +1442,18 @@ inline double result_checksum(const MatchedFlowConformalSignalResult &value) {
            finite(value.flow_score) + finite(value.momentum) + finite(value.volatility) +
            finite(value.vwap_gap) + finite(value.rel_dollar_volume) + finite(value.max_trade_dollars) +
            finite(value.realized_error);
+}
+
+inline double result_checksum(const ClosePressureReversalSignalResult &value) {
+    auto finite = [](double x) { return std::isfinite(x) ? x : 0.0; };
+    return finite(value.bar_number) + finite(value.rod_return) + finite(value.frozen_rod_return) +
+           finite(value.loser_z) + finite(value.winner_z) + finite(value.range_z) +
+           finite(value.volume_shock) + finite(value.transaction_shock) + finite(value.vwap_gap) +
+           finite(value.pressure_score) + finite(value.prediction) + finite(value.radius) +
+           finite(value.score) + finite(value.signal) + finite(value.target_fraction) +
+           finite(value.max_trade_dollars) + finite(value.realized_error) +
+           (value.entry_window ? 1.0 : 0.0) + (value.exit_window ? 1.0 : 0.0) +
+           (value.frozen ? 1.0 : 0.0) + (value.news_guard ? 1.0 : 0.0);
 }
 
 class RollingExtremeQueue {
@@ -6106,6 +6166,587 @@ private:
     double normal_dollar_ewma_ = nan();
     bool normal_dollar_ewma_ready_ = false;
     MatchedFlowConformalSignalResult last_;
+};
+
+class ClosePressureReversalSignal {
+public:
+    ClosePressureReversalSignal(
+        int cutoff_after_bars = 66,
+        int entry_start_after_bars = 72,
+        int entry_end_after_bars = 75,
+        int exit_after_bars = 77,
+        int calibration_window = 120,
+        double calibration_quantile = 0.80,
+        double reversal_slope = 0.025,
+        double entry_z = 1.0,
+        double cost_buffer = 0.0005,
+        double max_abs_target_fraction = 0.04,
+        double participation_cap = 0.02,
+        bool allow_short_winners = false,
+        bool fillna = false,
+        double max_loser_z = 6.0,
+        double max_range_z = 5.0,
+        double max_volume_shock = 6.0)
+        : cutoff_after_bars_(checked_positive(cutoff_after_bars, "cutoff_after_bars")),
+          entry_start_after_bars_(checked_non_negative_int(entry_start_after_bars, "entry_start_after_bars")),
+          entry_end_after_bars_(checked_non_negative_int(entry_end_after_bars, "entry_end_after_bars")),
+          exit_after_bars_(checked_positive(exit_after_bars, "exit_after_bars")),
+          calibration_window_(checked_positive(calibration_window, "calibration_window")),
+          calibration_quantile_(checked_quantile(calibration_quantile)),
+          min_calibration_count_(std::min<std::size_t>(10, static_cast<std::size_t>(calibration_window_))),
+          reversal_slope_(checked_non_negative(reversal_slope, "reversal_slope")),
+          entry_z_(checked_positive_double(entry_z, "entry_z")),
+          cost_buffer_(checked_non_negative(cost_buffer, "cost_buffer")),
+          max_abs_target_fraction_(checked_non_negative(max_abs_target_fraction, "max_abs_target_fraction")),
+          participation_cap_(checked_non_negative(participation_cap, "participation_cap")),
+          allow_short_winners_(allow_short_winners),
+          fillna_(fillna),
+          max_loser_z_(checked_non_negative(max_loser_z, "max_loser_z")),
+          max_range_z_(checked_non_negative(max_range_z, "max_range_z")),
+          max_volume_shock_(checked_non_negative(max_volume_shock, "max_volume_shock")),
+          residuals_(calibration_window_, calibration_quantile_),
+          last_(empty_result()) {
+        if (entry_start_after_bars_ > entry_end_after_bars_) {
+            throw nb::value_error("entry_start_after_bars must be <= entry_end_after_bars");
+        }
+        if (entry_end_after_bars_ >= exit_after_bars_) {
+            throw nb::value_error("entry_end_after_bars must be < exit_after_bars");
+        }
+    }
+
+    ClosePressureReversalSignalResult update(
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        double vwap = nan(),
+        double transactions = nan(),
+        double previous_session_close = nan(),
+        double normal_dollar_volume = nan(),
+        double normal_transactions = nan(),
+        bool reset_session = false) {
+        (void) open;
+        if (reset_session) {
+            reset_intraday(previous_session_close);
+        } else if (positive(previous_session_close) && !positive(anchor_close_)) {
+            anchor_close_ = previous_session_close;
+        }
+
+        ClosePressureReversalSignalResult result = empty_result();
+        const std::size_t bar_number = bar_count_ + 1;
+        result.bar_number = static_cast<double>(bar_number);
+
+        if (!positive(close)) {
+            last_ = result;
+            return last_;
+        }
+        if (!positive(anchor_close_)) {
+            anchor_close_ = close;
+        }
+
+        const double positive_volume = std::max(0.0, zero_if_nan(volume));
+        const double bar_vwap = positive(vwap) ? vwap : close;
+        const double dollar_volume = close * positive_volume;
+
+        session_price_volume_ += bar_vwap * positive_volume;
+        session_volume_ += positive_volume;
+        const double session_vwap = positive(session_volume_) ? session_price_volume_ / session_volume_ : close;
+        const double ret1 = positive(previous_close_) ? std::log(close / previous_close_) : 0.0;
+
+        if (bar_number <= cutoff_after_bars_) {
+            ret_sum_to_cutoff_ += ret1;
+            ret_sumsq_to_cutoff_ += ret1 * ret1;
+            ++ret_count_to_cutoff_;
+        }
+
+        result.rod_return = std::log(close / anchor_close_);
+        if (!frozen_ && bar_number >= cutoff_after_bars_) {
+            frozen_rod_return_ = result.rod_return;
+            frozen_ = true;
+        }
+        result.frozen = frozen_;
+        result.frozen_rod_return = frozen_ ? frozen_rod_return_ : result.rod_return;
+
+        const double n = static_cast<double>(std::max<std::size_t>(1, ret_count_to_cutoff_));
+        const double mean_ret = ret_sum_to_cutoff_ / n;
+        const double ret_var = ret_count_to_cutoff_ > 1
+            ? std::max(0.0, ret_sumsq_to_cutoff_ / n - mean_ret * mean_ret)
+            : 0.0;
+        const double intraday_vol = std::max(1e-6, std::sqrt(ret_var * n));
+        const double loser_return = std::max(0.0, -result.frozen_rod_return);
+        const double winner_return = std::max(0.0, result.frozen_rod_return);
+        result.loser_z = loser_return / intraday_vol;
+        result.winner_z = winner_return / intraday_vol;
+
+        const double effective_normal_dv = positive(normal_dollar_volume)
+            ? normal_dollar_volume
+            : effective_normal_dollar_volume(dollar_volume);
+        const double effective_normal_tx = positive(normal_transactions)
+            ? normal_transactions
+            : effective_normal_transactions(transactions);
+
+        result.volume_shock = log_ratio(std::max(1e-12, dollar_volume), std::max(1e-12, effective_normal_dv));
+        result.transaction_shock = positive(transactions)
+            ? log_ratio(std::max(1e-12, transactions), std::max(1e-12, effective_normal_tx))
+            : 0.0;
+        result.vwap_gap = positive(session_vwap) ? close / session_vwap - 1.0 : 0.0;
+
+        const double range = positive(close) ? std::max(0.0, high - low) / close : 0.0;
+        result.range_z = range_ewma_ready_ && positive(range_ewma_)
+            ? range / std::max(1e-6, range_ewma_)
+            : 1.0;
+
+        const double volume_mult = 1.0 + 0.20 * std::clamp(result.volume_shock, -2.0, 4.0);
+        const double tx_mult = 1.0 + 0.10 * std::clamp(result.transaction_shock, -2.0, 4.0);
+        const double below_vwap = std::max(0.0, -result.vwap_gap);
+        const double above_vwap = std::max(0.0, result.vwap_gap);
+        const double long_vwap_mult = 1.0 + 0.50 * std::clamp(below_vwap / intraday_vol, 0.0, 3.0);
+        const double short_vwap_mult = 1.0 + 0.50 * std::clamp(above_vwap / intraday_vol, 0.0, 3.0);
+        const double long_pressure_score = result.loser_z * volume_mult * tx_mult * long_vwap_mult;
+        const double short_pressure_score = result.winner_z * volume_mult * tx_mult * short_vwap_mult;
+        result.pressure_score = long_pressure_score;
+
+        const double long_prediction =
+            reversal_slope_ * loser_return * std::clamp(long_pressure_score / 2.0, 0.0, 2.0);
+        const double short_prediction =
+            -0.50 * reversal_slope_ * winner_return * std::clamp(short_pressure_score / 2.0, 0.0, 2.0);
+        double internal_prediction = long_prediction;
+        if (allow_short_winners_ && std::abs(short_prediction) > std::abs(long_prediction)) {
+            internal_prediction = short_prediction;
+            result.pressure_score = short_pressure_score;
+        }
+
+        result.news_guard =
+            result.loser_z > max_loser_z_ ||
+            result.winner_z > max_loser_z_ ||
+            result.range_z > max_range_z_ ||
+            result.volume_shock > max_volume_shock_;
+        result.entry_window = bar_number >= entry_start_after_bars_ && bar_number <= entry_end_after_bars_;
+        result.exit_window = bar_number >= exit_after_bars_;
+
+        const double fallback_radius = std::max(2.0 * cost_buffer_, std::max(0.0005, 1.25 * intraday_vol));
+        const bool calibration_ready = residuals_.size() >= min_calibration_count_;
+        const double internal_radius = calibration_ready ? std::max(residuals_.value(), cost_buffer_) : fallback_radius;
+        const bool features_ready = frozen_ && ret_count_to_cutoff_ >= 5;
+
+        result.prediction = internal_prediction;
+        result.radius = internal_radius;
+        if (!fillna_ && (!features_ready || !calibration_ready)) {
+            result.prediction = nan();
+            result.radius = nan();
+            result.score = nan();
+            result.signal = 0.0;
+            result.target_fraction = 0.0;
+        } else {
+            const double denominator = internal_radius + cost_buffer_ + 1e-12;
+            result.score = internal_prediction / denominator;
+            if (result.exit_window || result.news_guard || !result.entry_window) {
+                result.signal = 0.0;
+                result.target_fraction = 0.0;
+            } else if (internal_prediction > entry_z_ * denominator) {
+                result.signal = 1.0;
+                result.target_fraction = std::clamp(
+                    max_abs_target_fraction_ * result.score / 3.0,
+                    0.0,
+                    max_abs_target_fraction_);
+            } else if (allow_short_winners_ && internal_prediction < -entry_z_ * denominator) {
+                result.signal = -1.0;
+                result.target_fraction = std::clamp(
+                    max_abs_target_fraction_ * result.score / 3.0,
+                    -max_abs_target_fraction_,
+                    0.0);
+            } else {
+                result.signal = 0.0;
+                result.target_fraction = 0.0;
+            }
+        }
+
+        result.max_trade_dollars = participation_cap_ * effective_normal_dv;
+        if (result.exit_window && pending_prediction_valid_) {
+            const double realized = std::log(close / pending_entry_close_);
+            result.realized_error = std::abs(realized - pending_prediction_);
+            residuals_.push(result.realized_error);
+            pending_prediction_valid_ = false;
+        }
+        if (result.entry_window && !pending_prediction_valid_ && features_ready && std::isfinite(internal_prediction)) {
+            pending_entry_close_ = close;
+            pending_prediction_ = internal_prediction;
+            pending_prediction_valid_ = true;
+        }
+
+        update_ewmas(dollar_volume, transactions, range);
+        previous_close_ = close;
+        bar_count_ = bar_number;
+        last_ = result;
+        return last_;
+    }
+
+    void advance(
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        double vwap = nan(),
+        double transactions = nan(),
+        double previous_session_close = nan(),
+        double normal_dollar_volume = nan(),
+        double normal_transactions = nan(),
+        bool reset_session = false) {
+        (void) update(open, high, low, close, volume, vwap, transactions, previous_session_close, normal_dollar_volume, normal_transactions, reset_session);
+    }
+
+    const ClosePressureReversalSignalResult &last() const {
+        return last_;
+    }
+
+    void reset() {
+        reset_intraday(nan());
+        residuals_.reset();
+        normal_dollar_ewma_ = nan();
+        normal_dollar_ewma_ready_ = false;
+        normal_tx_ewma_ = nan();
+        normal_tx_ewma_ready_ = false;
+        range_ewma_ = nan();
+        range_ewma_ready_ = false;
+        last_ = empty_result();
+    }
+
+    void reset_session(double previous_session_close = nan()) {
+        reset_intraday(previous_session_close);
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    ClosePressureReversalSignalBatchResult batch_array(
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        std::vector<double> bar_number(size), rod_return(size), frozen_rod_return(size), loser_z(size), winner_z(size);
+        std::vector<double> range_z(size), volume_shock(size), transaction_shock(size), vwap_gap(size), pressure_score(size);
+        std::vector<double> prediction(size), radius(size), score(size), signal(size), target_fraction(size);
+        std::vector<double> max_trade_dollars(size), realized_error(size), entry_window(size), exit_window(size), frozen(size), news_guard(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            const ClosePressureReversalSignalResult out = update(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i]));
+            assign_batch(i, out, bar_number, rod_return, frozen_rod_return, loser_z, winner_z, range_z, volume_shock,
+                         transaction_shock, vwap_gap, pressure_score, prediction, radius, score, signal, target_fraction,
+                         max_trade_dollars, realized_error, entry_window, exit_window, frozen, news_guard);
+        }
+        return make_batch_result(
+            bar_number, rod_return, frozen_rod_return, loser_z, winner_z, range_z, volume_shock,
+            transaction_shock, vwap_gap, pressure_score, prediction, radius, score, signal, target_fraction,
+            max_trade_dollars, realized_error, entry_window, exit_window, frozen, news_guard);
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_update_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close, const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            checksum += result_checksum(update(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i])));
+        }
+        return checksum;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_advance_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close, const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            advance(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i]));
+            checksum += result_checksum(last_);
+        }
+        return checksum;
+    }
+
+private:
+    static int checked_positive(int value, const char *name) {
+        if (value <= 0) {
+            throw nb::value_error((std::string(name) + " must be positive").c_str());
+        }
+        return value;
+    }
+
+    static int checked_non_negative_int(int value, const char *name) {
+        if (value < 0) {
+            throw nb::value_error((std::string(name) + " must be non-negative").c_str());
+        }
+        return value;
+    }
+
+    static double checked_positive_double(double value, const char *name) {
+        if (value <= 0.0) {
+            throw nb::value_error((std::string(name) + " must be positive").c_str());
+        }
+        return value;
+    }
+
+    static double checked_non_negative(double value, const char *name) {
+        if (value < 0.0) {
+            throw nb::value_error((std::string(name) + " must be non-negative").c_str());
+        }
+        return value;
+    }
+
+    static double checked_quantile(double value) {
+        if (value < 0.0 || value > 1.0) {
+            throw nb::value_error("calibration_quantile must be in [0, 1]");
+        }
+        return value;
+    }
+
+    static inline bool positive(double value) {
+        return std::isfinite(value) && value > 0.0;
+    }
+
+    static inline double zero_if_nan(double value) {
+        return std::isfinite(value) ? value : 0.0;
+    }
+
+    static inline double log_ratio(double numerator, double denominator) {
+        return positive(numerator) && positive(denominator) ? std::log(numerator / denominator) : 0.0;
+    }
+
+    static ClosePressureReversalSignalResult empty_result() {
+        return {
+            0.0,
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            0.0,
+            0.0,
+            nan(),
+            nan(),
+            false,
+            false,
+            false,
+            false,
+        };
+    }
+
+    void reset_intraday(double previous_session_close) {
+        bar_count_ = 0;
+        anchor_close_ = positive(previous_session_close) ? previous_session_close : nan();
+        previous_close_ = nan();
+        frozen_ = false;
+        frozen_rod_return_ = nan();
+        ret_sum_to_cutoff_ = 0.0;
+        ret_sumsq_to_cutoff_ = 0.0;
+        ret_count_to_cutoff_ = 0;
+        session_price_volume_ = 0.0;
+        session_volume_ = 0.0;
+        pending_prediction_valid_ = false;
+        pending_entry_close_ = nan();
+        pending_prediction_ = nan();
+    }
+
+    double effective_normal_dollar_volume(double current_dollar_volume) const {
+        if (normal_dollar_ewma_ready_ && positive(normal_dollar_ewma_)) {
+            return normal_dollar_ewma_;
+        }
+        return positive(current_dollar_volume) ? current_dollar_volume : 1.0;
+    }
+
+    double effective_normal_transactions(double current_transactions) const {
+        if (normal_tx_ewma_ready_ && positive(normal_tx_ewma_)) {
+            return normal_tx_ewma_;
+        }
+        return positive(current_transactions) ? current_transactions : 1.0;
+    }
+
+    void update_ewmas(double dollar_volume, double transactions, double range) {
+        constexpr double alpha = 0.05;
+        if (positive(dollar_volume)) {
+            normal_dollar_ewma_ = normal_dollar_ewma_ready_
+                ? alpha * dollar_volume + (1.0 - alpha) * normal_dollar_ewma_
+                : dollar_volume;
+            normal_dollar_ewma_ready_ = true;
+        }
+        if (positive(transactions)) {
+            normal_tx_ewma_ = normal_tx_ewma_ready_
+                ? alpha * transactions + (1.0 - alpha) * normal_tx_ewma_
+                : transactions;
+            normal_tx_ewma_ready_ = true;
+        }
+        if (std::isfinite(range) && range >= 0.0) {
+            range_ewma_ = range_ewma_ready_
+                ? alpha * range + (1.0 - alpha) * range_ewma_
+                : range;
+            range_ewma_ready_ = true;
+        }
+    }
+
+    static void assign_batch(
+        std::size_t i,
+        const ClosePressureReversalSignalResult &out,
+        std::vector<double> &bar_number,
+        std::vector<double> &rod_return,
+        std::vector<double> &frozen_rod_return,
+        std::vector<double> &loser_z,
+        std::vector<double> &winner_z,
+        std::vector<double> &range_z,
+        std::vector<double> &volume_shock,
+        std::vector<double> &transaction_shock,
+        std::vector<double> &vwap_gap,
+        std::vector<double> &pressure_score,
+        std::vector<double> &prediction,
+        std::vector<double> &radius,
+        std::vector<double> &score,
+        std::vector<double> &signal,
+        std::vector<double> &target_fraction,
+        std::vector<double> &max_trade_dollars,
+        std::vector<double> &realized_error,
+        std::vector<double> &entry_window,
+        std::vector<double> &exit_window,
+        std::vector<double> &frozen,
+        std::vector<double> &news_guard) {
+        bar_number[i] = out.bar_number;
+        rod_return[i] = out.rod_return;
+        frozen_rod_return[i] = out.frozen_rod_return;
+        loser_z[i] = out.loser_z;
+        winner_z[i] = out.winner_z;
+        range_z[i] = out.range_z;
+        volume_shock[i] = out.volume_shock;
+        transaction_shock[i] = out.transaction_shock;
+        vwap_gap[i] = out.vwap_gap;
+        pressure_score[i] = out.pressure_score;
+        prediction[i] = out.prediction;
+        radius[i] = out.radius;
+        score[i] = out.score;
+        signal[i] = out.signal;
+        target_fraction[i] = out.target_fraction;
+        max_trade_dollars[i] = out.max_trade_dollars;
+        realized_error[i] = out.realized_error;
+        entry_window[i] = out.entry_window ? 1.0 : 0.0;
+        exit_window[i] = out.exit_window ? 1.0 : 0.0;
+        frozen[i] = out.frozen ? 1.0 : 0.0;
+        news_guard[i] = out.news_guard ? 1.0 : 0.0;
+    }
+
+    static ClosePressureReversalSignalBatchResult make_batch_result(
+        std::vector<double> &bar_number,
+        std::vector<double> &rod_return,
+        std::vector<double> &frozen_rod_return,
+        std::vector<double> &loser_z,
+        std::vector<double> &winner_z,
+        std::vector<double> &range_z,
+        std::vector<double> &volume_shock,
+        std::vector<double> &transaction_shock,
+        std::vector<double> &vwap_gap,
+        std::vector<double> &pressure_score,
+        std::vector<double> &prediction,
+        std::vector<double> &radius,
+        std::vector<double> &score,
+        std::vector<double> &signal,
+        std::vector<double> &target_fraction,
+        std::vector<double> &max_trade_dollars,
+        std::vector<double> &realized_error,
+        std::vector<double> &entry_window,
+        std::vector<double> &exit_window,
+        std::vector<double> &frozen,
+        std::vector<double> &news_guard) {
+        return {
+            make_array(std::move(bar_number)),
+            make_array(std::move(rod_return)),
+            make_array(std::move(frozen_rod_return)),
+            make_array(std::move(loser_z)),
+            make_array(std::move(winner_z)),
+            make_array(std::move(range_z)),
+            make_array(std::move(volume_shock)),
+            make_array(std::move(transaction_shock)),
+            make_array(std::move(vwap_gap)),
+            make_array(std::move(pressure_score)),
+            make_array(std::move(prediction)),
+            make_array(std::move(radius)),
+            make_array(std::move(score)),
+            make_array(std::move(signal)),
+            make_array(std::move(target_fraction)),
+            make_array(std::move(max_trade_dollars)),
+            make_array(std::move(realized_error)),
+            make_array(std::move(entry_window)),
+            make_array(std::move(exit_window)),
+            make_array(std::move(frozen)),
+            make_array(std::move(news_guard)),
+        };
+    }
+
+    std::size_t cutoff_after_bars_;
+    std::size_t entry_start_after_bars_;
+    std::size_t entry_end_after_bars_;
+    std::size_t exit_after_bars_;
+    std::size_t calibration_window_;
+    double calibration_quantile_;
+    std::size_t min_calibration_count_;
+    double reversal_slope_;
+    double entry_z_;
+    double cost_buffer_;
+    double max_abs_target_fraction_;
+    double participation_cap_;
+    bool allow_short_winners_;
+    bool fillna_;
+    double max_loser_z_;
+    double max_range_z_;
+    double max_volume_shock_;
+    RollingQuantile residuals_;
+    std::size_t bar_count_ = 0;
+    double anchor_close_ = nan();
+    double previous_close_ = nan();
+    bool frozen_ = false;
+    double frozen_rod_return_ = nan();
+    double ret_sum_to_cutoff_ = 0.0;
+    double ret_sumsq_to_cutoff_ = 0.0;
+    std::size_t ret_count_to_cutoff_ = 0;
+    double session_price_volume_ = 0.0;
+    double session_volume_ = 0.0;
+    double normal_dollar_ewma_ = nan();
+    bool normal_dollar_ewma_ready_ = false;
+    double normal_tx_ewma_ = nan();
+    bool normal_tx_ewma_ready_ = false;
+    double range_ewma_ = nan();
+    bool range_ewma_ready_ = false;
+    bool pending_prediction_valid_ = false;
+    double pending_entry_close_ = nan();
+    double pending_prediction_ = nan();
+    ClosePressureReversalSignalResult last_;
 };
 
 class ChaikinMoneyFlow {
@@ -13977,6 +14618,52 @@ NB_MODULE(indicator, m) {
         .def_ro("max_trade_dollars", &MatchedFlowConformalSignalBatchResult::max_trade_dollars)
         .def_ro("realized_error", &MatchedFlowConformalSignalBatchResult::realized_error);
 
+    nb::class_<ClosePressureReversalSignalResult>(m, "ClosePressureReversalSignalResult")
+        .def_ro("bar_number", &ClosePressureReversalSignalResult::bar_number)
+        .def_ro("rod_return", &ClosePressureReversalSignalResult::rod_return)
+        .def_ro("frozen_rod_return", &ClosePressureReversalSignalResult::frozen_rod_return)
+        .def_ro("loser_z", &ClosePressureReversalSignalResult::loser_z)
+        .def_ro("winner_z", &ClosePressureReversalSignalResult::winner_z)
+        .def_ro("range_z", &ClosePressureReversalSignalResult::range_z)
+        .def_ro("volume_shock", &ClosePressureReversalSignalResult::volume_shock)
+        .def_ro("transaction_shock", &ClosePressureReversalSignalResult::transaction_shock)
+        .def_ro("vwap_gap", &ClosePressureReversalSignalResult::vwap_gap)
+        .def_ro("pressure_score", &ClosePressureReversalSignalResult::pressure_score)
+        .def_ro("prediction", &ClosePressureReversalSignalResult::prediction)
+        .def_ro("radius", &ClosePressureReversalSignalResult::radius)
+        .def_ro("score", &ClosePressureReversalSignalResult::score)
+        .def_ro("signal", &ClosePressureReversalSignalResult::signal)
+        .def_ro("target_fraction", &ClosePressureReversalSignalResult::target_fraction)
+        .def_ro("max_trade_dollars", &ClosePressureReversalSignalResult::max_trade_dollars)
+        .def_ro("realized_error", &ClosePressureReversalSignalResult::realized_error)
+        .def_ro("entry_window", &ClosePressureReversalSignalResult::entry_window)
+        .def_ro("exit_window", &ClosePressureReversalSignalResult::exit_window)
+        .def_ro("frozen", &ClosePressureReversalSignalResult::frozen)
+        .def_ro("news_guard", &ClosePressureReversalSignalResult::news_guard);
+
+    nb::class_<ClosePressureReversalSignalBatchResult>(m, "ClosePressureReversalSignalBatchResult")
+        .def_ro("bar_number", &ClosePressureReversalSignalBatchResult::bar_number)
+        .def_ro("rod_return", &ClosePressureReversalSignalBatchResult::rod_return)
+        .def_ro("frozen_rod_return", &ClosePressureReversalSignalBatchResult::frozen_rod_return)
+        .def_ro("loser_z", &ClosePressureReversalSignalBatchResult::loser_z)
+        .def_ro("winner_z", &ClosePressureReversalSignalBatchResult::winner_z)
+        .def_ro("range_z", &ClosePressureReversalSignalBatchResult::range_z)
+        .def_ro("volume_shock", &ClosePressureReversalSignalBatchResult::volume_shock)
+        .def_ro("transaction_shock", &ClosePressureReversalSignalBatchResult::transaction_shock)
+        .def_ro("vwap_gap", &ClosePressureReversalSignalBatchResult::vwap_gap)
+        .def_ro("pressure_score", &ClosePressureReversalSignalBatchResult::pressure_score)
+        .def_ro("prediction", &ClosePressureReversalSignalBatchResult::prediction)
+        .def_ro("radius", &ClosePressureReversalSignalBatchResult::radius)
+        .def_ro("score", &ClosePressureReversalSignalBatchResult::score)
+        .def_ro("signal", &ClosePressureReversalSignalBatchResult::signal)
+        .def_ro("target_fraction", &ClosePressureReversalSignalBatchResult::target_fraction)
+        .def_ro("max_trade_dollars", &ClosePressureReversalSignalBatchResult::max_trade_dollars)
+        .def_ro("realized_error", &ClosePressureReversalSignalBatchResult::realized_error)
+        .def_ro("entry_window", &ClosePressureReversalSignalBatchResult::entry_window)
+        .def_ro("exit_window", &ClosePressureReversalSignalBatchResult::exit_window)
+        .def_ro("frozen", &ClosePressureReversalSignalBatchResult::frozen)
+        .def_ro("news_guard", &ClosePressureReversalSignalBatchResult::news_guard);
+
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
         .def("update", &AccumulationDistribution::update, nb::arg("close"), nb::arg("high"), nb::arg("low"), nb::arg("volume"))
@@ -16681,6 +17368,169 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(rel_dollar_volume)),
                 make_array(std::move(max_trade_dollars)),
                 make_array(std::move(realized_error)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<ClosePressureReversalSignal>(m, "ClosePressureReversalSignal")
+        .def(nb::init<int, int, int, int, int, double, double, double, double, double, double, bool, bool, double, double, double>(),
+             nb::arg("cutoff_after_bars") = 66,
+             nb::arg("entry_start_after_bars") = 72,
+             nb::arg("entry_end_after_bars") = 75,
+             nb::arg("exit_after_bars") = 77,
+             nb::arg("calibration_window") = 120,
+             nb::arg("calibration_quantile") = 0.80,
+             nb::arg("reversal_slope") = 0.025,
+             nb::arg("entry_z") = 1.0,
+             nb::arg("cost_buffer") = 0.0005,
+             nb::arg("max_abs_target_fraction") = 0.04,
+             nb::arg("participation_cap") = 0.02,
+             nb::arg("allow_short_winners") = false,
+             nb::arg("fillna") = false,
+             nb::arg("max_loser_z") = 6.0,
+             nb::arg("max_range_z") = 5.0,
+             nb::arg("max_volume_shock") = 6.0)
+        .def("update",
+             &ClosePressureReversalSignal::update,
+             nb::arg("open"),
+             nb::arg("high"),
+             nb::arg("low"),
+             nb::arg("close"),
+             nb::arg("volume"),
+             nb::arg("vwap") = nan(),
+             nb::arg("transactions") = nan(),
+             nb::arg("previous_session_close") = nan(),
+             nb::arg("normal_dollar_volume") = nan(),
+             nb::arg("normal_transactions") = nan(),
+             nb::arg("reset_session") = false)
+        .def("advance",
+             &ClosePressureReversalSignal::advance,
+             nb::arg("open"),
+             nb::arg("high"),
+             nb::arg("low"),
+             nb::arg("close"),
+             nb::arg("volume"),
+             nb::arg("vwap") = nan(),
+             nb::arg("transactions") = nan(),
+             nb::arg("previous_session_close") = nan(),
+             nb::arg("normal_dollar_volume") = nan(),
+             nb::arg("normal_transactions") = nan(),
+             nb::arg("reset_session") = false)
+        .def("last", &ClosePressureReversalSignal::last)
+        .def("reset", &ClosePressureReversalSignal::reset)
+        .def("reset_session", &ClosePressureReversalSignal::reset_session, nb::arg("previous_session_close") = nan())
+        RTTA_FIELD5(ClosePressureReversalSignal, bar_number, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, rod_return, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, frozen_rod_return, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, loser_z, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, winner_z, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, range_z, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, volume_shock, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, transaction_shock, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, vwap_gap, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, pressure_score, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, prediction, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, radius, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, score, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, signal, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, target_fraction, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, max_trade_dollars, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, realized_error, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, entry_window, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, exit_window, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, frozen, open, high, low, close, volume)
+        RTTA_FIELD5(ClosePressureReversalSignal, news_guard, open, high, low, close, volume)
+        .def("replay_update", [](ClosePressureReversalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.replay_update_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update", [](ClosePressureReversalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.replay_update_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_advance", [](ClosePressureReversalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.replay_advance_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_advance", [](ClosePressureReversalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.replay_advance_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update_outputs", [](ClosePressureReversalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update_outputs", [](ClosePressureReversalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](ClosePressureReversalSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](ClosePressureReversalSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](ClosePressureReversalSignal &self, nb::iterable records) {
+            if (table_has_column(records, "open")) {
+                return dispatch_table5(self, records, "open", "high", "low", "close", "volume", [](auto &indicator, const auto &open, const auto &high, const auto &low, const auto &close, const auto &volume) {
+                    return indicator.batch_array(open, high, low, close, volume);
+                });
+            }
+
+            std::vector<double> bar_number = make_record_output(records);
+            std::vector<double> rod_return, frozen_rod_return, loser_z, winner_z, range_z;
+            std::vector<double> volume_shock, transaction_shock, vwap_gap, pressure_score, prediction;
+            std::vector<double> radius, score, signal, target_fraction, max_trade_dollars, realized_error;
+            std::vector<double> entry_window, exit_window, frozen, news_guard;
+            auto reserve = [&](std::vector<double> &values) { values.reserve(bar_number.capacity()); };
+            reserve(rod_return); reserve(frozen_rod_return); reserve(loser_z); reserve(winner_z); reserve(range_z);
+            reserve(volume_shock); reserve(transaction_shock); reserve(vwap_gap); reserve(pressure_score); reserve(prediction);
+            reserve(radius); reserve(score); reserve(signal); reserve(target_fraction); reserve(max_trade_dollars); reserve(realized_error);
+            reserve(entry_window); reserve(exit_window); reserve(frozen); reserve(news_guard);
+            for (nb::handle record : records) {
+                const ClosePressureReversalSignalResult out = self.update(
+                    record_value(record, "open", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2),
+                    record_value(record, "close", 3),
+                    record_value(record, "volume", 4));
+                bar_number.push_back(out.bar_number);
+                rod_return.push_back(out.rod_return);
+                frozen_rod_return.push_back(out.frozen_rod_return);
+                loser_z.push_back(out.loser_z);
+                winner_z.push_back(out.winner_z);
+                range_z.push_back(out.range_z);
+                volume_shock.push_back(out.volume_shock);
+                transaction_shock.push_back(out.transaction_shock);
+                vwap_gap.push_back(out.vwap_gap);
+                pressure_score.push_back(out.pressure_score);
+                prediction.push_back(out.prediction);
+                radius.push_back(out.radius);
+                score.push_back(out.score);
+                signal.push_back(out.signal);
+                target_fraction.push_back(out.target_fraction);
+                max_trade_dollars.push_back(out.max_trade_dollars);
+                realized_error.push_back(out.realized_error);
+                entry_window.push_back(out.entry_window ? 1.0 : 0.0);
+                exit_window.push_back(out.exit_window ? 1.0 : 0.0);
+                frozen.push_back(out.frozen ? 1.0 : 0.0);
+                news_guard.push_back(out.news_guard ? 1.0 : 0.0);
+            }
+            return ClosePressureReversalSignalBatchResult{
+                make_array(std::move(bar_number)),
+                make_array(std::move(rod_return)),
+                make_array(std::move(frozen_rod_return)),
+                make_array(std::move(loser_z)),
+                make_array(std::move(winner_z)),
+                make_array(std::move(range_z)),
+                make_array(std::move(volume_shock)),
+                make_array(std::move(transaction_shock)),
+                make_array(std::move(vwap_gap)),
+                make_array(std::move(pressure_score)),
+                make_array(std::move(prediction)),
+                make_array(std::move(radius)),
+                make_array(std::move(score)),
+                make_array(std::move(signal)),
+                make_array(std::move(target_fraction)),
+                make_array(std::move(max_trade_dollars)),
+                make_array(std::move(realized_error)),
+                make_array(std::move(entry_window)),
+                make_array(std::move(exit_window)),
+                make_array(std::move(frozen)),
+                make_array(std::move(news_guard)),
             };
         }, nb::arg("records"));
 

@@ -68,6 +68,9 @@
 - Added `MatchedFlowConformalSignal`, an intraday OHLCV matched-flow signal
   with conformal-style rolling prediction error bands, scalar accessors, and
   batch/replay paths.
+- Added `ClosePressureReversalSignal`, an end-of-day reversal signal with
+  pressure diagnostics, scalar accessors, batch/replay paths, and a
+  cross-sectional massive-speedup example that trades the top-ranked 10%.
 - Added `KalmanRegressionChannel`, `KalmanHedgeRatio`,
   `TwoFactorKalmanTrendFilter`, and `KalmanExtremumTrend` for online Kalman
   pair regression and hybrid trend filtering.

@@ -123,6 +123,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("ChaikinOscillator", ("close", "high", "low", "volume")),
     IndicatorSpec("ChandeMomentumOscillator", ("close",)),
     IndicatorSpec("ChoppinessIndex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("ClosePressureReversalSignal", ("open", "high", "low", "close", "volume"), batch_inputs=("open", "high", "low", "close", "volume")),
     IndicatorSpec("ConnorsRSI", ("close",), batch_inputs=("close",)),
     IndicatorSpec("CommodityChannelIndex", ("close", "high", "low")),
     IndicatorSpec("CoppockCurve", ("close",), batch_inputs=("close",)),
