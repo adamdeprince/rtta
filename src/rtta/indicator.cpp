@@ -103,6 +103,45 @@ double scalar_or_record_value(nb::handle record, const char *field, std::size_t 
     return record_value(record, field, index);
 }
 
+bool try_record_value(nb::handle record, const char *field, std::size_t index, double &value) {
+    if (PyObject_HasAttrString(record.ptr(), field)) {
+        PyObject *item = PyObject_GetAttrString(record.ptr(), field);
+        if (item != nullptr) {
+            nb::object owner = nb::steal<nb::object>(item);
+            value = nb::cast<double>(owner);
+            return true;
+        }
+        PyErr_Clear();
+    }
+
+    if (PyMapping_Check(record.ptr())) {
+        PyObject *item = PyMapping_GetItemString(record.ptr(), field);
+        if (item != nullptr) {
+            nb::object owner = nb::steal<nb::object>(item);
+            value = nb::cast<double>(owner);
+            return true;
+        }
+        PyErr_Clear();
+    }
+
+    PyObject *item = PySequence_GetItem(record.ptr(), static_cast<Py_ssize_t>(index));
+    if (item != nullptr) {
+        nb::object owner = nb::steal<nb::object>(item);
+        value = nb::cast<double>(owner);
+        return true;
+    }
+    PyErr_Clear();
+    return false;
+}
+
+double optional_record_value(nb::handle record, const char *field, std::size_t index, double fallback) {
+    double value = fallback;
+    if (try_record_value(record, field, index, value)) {
+        return value;
+    }
+    return fallback;
+}
+
 void require_same_size(std::size_t expected, std::size_t actual);
 
 template <typename Indicator, typename Array>
@@ -1257,6 +1296,42 @@ struct ClosePressureReversalSignalBatchResult {
     nb::object news_guard;
 };
 
+struct IntradayClockEchoSignalResult {
+    double slot;
+    double samples_for_slot;
+    double bar_return;
+    double residual_return;
+    double clock_echo;
+    double flow_confirm;
+    double volume_sync;
+    double prediction;
+    double radius;
+    double score;
+    double signal;
+    double target_fraction;
+    double max_trade_dollars;
+    double realized_error;
+    bool ready;
+};
+
+struct IntradayClockEchoSignalBatchResult {
+    nb::object slot;
+    nb::object samples_for_slot;
+    nb::object bar_return;
+    nb::object residual_return;
+    nb::object clock_echo;
+    nb::object flow_confirm;
+    nb::object volume_sync;
+    nb::object prediction;
+    nb::object radius;
+    nb::object score;
+    nb::object signal;
+    nb::object target_fraction;
+    nb::object max_trade_dollars;
+    nb::object realized_error;
+    nb::object ready;
+};
+
 inline double result_checksum(double value) {
     return value;
 }
@@ -1455,6 +1530,16 @@ inline double result_checksum(const ClosePressureReversalSignalResult &value) {
            finite(value.max_trade_dollars) + finite(value.realized_error) +
            (value.entry_window ? 1.0 : 0.0) + (value.exit_window ? 1.0 : 0.0) +
            (value.frozen ? 1.0 : 0.0) + (value.news_guard ? 1.0 : 0.0);
+}
+
+inline double result_checksum(const IntradayClockEchoSignalResult &value) {
+    auto finite = [](double x) { return std::isfinite(x) ? x : 0.0; };
+    return finite(value.slot) + finite(value.samples_for_slot) + finite(value.bar_return) +
+           finite(value.residual_return) + finite(value.clock_echo) + finite(value.flow_confirm) +
+           finite(value.volume_sync) + finite(value.prediction) + finite(value.radius) +
+           finite(value.score) + finite(value.signal) + finite(value.target_fraction) +
+           finite(value.max_trade_dollars) + finite(value.realized_error) +
+           (value.ready ? 1.0 : 0.0);
 }
 
 class RollingExtremeQueue {
@@ -6914,6 +6999,387 @@ private:
     std::vector<ClosePressureReversalSignal> signals_;
     std::vector<double> previous_session_close_;
     std::vector<unsigned char> first_bar_;
+};
+
+class IntradayClockEchoSignal {
+public:
+    IntradayClockEchoSignal(
+        int slots_per_session = 195,
+        int horizon_bars = 15,
+        int lookback_days = 40,
+        int min_slot_samples = 10,
+        int calibration_window = 500,
+        double calibration_quantile = 0.80,
+        double entry_z = 1.0,
+        double cost_buffer = 0.0005,
+        double max_abs_target_fraction = 0.03,
+        double participation_cap = 0.02,
+        bool allow_short = true,
+        bool fillna = false)
+        : slots_per_session_(checked_positive(slots_per_session, "slots_per_session")),
+          horizon_bars_(checked_positive(horizon_bars, "horizon_bars")),
+          lookback_days_(checked_positive(lookback_days, "lookback_days")),
+          min_slot_samples_(checked_positive(min_slot_samples, "min_slot_samples")),
+          calibration_window_(checked_positive(calibration_window, "calibration_window")),
+          calibration_quantile_(checked_quantile(calibration_quantile)),
+          min_calibration_count_(std::min<std::size_t>(10, static_cast<std::size_t>(calibration_window_))),
+          entry_z_(checked_positive_double(entry_z, "entry_z")),
+          cost_buffer_(checked_non_negative(cost_buffer, "cost_buffer")),
+          max_abs_target_fraction_(checked_non_negative(max_abs_target_fraction, "max_abs_target_fraction")),
+          participation_cap_(checked_non_negative(participation_cap, "participation_cap")),
+          allow_short_(allow_short),
+          fillna_(fillna),
+          alpha_(2.0 / (static_cast<double>(lookback_days_) + 1.0)),
+          slot_echo_(slots_per_session_, nan()),
+          slot_abs_err_(slots_per_session_, nan()),
+          slot_volume_(slots_per_session_, nan()),
+          slot_count_(slots_per_session_, 0),
+          residuals_(calibration_window_, calibration_quantile_),
+          last_(empty_result()) {}
+
+    IntradayClockEchoSignalResult update(
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        double vwap = nan(),
+        double transactions = nan(),
+        double market_return = 0.0,
+        double normal_dollar_volume = nan(),
+        std::size_t slot = 0,
+        bool reset_session = false) {
+        (void) open;
+        (void) high;
+        (void) low;
+        (void) vwap;
+        (void) transactions;
+        if (reset_session) {
+            reset_intraday();
+        }
+        slot = checked_slot(slot);
+
+        IntradayClockEchoSignalResult result = empty_result();
+        result.slot = static_cast<double>(slot);
+        result.samples_for_slot = static_cast<double>(slot_count_[slot]);
+
+        if (!positive(close)) {
+            last_ = result;
+            return last_;
+        }
+
+        const double log_close = std::log(close);
+        const double bar_return = std::isfinite(previous_log_close_) ? log_close - previous_log_close_ : 0.0;
+        const double residual_return = bar_return - zero_if_nan(market_return);
+        result.bar_return = bar_return;
+        result.residual_return = residual_return;
+        result.realized_error = mature_predictions(log_close);
+
+        const PredictionParts parts = make_prediction(slot);
+        result.clock_echo = parts.clock_echo;
+        result.prediction = parts.prediction;
+        const double positive_volume = std::max(0.0, zero_if_nan(volume));
+        const double dollar_volume = close * positive_volume;
+        const double effective_normal_dv = effective_normal_dollar_volume(slot, dollar_volume, normal_dollar_volume);
+        if (std::isfinite(result.prediction)) {
+            const double signed_flow = sign(bar_return) * dollar_volume / std::max(1e-12, effective_normal_dv);
+            result.flow_confirm = sign(result.prediction) * signed_flow;
+            result.prediction *= 1.0 + 0.20 * std::tanh(result.flow_confirm);
+        }
+        result.volume_sync = positive(dollar_volume) && positive(slot_volume_[slot])
+            ? std::log(dollar_volume / slot_volume_[slot])
+            : 0.0;
+        if (std::isfinite(result.prediction) && std::abs(result.volume_sync) > 4.0) {
+            result.prediction *= 0.5;
+        }
+
+        const bool calibration_ready = residuals_.size() >= min_calibration_count_;
+        const double fallback_radius = std::max(cost_buffer_, slot_abs_err_radius(slot));
+        const double internal_radius = calibration_ready ? std::max(residuals_.value(), cost_buffer_) : fallback_radius;
+        result.radius = internal_radius;
+        result.ready = parts.ready && calibration_ready;
+        result.max_trade_dollars = participation_cap_ * effective_normal_dv;
+
+        if (!fillna_ && !result.ready) {
+            result.prediction = nan();
+            result.radius = nan();
+            result.score = nan();
+            result.signal = 0.0;
+            result.target_fraction = 0.0;
+        } else {
+            result.score = result.prediction / (internal_radius + cost_buffer_ + 1e-12);
+            if (std::abs(result.score) > entry_z_) {
+                if (result.score > 0.0) {
+                    result.signal = 1.0;
+                    result.target_fraction = std::clamp(
+                        max_abs_target_fraction_ * result.score / 3.0,
+                        0.0,
+                        max_abs_target_fraction_);
+                } else if (allow_short_) {
+                    result.signal = -1.0;
+                    result.target_fraction = std::clamp(
+                        max_abs_target_fraction_ * result.score / 3.0,
+                        -max_abs_target_fraction_,
+                        0.0);
+                }
+            }
+        }
+
+        if (parts.ready && std::isfinite(result.prediction)) {
+            pending_.push_back({horizon_bars_, log_close, result.prediction});
+        }
+        update_slot(slot, residual_return, dollar_volume);
+        previous_log_close_ = log_close;
+        last_ = result;
+        return last_;
+    }
+
+    void advance(
+        double open,
+        double high,
+        double low,
+        double close,
+        double volume,
+        double vwap = nan(),
+        double transactions = nan(),
+        double market_return = 0.0,
+        double normal_dollar_volume = nan(),
+        std::size_t slot = 0,
+        bool reset_session = false) {
+        (void) update(open, high, low, close, volume, vwap, transactions, market_return, normal_dollar_volume, slot, reset_session);
+    }
+
+    const IntradayClockEchoSignalResult &last() const {
+        return last_;
+    }
+
+    void reset() {
+        std::fill(slot_echo_.begin(), slot_echo_.end(), nan());
+        std::fill(slot_abs_err_.begin(), slot_abs_err_.end(), nan());
+        std::fill(slot_volume_.begin(), slot_volume_.end(), nan());
+        std::fill(slot_count_.begin(), slot_count_.end(), 0);
+        residuals_.reset();
+        reset_intraday();
+    }
+
+    void reset_session() {
+        reset_intraday();
+    }
+
+    void train(nb::iterable days) {
+        for (nb::handle day : days) {
+            bool first = true;
+            std::size_t slot_index = 0;
+            for (nb::handle record : nb::borrow<nb::iterable>(day)) {
+                const double close = record_value(record, "close", 3);
+                double slot_value = 0.0;
+                const bool has_slot = try_record_value(record, "slot", 9, slot_value);
+                const std::size_t slot = has_slot
+                    ? checked_slot_from_double(slot_value)
+                    : slot_index % slots_per_session_;
+                (void) update(
+                    record_value(record, "open", 0),
+                    record_value(record, "high", 1),
+                    record_value(record, "low", 2),
+                    close,
+                    record_value(record, "volume", 4),
+                    optional_record_value(record, "vwap", 5, close),
+                    optional_record_value(record, "transactions", 6, nan()),
+                    optional_record_value(record, "market_return", 7, 0.0),
+                    optional_record_value(record, "normal_dollar_volume", 8, nan()),
+                    slot,
+                    first);
+                first = false;
+                ++slot_index;
+            }
+            reset_intraday();
+        }
+    }
+
+private:
+    struct PendingPrediction {
+        std::size_t remaining;
+        double entry_log_close;
+        double prediction;
+    };
+
+    struct PredictionParts {
+        double clock_echo;
+        double prediction;
+        bool ready;
+    };
+
+    static int checked_positive(int value, const char *name) {
+        if (value <= 0) {
+            throw nb::value_error((std::string(name) + " must be positive").c_str());
+        }
+        return value;
+    }
+
+    static double checked_positive_double(double value, const char *name) {
+        if (value <= 0.0) {
+            throw nb::value_error((std::string(name) + " must be positive").c_str());
+        }
+        return value;
+    }
+
+    static double checked_non_negative(double value, const char *name) {
+        if (value < 0.0) {
+            throw nb::value_error((std::string(name) + " must be non-negative").c_str());
+        }
+        return value;
+    }
+
+    static double checked_quantile(double value) {
+        if (value < 0.0 || value > 1.0) {
+            throw nb::value_error("calibration_quantile must be in [0, 1]");
+        }
+        return value;
+    }
+
+    static inline bool positive(double value) {
+        return std::isfinite(value) && value > 0.0;
+    }
+
+    static inline double zero_if_nan(double value) {
+        return std::isfinite(value) ? value : 0.0;
+    }
+
+    static inline double sign(double value) {
+        return (value > 0.0) - (value < 0.0);
+    }
+
+    static IntradayClockEchoSignalResult empty_result() {
+        return {
+            0.0,
+            0.0,
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            nan(),
+            0.0,
+            0.0,
+            nan(),
+            nan(),
+            false,
+        };
+    }
+
+    std::size_t checked_slot(std::size_t slot) const {
+        if (slot >= slots_per_session_) {
+            throw nb::value_error("slot must be less than slots_per_session");
+        }
+        return slot;
+    }
+
+    std::size_t checked_slot_from_double(double slot) const {
+        if (!std::isfinite(slot) || slot < 0.0) {
+            throw nb::value_error("slot must be non-negative and finite");
+        }
+        return checked_slot(static_cast<std::size_t>(slot));
+    }
+
+    PredictionParts make_prediction(std::size_t slot) const {
+        double clock_echo = 0.0;
+        double weight_sum = 0.0;
+        for (std::size_t j = 1; j <= horizon_bars_; ++j) {
+            const std::size_t future_slot = (slot + j) % slots_per_session_;
+            const double reliability = std::min(
+                1.0,
+                static_cast<double>(slot_count_[future_slot]) / static_cast<double>(min_slot_samples_));
+            const double w = std::exp(-0.10 * static_cast<double>(j - 1)) * reliability;
+            if (w > 0.0 && std::isfinite(slot_echo_[future_slot])) {
+                clock_echo += w * slot_echo_[future_slot];
+                weight_sum += w;
+            }
+        }
+        if (weight_sum <= 0.0) {
+            return {nan(), nan(), false};
+        }
+        clock_echo /= weight_sum;
+        return {clock_echo, clock_echo * static_cast<double>(horizon_bars_), true};
+    }
+
+    double effective_normal_dollar_volume(std::size_t slot, double dollar_volume, double normal_dollar_volume) const {
+        if (positive(normal_dollar_volume)) {
+            return normal_dollar_volume;
+        }
+        if (positive(slot_volume_[slot])) {
+            return slot_volume_[slot];
+        }
+        return positive(dollar_volume) ? dollar_volume : 1.0;
+    }
+
+    double slot_abs_err_radius(std::size_t slot) const {
+        if (positive(slot_abs_err_[slot])) {
+            return std::max(cost_buffer_, slot_abs_err_[slot] * static_cast<double>(horizon_bars_));
+        }
+        return std::max(cost_buffer_, 0.0005);
+    }
+
+    void update_slot(std::size_t slot, double residual_return, double dollar_volume) {
+        const bool initialized = slot_count_[slot] > 0;
+        slot_echo_[slot] = initialized ? alpha_ * residual_return + (1.0 - alpha_) * slot_echo_[slot] : residual_return;
+        const double abs_return = std::abs(residual_return);
+        slot_abs_err_[slot] = initialized ? alpha_ * abs_return + (1.0 - alpha_) * slot_abs_err_[slot] : abs_return;
+        if (positive(dollar_volume)) {
+            slot_volume_[slot] = initialized ? alpha_ * dollar_volume + (1.0 - alpha_) * slot_volume_[slot] : dollar_volume;
+        }
+        ++slot_count_[slot];
+    }
+
+    double mature_predictions(double log_close) {
+        double realized_error = nan();
+        for (std::size_t i = 0; i < pending_.size();) {
+            PendingPrediction &pending = pending_[i];
+            if (pending.remaining > 0) {
+                --pending.remaining;
+            }
+            if (pending.remaining == 0) {
+                const double realized = log_close - pending.entry_log_close;
+                realized_error = std::abs(realized - pending.prediction);
+                residuals_.push(realized_error);
+                pending_[i] = pending_.back();
+                pending_.pop_back();
+            } else {
+                ++i;
+            }
+        }
+        return realized_error;
+    }
+
+    void reset_intraday() {
+        previous_log_close_ = nan();
+        pending_.clear();
+        last_ = empty_result();
+    }
+
+    std::size_t slots_per_session_;
+    std::size_t horizon_bars_;
+    std::size_t lookback_days_;
+    std::size_t min_slot_samples_;
+    std::size_t calibration_window_;
+    double calibration_quantile_;
+    std::size_t min_calibration_count_;
+    double entry_z_;
+    double cost_buffer_;
+    double max_abs_target_fraction_;
+    double participation_cap_;
+    bool allow_short_;
+    bool fillna_;
+    double alpha_;
+    std::vector<double> slot_echo_;
+    std::vector<double> slot_abs_err_;
+    std::vector<double> slot_volume_;
+    std::vector<std::size_t> slot_count_;
+    RollingQuantile residuals_;
+    double previous_log_close_ = nan();
+    std::vector<PendingPrediction> pending_;
+    IntradayClockEchoSignalResult last_;
 };
 
 class ChaikinMoneyFlow {
@@ -14221,6 +14687,14 @@ inline double call_advance_checksum(Indicator &self, double arg0, double arg1, d
         return self.last().FIELD; \
     })
 
+#define RTTA_CLOCK_FIELD(FIELD) \
+    .def("update_" #FIELD, [](IntradayClockEchoSignal &self, double open, double high, double low, double close, double volume, double vwap, double transactions, double market_return, double normal_dollar_volume, std::size_t slot, bool reset_session) { \
+        return self.update(open, high, low, close, volume, vwap, transactions, market_return, normal_dollar_volume, slot, reset_session).FIELD; \
+    }, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"), nb::arg("volume"), nb::arg("vwap") = nan(), nb::arg("transactions") = nan(), nb::arg("market_return") = 0.0, nb::arg("normal_dollar_volume") = nan(), nb::arg("slot") = 0, nb::arg("reset_session") = false) \
+    .def("last_" #FIELD, [](const IntradayClockEchoSignal &self) { \
+        return self.last().FIELD; \
+    })
+
 #define RTTA_REPLAY_OUTPUTS1(TYPE, ARG0, BATCH_FUNC) \
     .def("replay_update_outputs", [](TYPE &self, const InputArray &ARG0) { \
         return BATCH_FUNC(self, ARG0); \
@@ -14830,6 +15304,23 @@ NB_MODULE(indicator, m) {
         .def_ro("exit_window", &ClosePressureReversalSignalBatchResult::exit_window)
         .def_ro("frozen", &ClosePressureReversalSignalBatchResult::frozen)
         .def_ro("news_guard", &ClosePressureReversalSignalBatchResult::news_guard);
+
+    nb::class_<IntradayClockEchoSignalResult>(m, "IntradayClockEchoSignalResult")
+        .def_ro("slot", &IntradayClockEchoSignalResult::slot)
+        .def_ro("samples_for_slot", &IntradayClockEchoSignalResult::samples_for_slot)
+        .def_ro("bar_return", &IntradayClockEchoSignalResult::bar_return)
+        .def_ro("residual_return", &IntradayClockEchoSignalResult::residual_return)
+        .def_ro("clock_echo", &IntradayClockEchoSignalResult::clock_echo)
+        .def_ro("flow_confirm", &IntradayClockEchoSignalResult::flow_confirm)
+        .def_ro("volume_sync", &IntradayClockEchoSignalResult::volume_sync)
+        .def_ro("prediction", &IntradayClockEchoSignalResult::prediction)
+        .def_ro("radius", &IntradayClockEchoSignalResult::radius)
+        .def_ro("score", &IntradayClockEchoSignalResult::score)
+        .def_ro("signal", &IntradayClockEchoSignalResult::signal)
+        .def_ro("target_fraction", &IntradayClockEchoSignalResult::target_fraction)
+        .def_ro("max_trade_dollars", &IntradayClockEchoSignalResult::max_trade_dollars)
+        .def_ro("realized_error", &IntradayClockEchoSignalResult::realized_error)
+        .def_ro("ready", &IntradayClockEchoSignalResult::ready);
 
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
@@ -17728,6 +18219,66 @@ NB_MODULE(indicator, m) {
         .def("update", [](ClosePressureReversalUniverse &self, const IndexInputArray &indices, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume, const FloatInputArray &vwap, const FloatInputArray &transactions, double top_fraction) {
             return self.update_array(indices, open, high, low, close, volume, vwap, transactions, top_fraction);
         }, array_arg("indices"), array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"), array_arg("vwap"), array_arg("transactions"), nb::arg("top_fraction") = 0.10);
+
+    nb::class_<IntradayClockEchoSignal>(m, "IntradayClockEchoSignal")
+        .def(nb::init<int, int, int, int, int, double, double, double, double, double, bool, bool>(),
+             nb::arg("slots_per_session") = 195,
+             nb::arg("horizon_bars") = 15,
+             nb::arg("lookback_days") = 40,
+             nb::arg("min_slot_samples") = 10,
+             nb::arg("calibration_window") = 500,
+             nb::arg("calibration_quantile") = 0.80,
+             nb::arg("entry_z") = 1.0,
+             nb::arg("cost_buffer") = 0.0005,
+             nb::arg("max_abs_target_fraction") = 0.03,
+             nb::arg("participation_cap") = 0.02,
+             nb::arg("allow_short") = true,
+             nb::arg("fillna") = false)
+        .def("update",
+             &IntradayClockEchoSignal::update,
+             nb::arg("open"),
+             nb::arg("high"),
+             nb::arg("low"),
+             nb::arg("close"),
+             nb::arg("volume"),
+             nb::arg("vwap") = nan(),
+             nb::arg("transactions") = nan(),
+             nb::arg("market_return") = 0.0,
+             nb::arg("normal_dollar_volume") = nan(),
+             nb::arg("slot") = 0,
+             nb::arg("reset_session") = false)
+        .def("advance",
+             &IntradayClockEchoSignal::advance,
+             nb::arg("open"),
+             nb::arg("high"),
+             nb::arg("low"),
+             nb::arg("close"),
+             nb::arg("volume"),
+             nb::arg("vwap") = nan(),
+             nb::arg("transactions") = nan(),
+             nb::arg("market_return") = 0.0,
+             nb::arg("normal_dollar_volume") = nan(),
+             nb::arg("slot") = 0,
+             nb::arg("reset_session") = false)
+        .def("train", &IntradayClockEchoSignal::train, nb::arg("training_days"))
+        .def("last", &IntradayClockEchoSignal::last)
+        .def("reset", &IntradayClockEchoSignal::reset)
+        .def("reset_session", &IntradayClockEchoSignal::reset_session)
+        RTTA_CLOCK_FIELD(slot)
+        RTTA_CLOCK_FIELD(samples_for_slot)
+        RTTA_CLOCK_FIELD(bar_return)
+        RTTA_CLOCK_FIELD(residual_return)
+        RTTA_CLOCK_FIELD(clock_echo)
+        RTTA_CLOCK_FIELD(flow_confirm)
+        RTTA_CLOCK_FIELD(volume_sync)
+        RTTA_CLOCK_FIELD(prediction)
+        RTTA_CLOCK_FIELD(radius)
+        RTTA_CLOCK_FIELD(score)
+        RTTA_CLOCK_FIELD(signal)
+        RTTA_CLOCK_FIELD(target_fraction)
+        RTTA_CLOCK_FIELD(max_trade_dollars)
+        RTTA_CLOCK_FIELD(realized_error)
+        RTTA_CLOCK_FIELD(ready);
 
     nb::class_<ChaikinMoneyFlow>(m, "ChaikinMoneyFlow")
         .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)

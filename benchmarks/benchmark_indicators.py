@@ -152,6 +152,7 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("HeikinAshiTransform", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
     IndicatorSpec("HullMovingAverage", ("value",), ctor_kwargs={"window": 30}, batch_inputs=("input",)),
     IndicatorSpec("Ichimoku", ("high", "low"), batch_inputs=("high", "low")),
+    IndicatorSpec("IntradayClockEchoSignal", ("open", "high", "low", "close", "volume"), ctor_kwargs={"fillna": True}),
     IndicatorSpec("InteractingMultipleModelFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KSTOscillator", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KalmanExtremumTrend", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
