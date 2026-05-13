@@ -31,7 +31,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `ChaikinOscillator` | MACD-style oscillator of the accumulation/distribution line. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/chaikin-oscillator |
 | `ChandeMomentumOscillator` | Momentum oscillator using sums of recent gains and losses. | https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/cmo |
 | `ChoppinessIndex` | CHOP range/trend measure based on true range versus high-low range. | https://www.angelone.in/knowledge-center/online-share-trading/choppiness-index-indicator |
-| `ClosePressureReversalSignal` | End-of-day cross-sectional reversal signal using rest-of-day return, volume/transaction pressure, VWAP location, and rolling conformal-style error bands. | https://academicweb.nd.edu/~zda/EOD.pdf |
+| `ClosePressureReversalSignal` | End-of-day cross-sectional reversal signal using rest-of-day return, volume/transaction pressure, VWAP location, and rolling conformal-style error bands. | documentation/close_pressure_reversal_signal.md |
 | `ConnorsRSI` | Composite oscillator averaging price RSI, streak RSI, and percent-rank of one-period price change. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/connorsrsi |
 | `CommodityChannelIndex` | CCI deviation of typical price from its moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/commodity-channel-index-cci |
 | `CoppockCurve` | Weighted moving average of long and short rate-of-change values. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/coppock-curve |
@@ -60,7 +60,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `HeikinAshiTransform` | Incremental Heikin-Ashi OHLC transform for smoothing candles. | https://www.mql5.com/en/articles/19260 |
 | `HullMovingAverage` | HMA lag-reduced weighted moving average. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/hull-moving-average-hma |
 | `Ichimoku` | Ichimoku conversion, base, and leading span components. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/ichimoku-cloud |
-| `IntradayClockEchoSignal` | Same-clock intraday return-periodicity signal trained from prior aggregate-bar day lists. | https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1107590<br>https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5749704 |
+| `IntradayClockEchoSignal` | Same-clock intraday return-periodicity signal trained from prior aggregate-bar day lists. | documentation/intraday_clock_echo_signal.md |
 | `InteractingMultipleModelFilter` | Four-regime IMM Kalman tracker that blends low-volatility, high-volatility, trend, and chop models by online probabilities. | https://www.sciencedirect.com/science/article/abs/pii/S1544612316302215 |
 | `KSTOscillator` | Pring Know Sure Thing smoothed multi-ROC oscillator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/pring-s-know-sure-thing-kst |
 | `KalmanExtremumTrend` | Kalman trend combined with stochastic-style position inside recent extrema. | https://arxiv.org/pdf/1808.03297 |
@@ -85,7 +85,7 @@ This file lists the public indicator algorithms exported by `rtta`. Tuning/resul
 | `LowIndex` | Offset/index of the rolling lowest value. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/distance-to-lows |
 | `MACDFix` | MACD with fixed 12/26 moving-average periods. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/macd-moving-average-convergence-divergence-oscillator |
 | `MassIndex` | Range-expansion reversal indicator. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/mass-index |
-| `MatchedFlowConformalSignal` | Intraday OHLCV matched-flow signal with conformal-style rolling error bands and target sizing diagnostics. | algorithms/matched_flow_conformal_signal.md |
+| `MatchedFlowConformalSignal` | Intraday OHLCV matched-flow signal with conformal-style rolling error bands and target sizing diagnostics. | documentation/matched_flow_conformal_signal.md |
 | `MedianPrice` | Average of high and low. | https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/median-price |
 | `MesaAdaptiveMovingAverage` | Ehlers MAMA/FAMA adaptive moving averages driven by dominant cycle phase. | https://trendspider.com/learning-center/what-is-the-mesa-adaptive-moving-average-mama/ |
 | `MidPoint` | Midpoint of rolling high and low values for one series. | https://vectoralpha.dev/projects/ta/indicators/midpoint/ |

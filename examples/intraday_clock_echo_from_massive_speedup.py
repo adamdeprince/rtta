@@ -87,20 +87,26 @@ def fmt(value: float) -> str:
     return f"{value:.10g}"
 
 
-def slot_for_window(trades, window_start: int, interval_ns: int, slots_per_session: int) -> int | None:
-    slot = (int(window_start) - int(trades.market_open)) // interval_ns
+def slot_for_window(market_open: int, window_start: int, interval_ns: int, slots_per_session: int) -> int | None:
+    slot = (int(window_start) - market_open) // interval_ns
     if slot < 0 or slot >= slots_per_session:
         return None
     return int(slot)
 
 
-def bounded_aggregates(trades, *, interval_seconds: int, offset_seconds: int):
-    rows = trades.iterate_bounded(trades.market_open, trades.market_close)
-    return massive_speedup.StockTradeAggregator(
-        rows,
+def trade_aggregates(trades, *, interval_seconds: int, offset_seconds: int):
+    market_open = int(trades.market_open)
+    market_close = int(trades.market_close)
+    for bar in massive_speedup.StockTradeAggregator(
+        trades,
         interval_seconds=interval_seconds,
         offset_seconds=offset_seconds,
-    )
+    ):
+        window_start = int(bar.window_start)
+        if window_start > market_close:
+            break
+        if window_start >= market_open:
+            yield bar
 
 
 def market_returns_for_day(args, current_date: dt.date, interval_ns: int, slots_per_session: int) -> dict[int, float]:
@@ -113,10 +119,11 @@ def market_returns_for_day(args, current_date: dt.date, interval_ns: int, slots_
 
     returns = {}
     previous_close = None
-    for bar in bounded_aggregates(trades, interval_seconds=args.interval, offset_seconds=args.offset):
+    market_open = int(trades.market_open)
+    for bar in trade_aggregates(trades, interval_seconds=args.interval, offset_seconds=args.offset):
         if bar.transactions == 0 or bar.volume == 0:
             continue
-        slot = slot_for_window(trades, int(bar.window_start), interval_ns, slots_per_session)
+        slot = slot_for_window(market_open, int(bar.window_start), interval_ns, slots_per_session)
         if slot is None:
             continue
         close = float(bar.close)
@@ -131,11 +138,12 @@ def market_returns_for_day(args, current_date: dt.date, interval_ns: int, slots_
 
 def aggregate_day(trades, args, interval_ns: int, slots_per_session: int, market_returns: dict[int, float]):
     bars = []
-    for bar in bounded_aggregates(trades, interval_seconds=args.interval, offset_seconds=args.offset):
+    market_open = int(trades.market_open)
+    for bar in trade_aggregates(trades, interval_seconds=args.interval, offset_seconds=args.offset):
         if bar.transactions == 0 or bar.volume == 0:
             continue
         window_start = int(bar.window_start)
-        slot = slot_for_window(trades, window_start, interval_ns, slots_per_session)
+        slot = slot_for_window(market_open, window_start, interval_ns, slots_per_session)
         if slot is None:
             continue
         bars.append(
@@ -230,7 +238,7 @@ def main() -> int:
     parser.add_argument("--slots-per-session", type=int, default=0)
     parser.add_argument("--horizon-bars", type=int, default=15)
     parser.add_argument("--lookback-days", type=int, default=40)
-    parser.add_argument("--min-slot-samples", type=int, default=10)
+    parser.add_argument("--min-slot-samples", type=int)
     parser.add_argument("--calibration-window", type=int, default=500)
     parser.add_argument("--entry-z", type=float, default=1.0)
     parser.add_argument("--cost-buffer", type=float, default=0.0005)
@@ -251,12 +259,16 @@ def main() -> int:
         parser.error("--interval must be positive")
     if args.max_names <= 0:
         parser.error("--max-names must be positive")
+    if args.min_slot_samples is not None and args.min_slot_samples <= 0:
+        parser.error("--min-slot-samples must be positive")
 
     symbols = load_symbols(args)
+    min_slot_samples = args.min_slot_samples or min(10, args.training_days)
     interval_ns = args.interval * NANOSECONDS_PER_SECOND
     slots_per_session = args.slots_per_session or max(1, int(round(390 * 60 / args.interval)))
     training_history: dict[int, list[list[ClockBar]]] = defaultdict(list)
     total_profit = 0.0
+    loaded_days = 0
 
     writer = csv.writer(sys.stdout, lineterminator="\n")
     writer.writerow(
@@ -298,6 +310,7 @@ def main() -> int:
 
         if not day_bars:
             continue
+        loaded_days += 1
 
         can_trade_date = current_date >= start_date + dt.timedelta(days=args.training_days)
         indicators = {}
@@ -310,7 +323,7 @@ def main() -> int:
                     slots_per_session=slots_per_session,
                     horizon_bars=args.horizon_bars,
                     lookback_days=args.lookback_days,
-                    min_slot_samples=args.min_slot_samples,
+                    min_slot_samples=min_slot_samples,
                     calibration_window=args.calibration_window,
                     entry_z=args.entry_z,
                     cost_buffer=args.cost_buffer,
@@ -427,6 +440,11 @@ def main() -> int:
                 del history[:-args.training_days]
 
     write_total_summary(writer, total_profit)
+    if loaded_days == 0:
+        print(
+            f"warning: no trade/quote data found for {start_date.isoformat()} through {stop_date.isoformat()}",
+            file=sys.stderr,
+        )
     return 0
 
 
