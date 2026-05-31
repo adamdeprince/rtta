@@ -13938,6 +13938,3408 @@ private:
     bool first_;
 };
 
+class CUSUM {
+public:
+    CUSUM(double threshold = 1.0, double drift = 0.0)
+        : threshold_(checked_threshold(threshold)),
+          drift_(checked_drift(drift)),
+          positive_(0.0),
+          negative_(0.0),
+          previous_(0.0),
+          has_previous_(false),
+          last_(0.0) {}
+
+    double update(double close) {
+        if (!has_previous_) {
+            previous_ = close;
+            has_previous_ = true;
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double change = close - previous_;
+        previous_ = close;
+
+        positive_ = std::max(0.0, positive_ + change - drift_);
+        negative_ = std::min(0.0, negative_ + change + drift_);
+
+        if (positive_ > threshold_) {
+            positive_ = 0.0;
+            last_ = 1.0;
+        } else if (negative_ < -threshold_) {
+            negative_ = 0.0;
+            last_ = -1.0;
+        } else {
+            last_ = 0.0;
+        }
+
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    static double checked_threshold(double threshold) {
+        if (!std::isfinite(threshold) || threshold <= 0.0) {
+            throw nb::value_error("threshold must be positive and finite");
+        }
+        return threshold;
+    }
+
+    static double checked_drift(double drift) {
+        if (!std::isfinite(drift) || drift < 0.0) {
+            throw nb::value_error("drift must be non-negative and finite");
+        }
+        return drift;
+    }
+
+    double threshold_;
+    double drift_;
+    double positive_;
+    double negative_;
+    double previous_;
+    bool has_previous_;
+    double last_;
+};
+
+class EWMAZScoreShiftDetector {
+public:
+    EWMAZScoreShiftDetector(double alpha = 0.05, double threshold = 3.0, double min_variance = 1.0e-12)
+        : alpha_(checked_alpha(alpha)),
+          threshold_(checked_threshold(threshold)),
+          min_variance_(checked_min_variance(min_variance)),
+          mean_(0.0),
+          variance_(0.0),
+          count_(0),
+          last_(0.0) {}
+
+    double update(double close) {
+        if (count_ == 0) {
+            reset_to_current(close);
+            last_ = 0.0;
+            return last_;
+        }
+
+        double signal = 0.0;
+        if (count_ >= 2) {
+            const double z_score = (close - mean_) / std::sqrt(std::max(variance_, min_variance_));
+            if (z_score > threshold_) {
+                signal = 1.0;
+            } else if (z_score < -threshold_) {
+                signal = -1.0;
+            }
+        }
+
+        if (signal != 0.0) {
+            reset_to_current(close);
+        } else {
+            const double delta = close - mean_;
+            mean_ += alpha_ * delta;
+            variance_ = (1.0 - alpha_) * (variance_ + alpha_ * delta * delta);
+            ++count_;
+        }
+
+        last_ = signal;
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    static double checked_alpha(double alpha) {
+        if (!std::isfinite(alpha) || alpha <= 0.0 || alpha > 1.0) {
+            throw nb::value_error("alpha must be in the range (0, 1]");
+        }
+        return alpha;
+    }
+
+    static double checked_threshold(double threshold) {
+        if (!std::isfinite(threshold) || threshold <= 0.0) {
+            throw nb::value_error("threshold must be positive and finite");
+        }
+        return threshold;
+    }
+
+    static double checked_min_variance(double min_variance) {
+        if (!std::isfinite(min_variance) || min_variance <= 0.0) {
+            throw nb::value_error("min_variance must be positive and finite");
+        }
+        return min_variance;
+    }
+
+    inline void reset_to_current(double close) {
+        mean_ = close;
+        variance_ = 0.0;
+        count_ = 1;
+    }
+
+    double alpha_;
+    double threshold_;
+    double min_variance_;
+    double mean_;
+    double variance_;
+    std::size_t count_;
+    double last_;
+};
+
+inline int checked_shift_window(int window) {
+    if (window <= 0) {
+        throw nb::value_error("window must be positive");
+    }
+    return window;
+}
+
+inline double checked_positive_finite(double value, const char *name) {
+    if (!std::isfinite(value) || value <= 0.0) {
+        throw nb::value_error((std::string(name) + " must be positive and finite").c_str());
+    }
+    return value;
+}
+
+inline double checked_non_negative_finite(double value, const char *name) {
+    if (!std::isfinite(value) || value < 0.0) {
+        throw nb::value_error((std::string(name) + " must be non-negative and finite").c_str());
+    }
+    return value;
+}
+
+inline double checked_alpha_value(double value, const char *name = "alpha") {
+    if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {
+        throw nb::value_error((std::string(name) + " must be in the range (0, 1]").c_str());
+    }
+    return value;
+}
+
+inline double checked_probability_value(double value, const char *name) {
+    if (!std::isfinite(value) || value <= 0.0 || value >= 1.0) {
+        throw nb::value_error((std::string(name) + " must be in the range (0, 1)").c_str());
+    }
+    return value;
+}
+
+inline int checked_state_count(int states) {
+    if (states < 2 || states > 16) {
+        throw nb::value_error("states must be in the range [2, 16]");
+    }
+    return states;
+}
+
+class TwoWindowStats {
+public:
+    explicit TwoWindowStats(int window)
+        : reference_(checked_shift_window(window)),
+          recent_(checked_shift_window(window)),
+          reference_sum_(0.0),
+          reference_sum2_(0.0),
+          recent_sum_(0.0),
+          recent_sum2_(0.0) {}
+
+    void push(double value) {
+        if (recent_.full()) {
+            const double moving = recent_.oldest();
+            recent_sum_ -= moving;
+            recent_sum2_ -= moving * moving;
+            push_reference(moving);
+        }
+
+        recent_.push(value);
+        recent_sum_ += value;
+        recent_sum2_ += value * value;
+    }
+
+    bool ready() const {
+        return reference_.full() && recent_.full();
+    }
+
+    double reference_mean() const {
+        return mean(reference_sum_, reference_.size());
+    }
+
+    double recent_mean() const {
+        return mean(recent_sum_, recent_.size());
+    }
+
+    double reference_variance() const {
+        return variance(reference_sum_, reference_sum2_, reference_.size());
+    }
+
+    double recent_variance() const {
+        return variance(recent_sum_, recent_sum2_, recent_.size());
+    }
+
+    double window_size() const {
+        return static_cast<double>(recent_.capacity());
+    }
+
+private:
+    void push_reference(double value) {
+        if (reference_.full()) {
+            const double oldest = reference_.oldest();
+            reference_sum_ -= oldest;
+            reference_sum2_ -= oldest * oldest;
+        }
+        reference_.push(value);
+        reference_sum_ += value;
+        reference_sum2_ += value * value;
+    }
+
+    static double mean(double sum, std::size_t size) {
+        return size == 0 ? 0.0 : sum / static_cast<double>(size);
+    }
+
+    static double variance(double sum, double sum2, std::size_t size) {
+        if (size == 0) {
+            return 0.0;
+        }
+        const double n = static_cast<double>(size);
+        const double value = (sum2 - sum * sum / n) / n;
+        return value < 0.0 && value > -1e-12 ? 0.0 : value;
+    }
+
+    RollingBuffer reference_;
+    RollingBuffer recent_;
+    double reference_sum_;
+    double reference_sum2_;
+    double recent_sum_;
+    double recent_sum2_;
+};
+
+class TwoWindowPairStats {
+    struct Sums {
+        double x = 0.0;
+        double y = 0.0;
+        double x2 = 0.0;
+        double y2 = 0.0;
+        double xy = 0.0;
+        std::size_t count = 0;
+    };
+
+public:
+    explicit TwoWindowPairStats(int window)
+        : reference_x_(checked_shift_window(window)),
+          reference_y_(checked_shift_window(window)),
+          recent_x_(checked_shift_window(window)),
+          recent_y_(checked_shift_window(window)),
+          reference_{},
+          recent_{} {}
+
+    void push(double x, double y) {
+        if (recent_x_.full()) {
+            const double moving_x = recent_x_.oldest();
+            const double moving_y = recent_y_.oldest();
+            remove(recent_, moving_x, moving_y);
+            push_reference(moving_x, moving_y);
+        }
+
+        recent_x_.push(x);
+        recent_y_.push(y);
+        add(recent_, x, y);
+    }
+
+    bool ready() const {
+        return reference_x_.full() && recent_x_.full();
+    }
+
+    double reference_correlation() const {
+        return correlation(reference_);
+    }
+
+    double recent_correlation() const {
+        return correlation(recent_);
+    }
+
+    double reference_beta() const {
+        return beta(reference_);
+    }
+
+    double recent_beta() const {
+        return beta(recent_);
+    }
+
+private:
+    void push_reference(double x, double y) {
+        if (reference_x_.full()) {
+            remove(reference_, reference_x_.oldest(), reference_y_.oldest());
+        }
+        reference_x_.push(x);
+        reference_y_.push(y);
+        add(reference_, x, y);
+    }
+
+    static void add(Sums &sums, double x, double y) {
+        sums.x += x;
+        sums.y += y;
+        sums.x2 += x * x;
+        sums.y2 += y * y;
+        sums.xy += x * y;
+        ++sums.count;
+    }
+
+    static void remove(Sums &sums, double x, double y) {
+        sums.x -= x;
+        sums.y -= y;
+        sums.x2 -= x * x;
+        sums.y2 -= y * y;
+        sums.xy -= x * y;
+        --sums.count;
+    }
+
+    static double correlation(const Sums &sums) {
+        const double n = static_cast<double>(sums.count);
+        const double numerator = n * sums.xy - sums.x * sums.y;
+        const double denominator = std::sqrt((n * sums.x2 - sums.x * sums.x) * (n * sums.y2 - sums.y * sums.y));
+        return safe_divide(numerator, denominator);
+    }
+
+    static double beta(const Sums &sums) {
+        const double n = static_cast<double>(sums.count);
+        const double covariance = n * sums.xy - sums.x * sums.y;
+        const double variance_y = n * sums.y2 - sums.y * sums.y;
+        return safe_divide(covariance, variance_y);
+    }
+
+    RollingBuffer reference_x_;
+    RollingBuffer reference_y_;
+    RollingBuffer recent_x_;
+    RollingBuffer recent_y_;
+    Sums reference_;
+    Sums recent_;
+};
+
+class RollingMeanShiftDetector {
+public:
+    RollingMeanShiftDetector(int window = 20, double threshold = 3.0, double variance_floor = 1.0e-12)
+        : windows_(window),
+          threshold_(checked_positive_finite(threshold, "threshold")),
+          variance_floor_(checked_positive_finite(variance_floor, "variance_floor")),
+          last_(0.0) {}
+
+    double update(double close) {
+        windows_.push(close);
+        if (!windows_.ready()) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double denominator = std::sqrt(
+            windows_.reference_variance() / windows_.window_size() +
+            windows_.recent_variance() / windows_.window_size() +
+            variance_floor_);
+        const double z_score = (windows_.recent_mean() - windows_.reference_mean()) / denominator;
+        last_ = z_score > threshold_ ? 1.0 : (z_score < -threshold_ ? -1.0 : 0.0);
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    TwoWindowStats windows_;
+    double threshold_;
+    double variance_floor_;
+    double last_;
+};
+
+class RollingVarianceShiftDetector {
+public:
+    RollingVarianceShiftDetector(int window = 20, double threshold = 1.0, double variance_floor = 1.0e-12)
+        : windows_(window),
+          threshold_(checked_positive_finite(threshold, "threshold")),
+          variance_floor_(checked_positive_finite(variance_floor, "variance_floor")),
+          last_(0.0) {}
+
+    double update(double close) {
+        windows_.push(close);
+        if (!windows_.ready()) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double log_ratio = std::log(
+            (windows_.recent_variance() + variance_floor_) /
+            (windows_.reference_variance() + variance_floor_));
+        last_ = log_ratio > threshold_ ? 1.0 : (log_ratio < -threshold_ ? -1.0 : 0.0);
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    TwoWindowStats windows_;
+    double threshold_;
+    double variance_floor_;
+    double last_;
+};
+
+class RollingMeanVarianceShiftDetector {
+public:
+    RollingMeanVarianceShiftDetector(
+        int window = 20,
+        double threshold = 3.0,
+        double variance_weight = 1.0,
+        double variance_floor = 1.0e-12)
+        : windows_(window),
+          threshold_(checked_positive_finite(threshold, "threshold")),
+          variance_weight_(checked_non_negative_finite(variance_weight, "variance_weight")),
+          variance_floor_(checked_positive_finite(variance_floor, "variance_floor")),
+          last_(0.0) {}
+
+    double update(double close) {
+        windows_.push(close);
+        if (!windows_.ready()) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double mean_denominator = std::sqrt(
+            windows_.reference_variance() / windows_.window_size() +
+            windows_.recent_variance() / windows_.window_size() +
+            variance_floor_);
+        const double mean_score = (windows_.recent_mean() - windows_.reference_mean()) / mean_denominator;
+        const double variance_score = std::log(
+            (windows_.recent_variance() + variance_floor_) /
+            (windows_.reference_variance() + variance_floor_));
+        const double weighted_variance_score = std::sqrt(variance_weight_) * variance_score;
+        const double score = std::sqrt(mean_score * mean_score + weighted_variance_score * weighted_variance_score);
+        if (score <= threshold_) {
+            last_ = 0.0;
+        } else {
+            const double direction = std::abs(mean_score) >= std::abs(weighted_variance_score)
+                ? mean_score
+                : weighted_variance_score;
+            last_ = direction >= 0.0 ? 1.0 : -1.0;
+        }
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    TwoWindowStats windows_;
+    double threshold_;
+    double variance_weight_;
+    double variance_floor_;
+    double last_;
+};
+
+class RollingCorrelationShiftDetector {
+public:
+    RollingCorrelationShiftDetector(int window = 20, double threshold = 0.25)
+        : windows_(window),
+          threshold_(checked_positive_finite(threshold, "threshold")),
+          last_(0.0) {}
+
+    double update(double real0, double real1) {
+        windows_.push(real0, real1);
+        if (!windows_.ready()) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double difference = windows_.recent_correlation() - windows_.reference_correlation();
+        last_ = difference > threshold_ ? 1.0 : (difference < -threshold_ ? -1.0 : 0.0);
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    TwoWindowPairStats windows_;
+    double threshold_;
+    double last_;
+};
+
+class RollingBetaShiftDetector {
+public:
+    RollingBetaShiftDetector(int window = 20, double threshold = 0.25)
+        : windows_(window),
+          threshold_(checked_positive_finite(threshold, "threshold")),
+          last_(0.0) {}
+
+    double update(double real0, double real1) {
+        windows_.push(real0, real1);
+        if (!windows_.ready()) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double difference = windows_.recent_beta() - windows_.reference_beta();
+        last_ = difference > threshold_ ? 1.0 : (difference < -threshold_ ? -1.0 : 0.0);
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    TwoWindowPairStats windows_;
+    double threshold_;
+    double last_;
+};
+
+class RollingSpreadLiquidityShiftDetector {
+public:
+    RollingSpreadLiquidityShiftDetector(int window = 20, double threshold = 1.0e-6, double depth_floor = 1.0e-12)
+        : windows_(window),
+          threshold_(checked_positive_finite(threshold, "threshold")),
+          depth_floor_(checked_positive_finite(depth_floor, "depth_floor")),
+          last_(0.0) {}
+
+    double update(double bid_price, double bid_size, double ask_price, double ask_size) {
+        const double quoted_spread = std::max(ask_price - bid_price, 0.0);
+        const double depth = std::max(bid_size, 0.0) + std::max(ask_size, 0.0);
+        const double stress = quoted_spread / std::max(depth, depth_floor_);
+        windows_.push(stress);
+        if (!windows_.ready()) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double difference = windows_.recent_mean() - windows_.reference_mean();
+        last_ = difference > threshold_ ? 1.0 : (difference < -threshold_ ? -1.0 : 0.0);
+        return last_;
+    }
+
+    inline void advance(double bid_price, double bid_size, double ask_price, double ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    nb::object batch_array(const Array0 &bid_price, const Array1 &bid_size, const Array2 &ask_price, const Array3 &ask_size) {
+        return batch_update4(*this, bid_price, bid_size, ask_price, ask_size);
+    }
+
+private:
+    TwoWindowStats windows_;
+    double threshold_;
+    double depth_floor_;
+    double last_;
+};
+
+class ThresholdRegimeDetector {
+public:
+    ThresholdRegimeDetector(
+        double upper_entry = 1.0,
+        double upper_exit = 0.5,
+        double lower_entry = -1.0,
+        double lower_exit = -0.5)
+        : upper_entry_(upper_entry),
+          upper_exit_(upper_exit),
+          lower_entry_(lower_entry),
+          lower_exit_(lower_exit),
+          state_(0.0) {
+        validate_thresholds();
+    }
+
+    double update(double value) {
+        if (state_ > 0.0) {
+            if (value <= lower_entry_) {
+                state_ = -1.0;
+            } else if (value <= upper_exit_) {
+                state_ = 0.0;
+            }
+        } else if (state_ < 0.0) {
+            if (value >= upper_entry_) {
+                state_ = 1.0;
+            } else if (value >= lower_exit_) {
+                state_ = 0.0;
+            }
+        } else if (value >= upper_entry_) {
+            state_ = 1.0;
+        } else if (value <= lower_entry_) {
+            state_ = -1.0;
+        }
+        return state_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return state_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    void validate_thresholds() const {
+        if (!std::isfinite(upper_entry_) || !std::isfinite(upper_exit_) ||
+            !std::isfinite(lower_entry_) || !std::isfinite(lower_exit_)) {
+            throw nb::value_error("thresholds must be finite");
+        }
+        if (!(lower_entry_ < lower_exit_ && lower_exit_ <= upper_exit_ && upper_exit_ < upper_entry_)) {
+            throw nb::value_error("thresholds must satisfy lower_entry < lower_exit <= upper_exit < upper_entry");
+        }
+    }
+
+    double upper_entry_;
+    double upper_exit_;
+    double lower_entry_;
+    double lower_exit_;
+    double state_;
+};
+
+class RegimeHysteresis {
+public:
+    RegimeHysteresis(double upper_entry, double upper_exit, double lower_entry, double lower_exit)
+        : upper_entry_(upper_entry),
+          upper_exit_(upper_exit),
+          lower_entry_(lower_entry),
+          lower_exit_(lower_exit),
+          state_(0.0) {
+        validate_thresholds();
+    }
+
+    double update(double value) {
+        if (state_ > 0.0) {
+            if (value <= lower_entry_) {
+                state_ = -1.0;
+            } else if (value <= upper_exit_) {
+                state_ = 0.0;
+            }
+        } else if (state_ < 0.0) {
+            if (value >= upper_entry_) {
+                state_ = 1.0;
+            } else if (value >= lower_exit_) {
+                state_ = 0.0;
+            }
+        } else if (value >= upper_entry_) {
+            state_ = 1.0;
+        } else if (value <= lower_entry_) {
+            state_ = -1.0;
+        }
+        return state_;
+    }
+
+    double state() const {
+        return state_;
+    }
+
+private:
+    void validate_thresholds() const {
+        if (!std::isfinite(upper_entry_) || !std::isfinite(upper_exit_) ||
+            !std::isfinite(lower_entry_) || !std::isfinite(lower_exit_)) {
+            throw nb::value_error("thresholds must be finite");
+        }
+        if (!(lower_entry_ < lower_exit_ && lower_exit_ <= upper_exit_ && upper_exit_ < upper_entry_)) {
+            throw nb::value_error("thresholds must satisfy lower_entry < lower_exit <= upper_exit < upper_entry");
+        }
+    }
+
+    double upper_entry_;
+    double upper_exit_;
+    double lower_entry_;
+    double lower_exit_;
+    double state_;
+};
+
+class UpperRegimeHysteresis {
+public:
+    UpperRegimeHysteresis(double entry, double exit)
+        : entry_(entry),
+          exit_(exit),
+          state_(0.0) {
+        if (!std::isfinite(entry_) || !std::isfinite(exit_) || exit_ >= entry_) {
+            throw nb::value_error("entry and exit must be finite and satisfy exit < entry");
+        }
+    }
+
+    double update(double value) {
+        if (state_ > 0.0) {
+            if (value <= exit_) {
+                state_ = 0.0;
+            }
+        } else if (value >= entry_) {
+            state_ = 1.0;
+        }
+        return state_;
+    }
+
+    double state() const {
+        return state_;
+    }
+
+private:
+    double entry_;
+    double exit_;
+    double state_;
+};
+
+class LowerRegimeHysteresis {
+public:
+    LowerRegimeHysteresis(double entry, double exit)
+        : entry_(entry),
+          exit_(exit),
+          state_(0.0) {
+        if (!std::isfinite(entry_) || !std::isfinite(exit_) || entry_ >= exit_) {
+            throw nb::value_error("entry and exit must be finite and satisfy entry < exit");
+        }
+    }
+
+    double update(double value) {
+        if (state_ > 0.0) {
+            if (value >= exit_) {
+                state_ = 0.0;
+            }
+        } else if (value <= entry_) {
+            state_ = 1.0;
+        }
+        return state_;
+    }
+
+    double state() const {
+        return state_;
+    }
+
+private:
+    double entry_;
+    double exit_;
+    double state_;
+};
+
+class EWMAMeanVariance {
+public:
+    EWMAMeanVariance(double alpha, double min_variance)
+        : alpha_(checked_alpha_value(alpha)),
+          min_variance_(checked_positive_finite(min_variance, "min_variance")),
+          mean_(0.0),
+          variance_(0.0),
+          count_(0) {}
+
+    bool ready(std::size_t min_count = 2) const {
+        return count_ >= min_count;
+    }
+
+    double z_score(double value) const {
+        return ready() ? (value - mean_) / std::sqrt(std::max(variance_, min_variance_)) : 0.0;
+    }
+
+    void push(double value) {
+        if (count_ == 0) {
+            mean_ = value;
+            variance_ = 0.0;
+            count_ = 1;
+            return;
+        }
+        const double delta = value - mean_;
+        mean_ += alpha_ * delta;
+        variance_ = (1.0 - alpha_) * (variance_ + alpha_ * delta * delta);
+        ++count_;
+    }
+
+    double mean() const {
+        return mean_;
+    }
+
+    double variance() const {
+        return variance_;
+    }
+
+    std::size_t count() const {
+        return count_;
+    }
+
+private:
+    double alpha_;
+    double min_variance_;
+    double mean_;
+    double variance_;
+    std::size_t count_;
+};
+
+inline double gaussian_likelihood(double value, double mean, double variance, double min_variance) {
+    const double var = std::max(variance, min_variance);
+    const double z = value - mean;
+    const double exponent = std::max(-60.0, -0.5 * z * z / var);
+    return std::exp(exponent) / std::sqrt(var);
+}
+
+class OnlineGaussianHMMCore {
+public:
+    OnlineGaussianHMMCore(
+        int states,
+        double stay_probability,
+        double alpha,
+        double min_variance,
+        double duration_strength = 0.0,
+        double expected_duration = 10.0)
+        : states_(checked_state_count(states)),
+          stay_probability_(checked_probability_value(stay_probability, "stay_probability")),
+          alpha_(checked_alpha_value(alpha)),
+          min_variance_(checked_positive_finite(min_variance, "min_variance")),
+          duration_strength_(checked_non_negative_finite(duration_strength, "duration_strength")),
+          expected_duration_(checked_positive_finite(expected_duration, "expected_duration")),
+          probabilities_(static_cast<std::size_t>(states_), 1.0 / static_cast<double>(states_)),
+          means_(static_cast<std::size_t>(states_), 0.0),
+          variances_(static_cast<std::size_t>(states_), 1.0),
+          initialized_(false),
+          last_state_(0),
+          duration_(0),
+          last_probability_(1.0 / static_cast<double>(states_)) {}
+
+    double update(double value) {
+        if (!initialized_) {
+            initialize(value);
+            return 0.0;
+        }
+
+        std::vector<double> predicted(static_cast<std::size_t>(states_), 0.0);
+        const double switch_probability = (1.0 - stay_probability_) / static_cast<double>(states_ - 1);
+        for (int from = 0; from < states_; ++from) {
+            for (int to = 0; to < states_; ++to) {
+                predicted[static_cast<std::size_t>(to)] += probabilities_[static_cast<std::size_t>(from)] *
+                    (from == to ? stay_probability_ : switch_probability);
+            }
+        }
+
+        if (duration_strength_ > 0.0 && duration_ > 0) {
+            const double duration_ratio = std::min(static_cast<double>(duration_) / expected_duration_, 1.0);
+            predicted[static_cast<std::size_t>(last_state_)] *= 1.0 + duration_strength_ * duration_ratio;
+        }
+
+        std::vector<double> posterior(static_cast<std::size_t>(states_), 0.0);
+        double total = 0.0;
+        for (int state = 0; state < states_; ++state) {
+            const std::size_t index = static_cast<std::size_t>(state);
+            posterior[index] = predicted[index] * gaussian_likelihood(value, means_[index], variances_[index], min_variance_);
+            total += posterior[index];
+        }
+        if (total <= 0.0 || !std::isfinite(total)) {
+            std::fill(posterior.begin(), posterior.end(), 1.0 / static_cast<double>(states_));
+        } else {
+            for (double &probability : posterior) {
+                probability /= total;
+            }
+        }
+
+        int best_state = 0;
+        double best_probability = posterior[0];
+        for (int state = 1; state < states_; ++state) {
+            const double probability = posterior[static_cast<std::size_t>(state)];
+            if (probability > best_probability) {
+                best_probability = probability;
+                best_state = state;
+            }
+        }
+
+        for (int state = 0; state < states_; ++state) {
+            const std::size_t index = static_cast<std::size_t>(state);
+            const double rate = std::min(1.0, alpha_ * posterior[index]);
+            const double delta = value - means_[index];
+            means_[index] += rate * delta;
+            variances_[index] = (1.0 - rate) * (variances_[index] + rate * delta * delta);
+        }
+
+        probabilities_ = std::move(posterior);
+        duration_ = best_state == last_state_ ? duration_ + 1 : 1;
+        last_state_ = best_state;
+        last_probability_ = best_probability;
+        return static_cast<double>(last_state_);
+    }
+
+    double last() const {
+        return static_cast<double>(last_state_);
+    }
+
+    double last_probability() const {
+        return last_probability_;
+    }
+
+private:
+    void initialize(double value) {
+        const double spacing = std::max(std::abs(value) * 0.01, std::sqrt(min_variance_) * 10.0);
+        const double midpoint = 0.5 * static_cast<double>(states_ - 1);
+        for (int state = 0; state < states_; ++state) {
+            const std::size_t index = static_cast<std::size_t>(state);
+            means_[index] = value + (static_cast<double>(state) - midpoint) * spacing;
+            variances_[index] = std::max(spacing * spacing, min_variance_);
+            probabilities_[index] = 1.0 / static_cast<double>(states_);
+        }
+        initialized_ = true;
+        last_state_ = 0;
+        duration_ = 1;
+        last_probability_ = probabilities_[0];
+    }
+
+    int states_;
+    double stay_probability_;
+    double alpha_;
+    double min_variance_;
+    double duration_strength_;
+    double expected_duration_;
+    std::vector<double> probabilities_;
+    std::vector<double> means_;
+    std::vector<double> variances_;
+    bool initialized_;
+    int last_state_;
+    int duration_;
+    double last_probability_;
+};
+
+class EWMARegressionResidual {
+public:
+    EWMARegressionResidual(double alpha, double min_variance)
+        : alpha_(checked_alpha(alpha)),
+          min_variance_(checked_positive_finite(min_variance, "min_variance")),
+          mean_x_(0.0),
+          mean_y_(0.0),
+          cov_xy_(0.0),
+          var_y_(0.0),
+          residual_mean_(0.0),
+          residual_variance_(0.0),
+          count_(0),
+          residual_count_(0) {}
+
+    bool ready() const {
+        return count_ >= 3 && residual_count_ >= 2;
+    }
+
+    double residual_z(double x, double y) const {
+        const double residual = current_residual(x, y);
+        return (residual - residual_mean_) / std::sqrt(std::max(residual_variance_, min_variance_));
+    }
+
+    void push(double x, double y) {
+        if (count_ == 0) {
+            mean_x_ = x;
+            mean_y_ = y;
+            count_ = 1;
+            return;
+        }
+
+        const double residual = current_residual(x, y);
+        if (residual_count_ == 0) {
+            residual_mean_ = residual;
+            residual_variance_ = 0.0;
+            residual_count_ = 1;
+        } else {
+            const double residual_delta = residual - residual_mean_;
+            residual_mean_ += alpha_ * residual_delta;
+            residual_variance_ = (1.0 - alpha_) * (residual_variance_ + alpha_ * residual_delta * residual_delta);
+            ++residual_count_;
+        }
+
+        const double dx = x - mean_x_;
+        const double dy = y - mean_y_;
+        mean_x_ += alpha_ * dx;
+        mean_y_ += alpha_ * dy;
+        cov_xy_ = (1.0 - alpha_) * (cov_xy_ + alpha_ * dx * dy);
+        var_y_ = (1.0 - alpha_) * (var_y_ + alpha_ * dy * dy);
+        ++count_;
+    }
+
+private:
+    static double checked_alpha(double alpha) {
+        if (!std::isfinite(alpha) || alpha <= 0.0 || alpha > 1.0) {
+            throw nb::value_error("alpha must be in the range (0, 1]");
+        }
+        return alpha;
+    }
+
+    double current_residual(double x, double y) const {
+        const double beta = safe_divide(cov_xy_, var_y_);
+        const double intercept = mean_x_ - beta * mean_y_;
+        return x - (beta * y + intercept);
+    }
+
+    double alpha_;
+    double min_variance_;
+    double mean_x_;
+    double mean_y_;
+    double cov_xy_;
+    double var_y_;
+    double residual_mean_;
+    double residual_variance_;
+    std::size_t count_;
+    std::size_t residual_count_;
+};
+
+class VolatilityRegimeDetector {
+public:
+    VolatilityRegimeDetector(
+        double alpha = 0.05,
+        double high_entry = 1.0,
+        double high_exit = 0.8,
+        double low_entry = 0.2,
+        double low_exit = 0.3)
+        : alpha_(checked_alpha(alpha)),
+          regime_(high_entry, high_exit, low_entry, low_exit),
+          previous_close_(0.0),
+          variance_(0.0),
+          has_previous_(false),
+          last_(0.0) {}
+
+    double update(double close) {
+        if (!has_previous_) {
+            previous_close_ = close;
+            has_previous_ = true;
+            last_ = 0.0;
+            return last_;
+        }
+        const double change = close - previous_close_;
+        previous_close_ = close;
+        variance_ = (1.0 - alpha_) * (variance_ + alpha_ * change * change);
+        last_ = regime_.update(std::sqrt(variance_));
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    static double checked_alpha(double alpha) {
+        if (!std::isfinite(alpha) || alpha <= 0.0 || alpha > 1.0) {
+            throw nb::value_error("alpha must be in the range (0, 1]");
+        }
+        return alpha;
+    }
+
+    double alpha_;
+    RegimeHysteresis regime_;
+    double previous_close_;
+    double variance_;
+    bool has_previous_;
+    double last_;
+};
+
+class ATRRegimeDetector {
+public:
+    ATRRegimeDetector(
+        int window = 14,
+        double high_entry = 1.0,
+        double high_exit = 0.8,
+        double low_entry = 0.2,
+        double low_exit = 0.3)
+        : atr_(static_cast<double>(checked_shift_window(window)), false),
+          regime_(high_entry, high_exit, low_entry, low_exit),
+          last_(0.0) {}
+
+    double update(double close, double high, double low) {
+        const double atr = atr_.update(close, high, low);
+        if (!std::isfinite(atr)) {
+            last_ = 0.0;
+            return last_;
+        }
+        last_ = regime_.update(atr);
+        return last_;
+    }
+
+    inline void advance(double close, double high, double low) {
+        (void) update(close, high, low);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        return batch_update3(*this, close, high, low);
+    }
+
+private:
+    ATR atr_;
+    RegimeHysteresis regime_;
+    double last_;
+};
+
+class RealizedVarianceRegimeDetector {
+public:
+    RealizedVarianceRegimeDetector(
+        int window = 20,
+        double high_entry = 1.0,
+        double high_exit = 0.8,
+        double low_entry = 0.2,
+        double low_exit = 0.3)
+        : squared_returns_(checked_shift_window(window)),
+          window_(checked_shift_window(window)),
+          regime_(high_entry, high_exit, low_entry, low_exit),
+          previous_close_(0.0),
+          has_previous_(false),
+          last_(0.0) {}
+
+    double update(double close) {
+        const double change = has_previous_ ? close - previous_close_ : 0.0;
+        previous_close_ = close;
+        has_previous_ = true;
+        squared_returns_.push(change * change);
+        if (!squared_returns_.full()) {
+            last_ = 0.0;
+            return last_;
+        }
+        last_ = regime_.update(squared_returns_.sum() / static_cast<double>(window_));
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    RollingSumWindow squared_returns_;
+    int window_;
+    RegimeHysteresis regime_;
+    double previous_close_;
+    bool has_previous_;
+    double last_;
+};
+
+class TrendChopRegimeDetector {
+public:
+    TrendChopRegimeDetector(
+        int window = 20,
+        double trend_entry = 0.7,
+        double trend_exit = 0.5,
+        double chop_entry = 0.3,
+        double chop_exit = 0.5)
+        : ranges_(checked_shift_window(window)),
+          closes_(checked_shift_window(window) + 1),
+          regime_(trend_entry, trend_exit, chop_entry, chop_exit),
+          previous_close_(0.0),
+          first_(true),
+          last_(0.0) {}
+
+    double update(double close, double high, double low) {
+        const double range = first_ ? high - low : true_range(close, high, low, previous_close_);
+        ranges_.push(std::max(range, 0.0));
+        closes_.push(close);
+        previous_close_ = close;
+        first_ = false;
+        if (!ranges_.full() || !closes_.full()) {
+            last_ = 0.0;
+            return last_;
+        }
+        const double efficiency = safe_divide(std::abs(close - closes_.oldest()), ranges_.sum());
+        last_ = regime_.update(efficiency);
+        return last_;
+    }
+
+    inline void advance(double close, double high, double low) {
+        (void) update(close, high, low);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        return batch_update3(*this, close, high, low);
+    }
+
+private:
+    RollingSumWindow ranges_;
+    RollingBuffer closes_;
+    RegimeHysteresis regime_;
+    double previous_close_;
+    bool first_;
+    double last_;
+};
+
+class LiquidityRegimeDetector {
+public:
+    LiquidityRegimeDetector(
+        double alpha = 0.05,
+        double illiquid_entry = 1.0e-8,
+        double illiquid_exit = 8.0e-9,
+        double liquid_entry = 1.0e-10,
+        double liquid_exit = 2.0e-10,
+        double dollar_floor = 1.0e-12)
+        : alpha_(checked_alpha(alpha)),
+          dollar_floor_(checked_positive_finite(dollar_floor, "dollar_floor")),
+          regime_(illiquid_entry, illiquid_exit, liquid_entry, liquid_exit),
+          previous_close_(0.0),
+          ewma_(0.0),
+          has_previous_(false),
+          last_(0.0) {}
+
+    double update(double close, double volume) {
+        const double dollars = std::max(std::abs(close) * std::max(volume, 0.0), dollar_floor_);
+        const double price_return = has_previous_ ? std::abs(safe_divide(close - previous_close_, previous_close_)) : 0.0;
+        const double illiquidity = price_return / dollars;
+        ewma_ = has_previous_ ? alpha_ * illiquidity + (1.0 - alpha_) * ewma_ : illiquidity;
+        previous_close_ = close;
+        has_previous_ = true;
+        last_ = regime_.update(ewma_);
+        return last_;
+    }
+
+    inline void advance(double close, double volume) {
+        (void) update(close, volume);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &close, const Array1 &volume) {
+        return batch_update2(*this, close, volume);
+    }
+
+private:
+    static double checked_alpha(double alpha) {
+        if (!std::isfinite(alpha) || alpha <= 0.0 || alpha > 1.0) {
+            throw nb::value_error("alpha must be in the range (0, 1]");
+        }
+        return alpha;
+    }
+
+    double alpha_;
+    double dollar_floor_;
+    RegimeHysteresis regime_;
+    double previous_close_;
+    double ewma_;
+    bool has_previous_;
+    double last_;
+};
+
+class SpreadRegimeDetector {
+public:
+    SpreadRegimeDetector(
+        double wide_entry = 0.001,
+        double wide_exit = 0.0008,
+        double tight_entry = 0.0001,
+        double tight_exit = 0.0002,
+        double mid_floor = 1.0e-12)
+        : mid_floor_(checked_positive_finite(mid_floor, "mid_floor")),
+          regime_(wide_entry, wide_exit, tight_entry, tight_exit),
+          last_(0.0) {}
+
+    double update(double bid_price, double ask_price) {
+        const double mid = 0.5 * (bid_price + ask_price);
+        const double relative_spread = std::max(ask_price - bid_price, 0.0) / std::max(std::abs(mid), mid_floor_);
+        last_ = regime_.update(relative_spread);
+        return last_;
+    }
+
+    inline void advance(double bid_price, double ask_price) {
+        (void) update(bid_price, ask_price);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &bid_price, const Array1 &ask_price) {
+        return batch_update2(*this, bid_price, ask_price);
+    }
+
+private:
+    double mid_floor_;
+    RegimeHysteresis regime_;
+    double last_;
+};
+
+class RelativeEWMARegimeDetector {
+public:
+    RelativeEWMARegimeDetector(
+        double alpha,
+        double high_entry,
+        double high_exit,
+        double low_entry,
+        double low_exit,
+        double value_floor)
+        : alpha_(checked_alpha(alpha)),
+          value_floor_(checked_positive_finite(value_floor, "value_floor")),
+          regime_(high_entry, high_exit, low_entry, low_exit),
+          ewma_(0.0),
+          initialized_(false),
+          last_(0.0) {}
+
+    double update(double value) {
+        const double positive = std::max(value, 0.0);
+        if (!initialized_) {
+            ewma_ = positive;
+            initialized_ = true;
+            last_ = 0.0;
+            return last_;
+        }
+        const double ratio = positive / std::max(ewma_, value_floor_);
+        last_ = regime_.update(ratio);
+        ewma_ = alpha_ * positive + (1.0 - alpha_) * ewma_;
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    static double checked_alpha(double alpha) {
+        if (!std::isfinite(alpha) || alpha <= 0.0 || alpha > 1.0) {
+            throw nb::value_error("alpha must be in the range (0, 1]");
+        }
+        return alpha;
+    }
+
+    double alpha_;
+    double value_floor_;
+    RegimeHysteresis regime_;
+    double ewma_;
+    bool initialized_;
+    double last_;
+};
+
+class VolumeRegimeDetector : public RelativeEWMARegimeDetector {
+public:
+    using RelativeEWMARegimeDetector::advance;
+    using RelativeEWMARegimeDetector::batch_array;
+    using RelativeEWMARegimeDetector::last;
+    using RelativeEWMARegimeDetector::update;
+
+    VolumeRegimeDetector(
+        double alpha = 0.05,
+        double high_entry = 2.0,
+        double high_exit = 1.2,
+        double low_entry = 0.5,
+        double low_exit = 0.8,
+        double volume_floor = 1.0e-12)
+        : RelativeEWMARegimeDetector(alpha, high_entry, high_exit, low_entry, low_exit, volume_floor) {}
+};
+
+class TradeIntensityRegimeDetector : public RelativeEWMARegimeDetector {
+public:
+    using RelativeEWMARegimeDetector::advance;
+    using RelativeEWMARegimeDetector::batch_array;
+    using RelativeEWMARegimeDetector::last;
+    using RelativeEWMARegimeDetector::update;
+
+    TradeIntensityRegimeDetector(
+        double alpha = 0.05,
+        double high_entry = 2.0,
+        double high_exit = 1.2,
+        double low_entry = 0.5,
+        double low_exit = 0.8,
+        double intensity_floor = 1.0e-12)
+        : RelativeEWMARegimeDetector(alpha, high_entry, high_exit, low_entry, low_exit, intensity_floor) {}
+};
+
+class OrderFlowImbalanceRegimeDetector {
+public:
+    OrderFlowImbalanceRegimeDetector(
+        double alpha = 0.05,
+        double buy_entry = 0.5,
+        double buy_exit = 0.2,
+        double sell_entry = -0.5,
+        double sell_exit = -0.2,
+        double depth_floor = 1.0e-12)
+        : alpha_(checked_alpha(alpha)),
+          depth_floor_(checked_positive_finite(depth_floor, "depth_floor")),
+          regime_(buy_entry, buy_exit, sell_entry, sell_exit),
+          previous_bid_price_(0.0),
+          previous_bid_size_(0.0),
+          previous_ask_price_(0.0),
+          previous_ask_size_(0.0),
+          ewma_(0.0),
+          has_previous_(false),
+          last_(0.0) {}
+
+    double update(double bid_price, double bid_size, double ask_price, double ask_size) {
+        double event = 0.0;
+        if (has_previous_) {
+            if (bid_price >= previous_bid_price_) {
+                event += bid_size;
+            }
+            if (bid_price <= previous_bid_price_) {
+                event -= previous_bid_size_;
+            }
+            if (ask_price <= previous_ask_price_) {
+                event -= ask_size;
+            }
+            if (ask_price >= previous_ask_price_) {
+                event += previous_ask_size_;
+            }
+        }
+
+        const double depth = std::max(bid_size, 0.0) + std::max(ask_size, 0.0);
+        const double normalized = event / std::max(depth, depth_floor_);
+        ewma_ = has_previous_ ? alpha_ * normalized + (1.0 - alpha_) * ewma_ : 0.0;
+
+        previous_bid_price_ = bid_price;
+        previous_bid_size_ = bid_size;
+        previous_ask_price_ = ask_price;
+        previous_ask_size_ = ask_size;
+        has_previous_ = true;
+        last_ = regime_.update(ewma_);
+        return last_;
+    }
+
+    inline void advance(double bid_price, double bid_size, double ask_price, double ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    nb::object batch_array(const Array0 &bid_price, const Array1 &bid_size, const Array2 &ask_price, const Array3 &ask_size) {
+        return batch_update4(*this, bid_price, bid_size, ask_price, ask_size);
+    }
+
+private:
+    static double checked_alpha(double alpha) {
+        if (!std::isfinite(alpha) || alpha <= 0.0 || alpha > 1.0) {
+            throw nb::value_error("alpha must be in the range (0, 1]");
+        }
+        return alpha;
+    }
+
+    double alpha_;
+    double depth_floor_;
+    RegimeHysteresis regime_;
+    double previous_bid_price_;
+    double previous_bid_size_;
+    double previous_ask_price_;
+    double previous_ask_size_;
+    double ewma_;
+    bool has_previous_;
+    double last_;
+};
+
+class CorrelationRegimeDetector {
+public:
+    CorrelationRegimeDetector(
+        int window = 30,
+        double high_entry = 0.8,
+        double high_exit = 0.6,
+        double low_entry = -0.2,
+        double low_exit = 0.0)
+        : stats_(checked_shift_window(window)),
+          regime_(high_entry, high_exit, low_entry, low_exit),
+          last_(0.0) {}
+
+    double update(double real0, double real1) {
+        stats_.push(real0, real1);
+        if (!stats_.full()) {
+            last_ = 0.0;
+            return last_;
+        }
+        last_ = regime_.update(stats_.correlation());
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    RollingPairStats stats_;
+    RegimeHysteresis regime_;
+    double last_;
+};
+
+class BetaRegimeDetector {
+public:
+    BetaRegimeDetector(
+        int window = 30,
+        double high_entry = 1.5,
+        double high_exit = 1.2,
+        double low_entry = 0.5,
+        double low_exit = 0.8)
+        : stats_(checked_shift_window(window)),
+          regime_(high_entry, high_exit, low_entry, low_exit),
+          last_(0.0) {}
+
+    double update(double real0, double real1) {
+        stats_.push(real0, real1);
+        if (!stats_.full()) {
+            last_ = 0.0;
+            return last_;
+        }
+        last_ = regime_.update(stats_.beta());
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    RollingPairStats stats_;
+    RegimeHysteresis regime_;
+    double last_;
+};
+
+class PairsSpreadRegimeDetector {
+public:
+    PairsSpreadRegimeDetector(
+        double alpha = 0.05,
+        double z_entry = 3.0,
+        double z_exit = 1.0,
+        double min_variance = 1.0e-12)
+        : residual_(alpha, min_variance),
+          regime_(checked_positive_finite(z_entry, "z_entry"), checked_non_negative_finite(z_exit, "z_exit"), -z_entry, -z_exit),
+          last_(0.0) {
+        if (z_exit >= z_entry) {
+            throw nb::value_error("z_exit must be less than z_entry");
+        }
+    }
+
+    double update(double real0, double real1) {
+        const double z = residual_.ready() ? residual_.residual_z(real0, real1) : 0.0;
+        last_ = regime_.update(z);
+        residual_.push(real0, real1);
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    EWMARegressionResidual residual_;
+    RegimeHysteresis regime_;
+    double last_;
+};
+
+class CointegrationBreakdownMonitor {
+public:
+    CointegrationBreakdownMonitor(
+        double alpha = 0.05,
+        double z_entry = 3.0,
+        double z_exit = 1.0,
+        double min_variance = 1.0e-12)
+        : residual_(alpha, min_variance),
+          regime_(checked_positive_finite(z_entry, "z_entry"), checked_non_negative_finite(z_exit, "z_exit")),
+          last_(0.0) {
+        if (z_exit >= z_entry) {
+            throw nb::value_error("z_exit must be less than z_entry");
+        }
+    }
+
+    double update(double real0, double real1) {
+        const double metric = residual_.ready() ? std::abs(residual_.residual_z(real0, real1)) : 0.0;
+        last_ = regime_.update(metric);
+        residual_.push(real0, real1);
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    EWMARegressionResidual residual_;
+    UpperRegimeHysteresis regime_;
+    double last_;
+};
+
+class ExecutionCostSlippageRegimeDetector {
+public:
+    ExecutionCostSlippageRegimeDetector(
+        double high_entry = 0.001,
+        double high_exit = 0.0008,
+        double low_entry = 0.0001,
+        double low_exit = 0.0002,
+        double mid_floor = 1.0e-12)
+        : mid_floor_(checked_positive_finite(mid_floor, "mid_floor")),
+          regime_(high_entry, high_exit, low_entry, low_exit),
+          last_(0.0) {}
+
+    double update(double trade_price, double bid_price, double ask_price) {
+        const double mid = 0.5 * (bid_price + ask_price);
+        const double cost = std::abs(trade_price - mid) / std::max(std::abs(mid), mid_floor_);
+        last_ = regime_.update(cost);
+        return last_;
+    }
+
+    inline void advance(double trade_price, double bid_price, double ask_price) {
+        (void) update(trade_price, bid_price, ask_price);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &trade_price, const Array1 &bid_price, const Array2 &ask_price) {
+        return batch_update3(*this, trade_price, bid_price, ask_price);
+    }
+
+private:
+    double mid_floor_;
+    RegimeHysteresis regime_;
+    double last_;
+};
+
+class ADWIN {
+public:
+    ADWIN(int max_window = 256, int min_window = 16, double delta = 0.002)
+        : max_window_(checked_shift_window(max_window)),
+          min_window_(checked_shift_window(min_window)),
+          delta_(checked_probability_value(delta, "delta")),
+          last_(0.0) {
+        if (min_window_ * 2 > max_window_) {
+            throw nb::value_error("max_window must be at least 2 * min_window");
+        }
+    }
+
+    double update(double value) {
+        values_.push_back(value);
+        if (values_.size() > static_cast<std::size_t>(max_window_)) {
+            values_.erase(values_.begin());
+        }
+        last_ = 0.0;
+        const std::size_t n = values_.size();
+        if (n < static_cast<std::size_t>(min_window_ * 2)) {
+            return last_;
+        }
+
+        std::vector<double> prefix(n + 1, 0.0);
+        double minimum = values_[0];
+        double maximum = values_[0];
+        for (std::size_t i = 0; i < n; ++i) {
+            prefix[i + 1] = prefix[i] + values_[i];
+            minimum = std::min(minimum, values_[i]);
+            maximum = std::max(maximum, values_[i]);
+        }
+
+        double best_difference = 0.0;
+        std::size_t best_cut = 0;
+        const double range = std::max(maximum - minimum, 1.0e-12);
+        const double log_term = std::log(4.0 / delta_);
+        for (std::size_t cut = static_cast<std::size_t>(min_window_); cut <= n - static_cast<std::size_t>(min_window_); ++cut) {
+            const double left_n = static_cast<double>(cut);
+            const double right_n = static_cast<double>(n - cut);
+            const double left_mean = prefix[cut] / left_n;
+            const double right_mean = (prefix[n] - prefix[cut]) / right_n;
+            const double difference = right_mean - left_mean;
+            const double epsilon = range * std::sqrt(0.5 * log_term * (1.0 / left_n + 1.0 / right_n));
+            if (std::abs(difference) > epsilon && std::abs(difference) > std::abs(best_difference)) {
+                best_difference = difference;
+                best_cut = cut;
+            }
+        }
+
+        if (best_cut != 0) {
+            last_ = best_difference > 0.0 ? 1.0 : -1.0;
+            values_.erase(values_.begin(), values_.begin() + static_cast<std::ptrdiff_t>(best_cut));
+        }
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    int max_window_;
+    int min_window_;
+    double delta_;
+    std::vector<double> values_;
+    double last_;
+};
+
+class DDM {
+public:
+    DDM(int min_samples = 30, double warning_level = 2.0, double drift_level = 3.0)
+        : min_samples_(checked_shift_window(min_samples)),
+          warning_level_(checked_positive_finite(warning_level, "warning_level")),
+          drift_level_(checked_positive_finite(drift_level, "drift_level")),
+          count_(0),
+          errors_(0.0),
+          min_score_(std::numeric_limits<double>::infinity()),
+          min_std_(0.0),
+          last_(0.0) {
+        if (warning_level_ >= drift_level_) {
+            throw nb::value_error("warning_level must be less than drift_level");
+        }
+    }
+
+    double update(double error) {
+        ++count_;
+        errors_ += error > 0.0 ? 1.0 : 0.0;
+        if (count_ < static_cast<std::size_t>(min_samples_)) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double n = static_cast<double>(count_);
+        const double rate = errors_ / n;
+        const double stddev = std::sqrt(std::max(rate * (1.0 - rate) / n, 0.0));
+        const double score = rate + stddev;
+        if (score < min_score_) {
+            min_score_ = score;
+            min_std_ = stddev;
+        }
+
+        if (score > min_score_ + drift_level_ * min_std_) {
+            reset();
+            last_ = 1.0;
+        } else if (score > min_score_ + warning_level_ * min_std_) {
+            last_ = 0.5;
+        } else {
+            last_ = 0.0;
+        }
+        return last_;
+    }
+
+    inline void advance(double error) {
+        (void) update(error);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &error) {
+        return batch_update1(*this, error);
+    }
+
+private:
+    void reset() {
+        count_ = 0;
+        errors_ = 0.0;
+        min_score_ = std::numeric_limits<double>::infinity();
+        min_std_ = 0.0;
+    }
+
+    int min_samples_;
+    double warning_level_;
+    double drift_level_;
+    std::size_t count_;
+    double errors_;
+    double min_score_;
+    double min_std_;
+    double last_;
+};
+
+class EDDM {
+public:
+    EDDM(int min_errors = 30, double warning_ratio = 0.95, double drift_ratio = 0.90)
+        : min_errors_(checked_shift_window(min_errors)),
+          warning_ratio_(checked_probability_value(warning_ratio, "warning_ratio")),
+          drift_ratio_(checked_probability_value(drift_ratio, "drift_ratio")),
+          sample_index_(0),
+          last_error_index_(0),
+          error_count_(0),
+          mean_distance_(0.0),
+          m2_distance_(0.0),
+          best_score_(0.0),
+          last_(0.0) {
+        if (drift_ratio_ >= warning_ratio_) {
+            throw nb::value_error("drift_ratio must be less than warning_ratio");
+        }
+    }
+
+    double update(double error) {
+        ++sample_index_;
+        if (error <= 0.0) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double distance = last_error_index_ == 0 ? static_cast<double>(sample_index_) : static_cast<double>(sample_index_ - last_error_index_);
+        last_error_index_ = sample_index_;
+        ++error_count_;
+        const double delta = distance - mean_distance_;
+        mean_distance_ += delta / static_cast<double>(error_count_);
+        m2_distance_ += delta * (distance - mean_distance_);
+
+        if (error_count_ < static_cast<std::size_t>(min_errors_)) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double variance = error_count_ > 1 ? m2_distance_ / static_cast<double>(error_count_ - 1) : 0.0;
+        const double score = mean_distance_ + 2.0 * std::sqrt(std::max(variance, 0.0));
+        best_score_ = std::max(best_score_, score);
+        const double ratio = safe_divide(score, best_score_, 1.0);
+        if (ratio < drift_ratio_) {
+            reset();
+            last_ = 1.0;
+        } else if (ratio < warning_ratio_) {
+            last_ = 0.5;
+        } else {
+            last_ = 0.0;
+        }
+        return last_;
+    }
+
+    inline void advance(double error) {
+        (void) update(error);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &error) {
+        return batch_update1(*this, error);
+    }
+
+private:
+    void reset() {
+        sample_index_ = 0;
+        last_error_index_ = 0;
+        error_count_ = 0;
+        mean_distance_ = 0.0;
+        m2_distance_ = 0.0;
+        best_score_ = 0.0;
+    }
+
+    int min_errors_;
+    double warning_ratio_;
+    double drift_ratio_;
+    std::size_t sample_index_;
+    std::size_t last_error_index_;
+    std::size_t error_count_;
+    double mean_distance_;
+    double m2_distance_;
+    double best_score_;
+    double last_;
+};
+
+class HDDM {
+public:
+    HDDM(int min_samples = 30, double warning_delta = 0.01, double drift_delta = 0.001)
+        : min_samples_(checked_shift_window(min_samples)),
+          warning_delta_(checked_probability_value(warning_delta, "warning_delta")),
+          drift_delta_(checked_probability_value(drift_delta, "drift_delta")),
+          count_(0),
+          errors_(0.0),
+          min_mean_(std::numeric_limits<double>::infinity()),
+          min_bound_(0.0),
+          last_(0.0) {
+        if (drift_delta_ >= warning_delta_) {
+            throw nb::value_error("drift_delta must be less than warning_delta");
+        }
+    }
+
+    double update(double error) {
+        ++count_;
+        errors_ += error > 0.0 ? 1.0 : 0.0;
+        if (count_ < static_cast<std::size_t>(min_samples_)) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double n = static_cast<double>(count_);
+        const double mean = errors_ / n;
+        const double drift_bound = std::sqrt(std::log(1.0 / drift_delta_) / (2.0 * n));
+        const double warning_bound = std::sqrt(std::log(1.0 / warning_delta_) / (2.0 * n));
+        if (mean + drift_bound < min_mean_ + min_bound_) {
+            min_mean_ = mean;
+            min_bound_ = drift_bound;
+        }
+
+        if (mean - min_mean_ > drift_bound + min_bound_) {
+            reset();
+            last_ = 1.0;
+        } else if (mean - min_mean_ > warning_bound + min_bound_) {
+            last_ = 0.5;
+        } else {
+            last_ = 0.0;
+        }
+        return last_;
+    }
+
+    inline void advance(double error) {
+        (void) update(error);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &error) {
+        return batch_update1(*this, error);
+    }
+
+private:
+    void reset() {
+        count_ = 0;
+        errors_ = 0.0;
+        min_mean_ = std::numeric_limits<double>::infinity();
+        min_bound_ = 0.0;
+    }
+
+    int min_samples_;
+    double warning_delta_;
+    double drift_delta_;
+    std::size_t count_;
+    double errors_;
+    double min_mean_;
+    double min_bound_;
+    double last_;
+};
+
+class KSWIN {
+public:
+    KSWIN(int window = 100, int stat_window = 30, double alpha = 0.005)
+        : window_(checked_shift_window(window)),
+          stat_window_(checked_shift_window(stat_window)),
+          alpha_(checked_probability_value(alpha, "alpha")),
+          last_(0.0) {
+        if (stat_window_ * 2 > window_) {
+            throw nb::value_error("window must be at least 2 * stat_window");
+        }
+    }
+
+    double update(double value) {
+        values_.push_back(value);
+        if (values_.size() > static_cast<std::size_t>(window_)) {
+            values_.erase(values_.begin());
+        }
+        if (values_.size() < static_cast<std::size_t>(window_)) {
+            last_ = 0.0;
+            return last_;
+        }
+
+        const std::size_t recent_start = values_.size() - static_cast<std::size_t>(stat_window_);
+        std::vector<double> reference(values_.begin(), values_.begin() + static_cast<std::ptrdiff_t>(recent_start));
+        std::vector<double> recent(values_.begin() + static_cast<std::ptrdiff_t>(recent_start), values_.end());
+        const double reference_mean = vector_mean(reference);
+        const double recent_mean = vector_mean(recent);
+        const double statistic = ks_statistic(reference, recent);
+        const double critical = std::sqrt(-0.5 * std::log(alpha_ * 0.5) *
+            (1.0 / static_cast<double>(reference.size()) + 1.0 / static_cast<double>(recent.size())));
+        last_ = statistic > critical ? (recent_mean >= reference_mean ? 1.0 : -1.0) : 0.0;
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    static double vector_mean(const std::vector<double> &values) {
+        double sum = 0.0;
+        for (double value : values) {
+            sum += value;
+        }
+        return values.empty() ? 0.0 : sum / static_cast<double>(values.size());
+    }
+
+    static double ks_statistic(std::vector<double> reference, std::vector<double> recent) {
+        std::sort(reference.begin(), reference.end());
+        std::sort(recent.begin(), recent.end());
+        std::size_t i = 0;
+        std::size_t j = 0;
+        double best = 0.0;
+        while (i < reference.size() || j < recent.size()) {
+            const double next = j == recent.size() || (i < reference.size() && reference[i] <= recent[j]) ? reference[i] : recent[j];
+            while (i < reference.size() && reference[i] <= next) {
+                ++i;
+            }
+            while (j < recent.size() && recent[j] <= next) {
+                ++j;
+            }
+            const double ref_cdf = static_cast<double>(i) / static_cast<double>(reference.size());
+            const double recent_cdf = static_cast<double>(j) / static_cast<double>(recent.size());
+            best = std::max(best, std::abs(ref_cdf - recent_cdf));
+        }
+        return best;
+    }
+
+    int window_;
+    int stat_window_;
+    double alpha_;
+    std::vector<double> values_;
+    double last_;
+};
+
+class ResidualDriftDetector {
+public:
+    ResidualDriftDetector(double alpha = 0.05, double z_entry = 3.0, double z_exit = 1.0, double min_variance = 1.0e-12)
+        : stats_(alpha, min_variance),
+          regime_(checked_positive_finite(z_entry, "z_entry"), checked_non_negative_finite(z_exit, "z_exit"), -z_entry, -z_exit),
+          last_(0.0) {
+        if (z_exit >= z_entry) {
+            throw nb::value_error("z_exit must be less than z_entry");
+        }
+    }
+
+    double update(double residual) {
+        const double z = stats_.ready() ? stats_.z_score(residual) : 0.0;
+        last_ = regime_.update(z);
+        stats_.push(residual);
+        return last_;
+    }
+
+    inline void advance(double residual) {
+        (void) update(residual);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &residual) {
+        return batch_update1(*this, residual);
+    }
+
+private:
+    EWMAMeanVariance stats_;
+    RegimeHysteresis regime_;
+    double last_;
+};
+
+class PredictionErrorDriftDetector {
+public:
+    PredictionErrorDriftDetector(double alpha = 0.05, double z_entry = 3.0, double z_exit = 1.0, double min_variance = 1.0e-12)
+        : stats_(alpha, min_variance),
+          regime_(checked_positive_finite(z_entry, "z_entry"), checked_non_negative_finite(z_exit, "z_exit")),
+          last_(0.0) {
+        if (z_exit >= z_entry) {
+            throw nb::value_error("z_exit must be less than z_entry");
+        }
+    }
+
+    double update(double prediction, double actual) {
+        const double error = std::abs(actual - prediction);
+        const double z = stats_.ready() ? stats_.z_score(error) : 0.0;
+        last_ = regime_.update(z);
+        stats_.push(error);
+        return last_;
+    }
+
+    inline void advance(double prediction, double actual) {
+        (void) update(prediction, actual);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &prediction, const Array1 &actual) {
+        return batch_update2(*this, prediction, actual);
+    }
+
+private:
+    EWMAMeanVariance stats_;
+    UpperRegimeHysteresis regime_;
+    double last_;
+};
+
+class HitRateDriftDetector {
+public:
+    HitRateDriftDetector(double alpha = 0.05, double miss_entry = 0.40, double miss_exit = 0.25)
+        : alpha_(checked_alpha_value(alpha)),
+          regime_(checked_probability_value(miss_entry, "miss_entry"), checked_probability_value(miss_exit, "miss_exit")),
+          miss_rate_(0.0),
+          initialized_(false),
+          last_(0.0) {
+        if (miss_exit >= miss_entry) {
+            throw nb::value_error("miss_exit must be less than miss_entry");
+        }
+    }
+
+    double update(double hit) {
+        const double miss = hit > 0.0 ? 0.0 : 1.0;
+        miss_rate_ = initialized_ ? alpha_ * miss + (1.0 - alpha_) * miss_rate_ : miss;
+        initialized_ = true;
+        last_ = regime_.update(miss_rate_);
+        return last_;
+    }
+
+    inline void advance(double hit) {
+        (void) update(hit);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &hit) {
+        return batch_update1(*this, hit);
+    }
+
+private:
+    double alpha_;
+    UpperRegimeHysteresis regime_;
+    double miss_rate_;
+    bool initialized_;
+    double last_;
+};
+
+class CalibrationDriftDetector {
+public:
+    CalibrationDriftDetector(double alpha = 0.05, double error_entry = 0.25, double error_exit = 0.15)
+        : alpha_(checked_alpha_value(alpha)),
+          regime_(checked_positive_finite(error_entry, "error_entry"), checked_non_negative_finite(error_exit, "error_exit")),
+          calibration_error_(0.0),
+          initialized_(false),
+          last_(0.0) {
+        if (error_exit >= error_entry) {
+            throw nb::value_error("error_exit must be less than error_entry");
+        }
+    }
+
+    double update(double probability, double outcome) {
+        const double clipped = std::min(std::max(probability, 0.0), 1.0);
+        const double binary = outcome > 0.0 ? 1.0 : 0.0;
+        const double error = std::abs(binary - clipped);
+        calibration_error_ = initialized_ ? alpha_ * error + (1.0 - alpha_) * calibration_error_ : error;
+        initialized_ = true;
+        last_ = regime_.update(calibration_error_);
+        return last_;
+    }
+
+    inline void advance(double probability, double outcome) {
+        (void) update(probability, outcome);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &probability, const Array1 &outcome) {
+        return batch_update2(*this, probability, outcome);
+    }
+
+private:
+    double alpha_;
+    UpperRegimeHysteresis regime_;
+    double calibration_error_;
+    bool initialized_;
+    double last_;
+};
+
+class FeatureDistributionDriftDetector {
+public:
+    FeatureDistributionDriftDetector(int max_window = 256, int min_window = 16, double delta = 0.002)
+        : detector_(max_window, min_window, delta),
+          last_(0.0) {}
+
+    double update(double feature) {
+        last_ = detector_.update(feature);
+        return last_;
+    }
+
+    inline void advance(double feature) {
+        (void) update(feature);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &feature) {
+        return batch_update1(*this, feature);
+    }
+
+private:
+    ADWIN detector_;
+    double last_;
+};
+
+class OnlineHMMRegimeFilter {
+public:
+    OnlineHMMRegimeFilter(int states = 2, double stay_probability = 0.95, double alpha = 0.05, double min_variance = 1.0e-6)
+        : core_(states, stay_probability, alpha, min_variance),
+          last_(0.0) {}
+
+    double update(double value) {
+        last_ = core_.update(value);
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    inline double last_probability() const {
+        return core_.last_probability();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    OnlineGaussianHMMCore core_;
+    double last_;
+};
+
+class StickyHMMRegimeFilter {
+public:
+    StickyHMMRegimeFilter(int states = 2, double stay_probability = 0.985, double alpha = 0.05, double min_variance = 1.0e-6)
+        : core_(states, stay_probability, alpha, min_variance),
+          last_(0.0) {}
+
+    double update(double value) {
+        last_ = core_.update(value);
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    inline double last_probability() const {
+        return core_.last_probability();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    OnlineGaussianHMMCore core_;
+    double last_;
+};
+
+class OnlineMarkovSwitchingVolatilityFilter {
+public:
+    OnlineMarkovSwitchingVolatilityFilter(double stay_probability = 0.95, double alpha = 0.05, double min_variance = 1.0e-12)
+        : core_(2, stay_probability, alpha, min_variance),
+          previous_close_(0.0),
+          has_previous_(false),
+          last_(0.0) {}
+
+    double update(double close) {
+        const double metric = has_previous_ ? std::abs(safe_divide(close - previous_close_, previous_close_)) : 0.0;
+        previous_close_ = close;
+        has_previous_ = true;
+        last_ = core_.update(metric);
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    inline double last_probability() const {
+        return core_.last_probability();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    OnlineGaussianHMMCore core_;
+    double previous_close_;
+    bool has_previous_;
+    double last_;
+};
+
+class BoundedBOCPD {
+public:
+    BoundedBOCPD(int max_run_length = 128, double hazard = 0.01, double threshold = 0.5, double min_variance = 1.0e-6)
+        : max_run_length_(checked_shift_window(max_run_length)),
+          hazard_(checked_probability_value(hazard, "hazard")),
+          threshold_(checked_probability_value(threshold, "threshold")),
+          min_variance_(checked_positive_finite(min_variance, "min_variance")),
+          probabilities_(static_cast<std::size_t>(max_run_length_) + 1, 0.0),
+          means_(static_cast<std::size_t>(max_run_length_) + 1, 0.0),
+          variances_(static_cast<std::size_t>(max_run_length_) + 1, 0.0),
+          counts_(static_cast<std::size_t>(max_run_length_) + 1, 0),
+          initialized_(false),
+          last_probability_(0.0),
+          last_(0.0) {}
+
+    double update(double value) {
+        if (!initialized_) {
+            probabilities_[0] = 1.0;
+            means_[0] = value;
+            variances_[0] = 0.0;
+            counts_[0] = 1;
+            initialized_ = true;
+            last_probability_ = 0.0;
+            last_ = 0.0;
+            return last_;
+        }
+
+        const std::size_t size = probabilities_.size();
+        std::vector<double> next_probabilities(size, 0.0);
+        std::vector<double> next_means(size, value);
+        std::vector<double> next_variances(size, 0.0);
+        std::vector<std::size_t> next_counts(size, 0);
+
+        double change_mass = 0.0;
+        double total = 0.0;
+        for (std::size_t run = 0; run < size; ++run) {
+            if (probabilities_[run] <= 0.0 || counts_[run] == 0) {
+                continue;
+            }
+            const double likelihood = gaussian_likelihood(value, means_[run], variances_[run], min_variance_);
+            const double weighted = probabilities_[run] * likelihood;
+            change_mass += weighted * hazard_;
+            const std::size_t growth = std::min(run + 1, size - 1);
+            next_probabilities[growth] += weighted * (1.0 - hazard_);
+            update_run_stats(run, growth, value, next_means, next_variances, next_counts);
+            total += weighted;
+        }
+
+        next_probabilities[0] += change_mass;
+        next_means[0] = value;
+        next_variances[0] = 0.0;
+        next_counts[0] = 1;
+        total = 0.0;
+        for (double probability : next_probabilities) {
+            total += probability;
+        }
+        if (total <= 0.0 || !std::isfinite(total)) {
+            std::fill(next_probabilities.begin(), next_probabilities.end(), 0.0);
+            next_probabilities[0] = 1.0;
+            total = 1.0;
+        }
+        for (double &probability : next_probabilities) {
+            probability /= total;
+        }
+
+        probabilities_ = std::move(next_probabilities);
+        means_ = std::move(next_means);
+        variances_ = std::move(next_variances);
+        counts_ = std::move(next_counts);
+        last_probability_ = probabilities_[0];
+        last_ = last_probability_ >= threshold_ ? 1.0 : 0.0;
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    inline double last_probability() const {
+        return last_probability_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    void update_run_stats(
+        std::size_t old_run,
+        std::size_t new_run,
+        double value,
+        std::vector<double> &next_means,
+        std::vector<double> &next_variances,
+        std::vector<std::size_t> &next_counts) const {
+        const std::size_t old_count = counts_[old_run];
+        const std::size_t new_count = std::min<std::size_t>(old_count + 1, static_cast<std::size_t>(max_run_length_));
+        const double rate = 1.0 / static_cast<double>(new_count);
+        const double delta = value - means_[old_run];
+        const double mean = means_[old_run] + rate * delta;
+        const double variance = (1.0 - rate) * (variances_[old_run] + rate * delta * delta);
+        next_counts[new_run] = std::max(next_counts[new_run], new_count);
+        next_means[new_run] = mean;
+        next_variances[new_run] = variance;
+    }
+
+    int max_run_length_;
+    double hazard_;
+    double threshold_;
+    double min_variance_;
+    std::vector<double> probabilities_;
+    std::vector<double> means_;
+    std::vector<double> variances_;
+    std::vector<std::size_t> counts_;
+    bool initialized_;
+    double last_probability_;
+    double last_;
+};
+
+class OnlineGaussianMixtureRegimeFilter {
+public:
+    OnlineGaussianMixtureRegimeFilter(int components = 2, double alpha = 0.05, double min_variance = 1.0e-6)
+        : components_(checked_state_count(components)),
+          alpha_(checked_alpha_value(alpha)),
+          min_variance_(checked_positive_finite(min_variance, "min_variance")),
+          weights_(static_cast<std::size_t>(components_), 1.0 / static_cast<double>(components_)),
+          means_(static_cast<std::size_t>(components_), 0.0),
+          variances_(static_cast<std::size_t>(components_), 1.0),
+          initialized_(false),
+          last_(0.0),
+          last_probability_(1.0 / static_cast<double>(components_)) {}
+
+    double update(double value) {
+        if (!initialized_) {
+            initialize(value);
+            return last_;
+        }
+
+        std::vector<double> responsibilities(static_cast<std::size_t>(components_), 0.0);
+        double total = 0.0;
+        for (int component = 0; component < components_; ++component) {
+            const std::size_t index = static_cast<std::size_t>(component);
+            responsibilities[index] = weights_[index] * gaussian_likelihood(value, means_[index], variances_[index], min_variance_);
+            total += responsibilities[index];
+        }
+        if (total <= 0.0 || !std::isfinite(total)) {
+            std::fill(responsibilities.begin(), responsibilities.end(), 1.0 / static_cast<double>(components_));
+        } else {
+            for (double &responsibility : responsibilities) {
+                responsibility /= total;
+            }
+        }
+
+        int best = 0;
+        double best_probability = responsibilities[0];
+        for (int component = 1; component < components_; ++component) {
+            const double probability = responsibilities[static_cast<std::size_t>(component)];
+            if (probability > best_probability) {
+                best = component;
+                best_probability = probability;
+            }
+        }
+
+        double weight_total = 0.0;
+        for (int component = 0; component < components_; ++component) {
+            const std::size_t index = static_cast<std::size_t>(component);
+            weights_[index] = (1.0 - alpha_) * weights_[index] + alpha_ * responsibilities[index];
+            weight_total += weights_[index];
+            const double rate = std::min(1.0, alpha_ * responsibilities[index]);
+            const double delta = value - means_[index];
+            means_[index] += rate * delta;
+            variances_[index] = (1.0 - rate) * (variances_[index] + rate * delta * delta);
+        }
+        for (double &weight : weights_) {
+            weight /= std::max(weight_total, 1.0e-12);
+        }
+
+        last_ = static_cast<double>(best);
+        last_probability_ = best_probability;
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    inline double last_probability() const {
+        return last_probability_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    void initialize(double value) {
+        const double spacing = std::max(std::abs(value) * 0.01, std::sqrt(min_variance_) * 10.0);
+        const double midpoint = 0.5 * static_cast<double>(components_ - 1);
+        for (int component = 0; component < components_; ++component) {
+            const std::size_t index = static_cast<std::size_t>(component);
+            means_[index] = value + (static_cast<double>(component) - midpoint) * spacing;
+            variances_[index] = std::max(spacing * spacing, min_variance_);
+            weights_[index] = 1.0 / static_cast<double>(components_);
+        }
+        initialized_ = true;
+        last_ = 0.0;
+        last_probability_ = weights_[0];
+    }
+
+    int components_;
+    double alpha_;
+    double min_variance_;
+    std::vector<double> weights_;
+    std::vector<double> means_;
+    std::vector<double> variances_;
+    bool initialized_;
+    double last_;
+    double last_probability_;
+};
+
+class HiddenSemiMarkovRegimeFilter {
+public:
+    HiddenSemiMarkovRegimeFilter(
+        int states = 2,
+        double stay_probability = 0.95,
+        double expected_duration = 20.0,
+        double duration_strength = 1.0,
+        double alpha = 0.05,
+        double min_variance = 1.0e-6)
+        : core_(states, stay_probability, alpha, min_variance, duration_strength, expected_duration),
+          last_(0.0) {}
+
+    double update(double value) {
+        last_ = core_.update(value);
+        return last_;
+    }
+
+    inline void advance(double value) {
+        (void) update(value);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    inline double last_probability() const {
+        return core_.last_probability();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &value) {
+        return batch_update1(*this, value);
+    }
+
+private:
+    OnlineGaussianHMMCore core_;
+    double last_;
+};
+
+class VolatilityBreakoutDetector {
+public:
+    VolatilityBreakoutDetector(double alpha = 0.05, double z_entry = 3.0, double z_exit = 1.0, double min_variance = 1.0e-12)
+        : stats_(alpha, min_variance),
+          regime_(checked_positive_finite(z_entry, "z_entry"), checked_non_negative_finite(z_exit, "z_exit")),
+          previous_close_(0.0),
+          has_previous_(false),
+          last_(0.0) {
+        if (z_exit >= z_entry) {
+            throw nb::value_error("z_exit must be less than z_entry");
+        }
+    }
+
+    double update(double close) {
+        if (!has_previous_) {
+            previous_close_ = close;
+            has_previous_ = true;
+            last_ = 0.0;
+            return last_;
+        }
+        const double move = std::abs(safe_divide(close - previous_close_, previous_close_));
+        previous_close_ = close;
+        const double z = stats_.ready() ? stats_.z_score(move) : 0.0;
+        last_ = regime_.update(z);
+        stats_.push(move);
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    EWMAMeanVariance stats_;
+    UpperRegimeHysteresis regime_;
+    double previous_close_;
+    bool has_previous_;
+    double last_;
+};
+
+class VolatilityCompressionExpansionDetector {
+public:
+    VolatilityCompressionExpansionDetector(
+        double short_alpha = 0.20,
+        double long_alpha = 0.02,
+        double expansion_entry = 1.5,
+        double expansion_exit = 1.1,
+        double compression_entry = 0.6,
+        double compression_exit = 0.8,
+        double variance_floor = 1.0e-12)
+        : short_alpha_(checked_alpha_value(short_alpha, "short_alpha")),
+          long_alpha_(checked_alpha_value(long_alpha, "long_alpha")),
+          variance_floor_(checked_positive_finite(variance_floor, "variance_floor")),
+          regime_(expansion_entry, expansion_exit, compression_entry, compression_exit),
+          previous_close_(0.0),
+          short_variance_(0.0),
+          long_variance_(0.0),
+          has_previous_(false),
+          last_(0.0) {}
+
+    double update(double close) {
+        if (!has_previous_) {
+            previous_close_ = close;
+            has_previous_ = true;
+            last_ = 0.0;
+            return last_;
+        }
+        const double ret = safe_divide(close - previous_close_, previous_close_);
+        previous_close_ = close;
+        short_variance_ = (1.0 - short_alpha_) * (short_variance_ + short_alpha_ * ret * ret);
+        long_variance_ = (1.0 - long_alpha_) * (long_variance_ + long_alpha_ * ret * ret);
+        const double ratio = std::sqrt(std::max(short_variance_, variance_floor_)) / std::sqrt(std::max(long_variance_, variance_floor_));
+        last_ = regime_.update(ratio);
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    double short_alpha_;
+    double long_alpha_;
+    double variance_floor_;
+    RegimeHysteresis regime_;
+    double previous_close_;
+    double short_variance_;
+    double long_variance_;
+    bool has_previous_;
+    double last_;
+};
+
+class MicrostructureNoiseRegimeDetector {
+public:
+    MicrostructureNoiseRegimeDetector(double alpha = 0.05, double noise_entry = 1.0, double noise_exit = 0.5, double spread_floor = 1.0e-12)
+        : alpha_(checked_alpha_value(alpha)),
+          spread_floor_(checked_positive_finite(spread_floor, "spread_floor")),
+          regime_(checked_positive_finite(noise_entry, "noise_entry"), checked_non_negative_finite(noise_exit, "noise_exit")),
+          ewma_(0.0),
+          initialized_(false),
+          last_(0.0) {
+        if (noise_exit >= noise_entry) {
+            throw nb::value_error("noise_exit must be less than noise_entry");
+        }
+    }
+
+    double update(double trade_price, double bid_price, double ask_price) {
+        const double mid = 0.5 * (bid_price + ask_price);
+        const double spread = std::max(ask_price - bid_price, spread_floor_);
+        const double noise = std::abs(trade_price - mid) / spread;
+        ewma_ = initialized_ ? alpha_ * noise + (1.0 - alpha_) * ewma_ : noise;
+        initialized_ = true;
+        last_ = regime_.update(ewma_);
+        return last_;
+    }
+
+    inline void advance(double trade_price, double bid_price, double ask_price) {
+        (void) update(trade_price, bid_price, ask_price);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &trade_price, const Array1 &bid_price, const Array2 &ask_price) {
+        return batch_update3(*this, trade_price, bid_price, ask_price);
+    }
+
+private:
+    double alpha_;
+    double spread_floor_;
+    UpperRegimeHysteresis regime_;
+    double ewma_;
+    bool initialized_;
+    double last_;
+};
+
+class BidAskBounceRegimeDetector {
+public:
+    BidAskBounceRegimeDetector(double alpha = 0.05, double bounce_entry = 0.6, double bounce_exit = 0.4)
+        : alpha_(checked_alpha_value(alpha)),
+          regime_(checked_probability_value(bounce_entry, "bounce_entry"), checked_probability_value(bounce_exit, "bounce_exit")),
+          previous_side_(0.0),
+          bounce_rate_(0.0),
+          has_previous_(false),
+          initialized_(false),
+          last_(0.0) {
+        if (bounce_exit >= bounce_entry) {
+            throw nb::value_error("bounce_exit must be less than bounce_entry");
+        }
+    }
+
+    double update(double trade_price, double bid_price, double ask_price) {
+        const double mid = 0.5 * (bid_price + ask_price);
+        const double side = trade_price >= mid ? 1.0 : -1.0;
+        const double bounce = has_previous_ && side != previous_side_ ? 1.0 : 0.0;
+        bounce_rate_ = initialized_ ? alpha_ * bounce + (1.0 - alpha_) * bounce_rate_ : bounce;
+        previous_side_ = side;
+        has_previous_ = true;
+        initialized_ = true;
+        last_ = regime_.update(bounce_rate_);
+        return last_;
+    }
+
+    inline void advance(double trade_price, double bid_price, double ask_price) {
+        (void) update(trade_price, bid_price, ask_price);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &trade_price, const Array1 &bid_price, const Array2 &ask_price) {
+        return batch_update3(*this, trade_price, bid_price, ask_price);
+    }
+
+private:
+    double alpha_;
+    UpperRegimeHysteresis regime_;
+    double previous_side_;
+    double bounce_rate_;
+    bool has_previous_;
+    bool initialized_;
+    double last_;
+};
+
+class QuoteMessageRateRegimeDetector : public RelativeEWMARegimeDetector {
+public:
+    using RelativeEWMARegimeDetector::advance;
+    using RelativeEWMARegimeDetector::batch_array;
+    using RelativeEWMARegimeDetector::last;
+    using RelativeEWMARegimeDetector::update;
+
+    QuoteMessageRateRegimeDetector(
+        double alpha = 0.05,
+        double high_entry = 3.0,
+        double high_exit = 1.5,
+        double low_entry = 0.4,
+        double low_exit = 0.8,
+        double message_floor = 1.0e-12)
+        : RelativeEWMARegimeDetector(alpha, high_entry, high_exit, low_entry, low_exit, message_floor) {}
+};
+
+class QuoteStuffingDetector {
+public:
+    QuoteStuffingDetector(double alpha = 0.05, double ratio_entry = 50.0, double ratio_exit = 20.0, double trade_floor = 1.0e-12)
+        : alpha_(checked_alpha_value(alpha)),
+          trade_floor_(checked_positive_finite(trade_floor, "trade_floor")),
+          regime_(checked_positive_finite(ratio_entry, "ratio_entry"), checked_non_negative_finite(ratio_exit, "ratio_exit")),
+          ewma_ratio_(0.0),
+          initialized_(false),
+          last_(0.0) {
+        if (ratio_exit >= ratio_entry) {
+            throw nb::value_error("ratio_exit must be less than ratio_entry");
+        }
+    }
+
+    double update(double quote_messages, double trades) {
+        const double ratio = std::max(quote_messages, 0.0) / std::max(std::max(trades, 0.0), trade_floor_);
+        ewma_ratio_ = initialized_ ? alpha_ * ratio + (1.0 - alpha_) * ewma_ratio_ : ratio;
+        initialized_ = true;
+        last_ = regime_.update(ewma_ratio_);
+        return last_;
+    }
+
+    inline void advance(double quote_messages, double trades) {
+        (void) update(quote_messages, trades);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &quote_messages, const Array1 &trades) {
+        return batch_update2(*this, quote_messages, trades);
+    }
+
+private:
+    double alpha_;
+    double trade_floor_;
+    UpperRegimeHysteresis regime_;
+    double ewma_ratio_;
+    bool initialized_;
+    double last_;
+};
+
+class LeadLagRegimeDetector {
+public:
+    LeadLagRegimeDetector(double alpha = 0.05, double lead_entry = 0.2, double lead_exit = 0.05, double score_floor = 1.0e-12)
+        : alpha_(checked_alpha_value(alpha)),
+          score_floor_(checked_positive_finite(score_floor, "score_floor")),
+          regime_(checked_positive_finite(lead_entry, "lead_entry"), checked_non_negative_finite(lead_exit, "lead_exit"), -lead_entry, -lead_exit),
+          previous_x_(0.0),
+          previous_y_(0.0),
+          previous_dx_(0.0),
+          previous_dy_(0.0),
+          score_(0.0),
+          scale_(0.0),
+          count_(0),
+          last_(0.0) {
+        if (lead_exit >= lead_entry) {
+            throw nb::value_error("lead_exit must be less than lead_entry");
+        }
+    }
+
+    double update(double real0, double real1) {
+        if (count_ == 0) {
+            previous_x_ = real0;
+            previous_y_ = real1;
+            count_ = 1;
+            last_ = 0.0;
+            return last_;
+        }
+
+        const double dx = real0 - previous_x_;
+        const double dy = real1 - previous_y_;
+        if (count_ > 1) {
+            const double lead0 = previous_dx_ * dy;
+            const double lead1 = previous_dy_ * dx;
+            const double difference = lead0 - lead1;
+            score_ = alpha_ * difference + (1.0 - alpha_) * score_;
+            scale_ = alpha_ * (std::abs(lead0) + std::abs(lead1)) + (1.0 - alpha_) * scale_;
+            last_ = regime_.update(score_ / std::max(scale_, score_floor_));
+        } else {
+            last_ = 0.0;
+        }
+
+        previous_x_ = real0;
+        previous_y_ = real1;
+        previous_dx_ = dx;
+        previous_dy_ = dy;
+        ++count_;
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    double alpha_;
+    double score_floor_;
+    RegimeHysteresis regime_;
+    double previous_x_;
+    double previous_y_;
+    double previous_dx_;
+    double previous_dy_;
+    double score_;
+    double scale_;
+    std::size_t count_;
+    double last_;
+};
+
+class LiquidityDroughtDetector {
+public:
+    LiquidityDroughtDetector(double alpha = 0.05, double drought_entry = 0.3, double drought_exit = 0.7, double liquidity_floor = 1.0e-12)
+        : alpha_(checked_alpha_value(alpha)),
+          liquidity_floor_(checked_positive_finite(liquidity_floor, "liquidity_floor")),
+          regime_(checked_positive_finite(drought_entry, "drought_entry"), checked_positive_finite(drought_exit, "drought_exit")),
+          baseline_(0.0),
+          initialized_(false),
+          last_(0.0) {
+        if (drought_entry >= drought_exit) {
+            throw nb::value_error("drought_entry must be less than drought_exit");
+        }
+    }
+
+    double update(double volume, double bid_size, double ask_size) {
+        const double liquidity = std::max(volume, 0.0) + std::max(bid_size, 0.0) + std::max(ask_size, 0.0);
+        if (!initialized_) {
+            baseline_ = liquidity;
+            initialized_ = true;
+            last_ = 0.0;
+            return last_;
+        }
+        const double ratio = liquidity / std::max(baseline_, liquidity_floor_);
+        last_ = regime_.update(ratio);
+        baseline_ = alpha_ * liquidity + (1.0 - alpha_) * baseline_;
+        return last_;
+    }
+
+    inline void advance(double volume, double bid_size, double ask_size) {
+        (void) update(volume, bid_size, ask_size);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &volume, const Array1 &bid_size, const Array2 &ask_size) {
+        return batch_update3(*this, volume, bid_size, ask_size);
+    }
+
+private:
+    double alpha_;
+    double liquidity_floor_;
+    LowerRegimeHysteresis regime_;
+    double baseline_;
+    bool initialized_;
+    double last_;
+};
+
+class SpreadExplosionDetector {
+public:
+    SpreadExplosionDetector(double alpha = 0.05, double ratio_entry = 5.0, double ratio_exit = 2.0, double spread_floor = 1.0e-12)
+        : alpha_(checked_alpha_value(alpha)),
+          spread_floor_(checked_positive_finite(spread_floor, "spread_floor")),
+          regime_(checked_positive_finite(ratio_entry, "ratio_entry"), checked_non_negative_finite(ratio_exit, "ratio_exit")),
+          baseline_(0.0),
+          initialized_(false),
+          last_(0.0) {
+        if (ratio_exit >= ratio_entry) {
+            throw nb::value_error("ratio_exit must be less than ratio_entry");
+        }
+    }
+
+    double update(double bid_price, double ask_price) {
+        const double spread = std::max(ask_price - bid_price, 0.0);
+        if (!initialized_) {
+            baseline_ = spread;
+            initialized_ = true;
+            last_ = 0.0;
+            return last_;
+        }
+        const double ratio = spread / std::max(baseline_, spread_floor_);
+        last_ = regime_.update(ratio);
+        baseline_ = alpha_ * spread + (1.0 - alpha_) * baseline_;
+        return last_;
+    }
+
+    inline void advance(double bid_price, double ask_price) {
+        (void) update(bid_price, ask_price);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &bid_price, const Array1 &ask_price) {
+        return batch_update2(*this, bid_price, ask_price);
+    }
+
+private:
+    double alpha_;
+    double spread_floor_;
+    UpperRegimeHysteresis regime_;
+    double baseline_;
+    bool initialized_;
+    double last_;
+};
+
+class MarketOpenCloseTransitionDetector {
+public:
+    MarketOpenCloseTransitionDetector(double open_entry = 0.05, double open_exit = 0.08, double close_entry = 0.95, double close_exit = 0.92)
+        : open_entry_(checked_non_negative_finite(open_entry, "open_entry")),
+          open_exit_(checked_non_negative_finite(open_exit, "open_exit")),
+          close_entry_(checked_non_negative_finite(close_entry, "close_entry")),
+          close_exit_(checked_non_negative_finite(close_exit, "close_exit")),
+          state_(0.0) {
+        if (!(open_entry_ < open_exit_ && open_exit_ < close_exit_ && close_exit_ < close_entry_ && close_entry_ <= 1.0)) {
+            throw nb::value_error("thresholds must satisfy open_entry < open_exit < close_exit < close_entry <= 1");
+        }
+    }
+
+    double update(double session_progress) {
+        const double progress = std::min(std::max(session_progress, 0.0), 1.0);
+        if (state_ > 0.0) {
+            if (progress >= open_exit_) {
+                state_ = 0.0;
+            }
+        } else if (state_ < 0.0) {
+            if (progress <= close_exit_) {
+                state_ = 0.0;
+            }
+        } else if (progress <= open_entry_) {
+            state_ = 1.0;
+        } else if (progress >= close_entry_) {
+            state_ = -1.0;
+        }
+        return state_;
+    }
+
+    inline void advance(double session_progress) {
+        (void) update(session_progress);
+    }
+
+    inline double last() const {
+        return state_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &session_progress) {
+        return batch_update1(*this, session_progress);
+    }
+
+private:
+    double open_entry_;
+    double open_exit_;
+    double close_entry_;
+    double close_exit_;
+    double state_;
+};
+
+class AuctionContinuousMarketTransitionDetector {
+public:
+    AuctionContinuousMarketTransitionDetector(double auction_entry = 0.5, double auction_exit = 0.2)
+        : regime_(checked_positive_finite(auction_entry, "auction_entry"), checked_non_negative_finite(auction_exit, "auction_exit")),
+          last_(0.0) {
+        if (auction_exit >= auction_entry) {
+            throw nb::value_error("auction_exit must be less than auction_entry");
+        }
+    }
+
+    double update(double auction_signal) {
+        last_ = regime_.update(auction_signal);
+        return last_;
+    }
+
+    inline void advance(double auction_signal) {
+        (void) update(auction_signal);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &auction_signal) {
+        return batch_update1(*this, auction_signal);
+    }
+
+private:
+    UpperRegimeHysteresis regime_;
+    double last_;
+};
+
+class CrossAssetCorrelationBreakDetector {
+public:
+    CrossAssetCorrelationBreakDetector(int short_window = 10, int long_window = 60, double break_entry = 0.5, double break_exit = 0.25)
+        : short_stats_(checked_shift_window(short_window)),
+          long_stats_(checked_shift_window(long_window)),
+          regime_(checked_positive_finite(break_entry, "break_entry"), checked_non_negative_finite(break_exit, "break_exit")),
+          last_(0.0) {
+        if (short_window >= long_window) {
+            throw nb::value_error("short_window must be less than long_window");
+        }
+        if (break_exit >= break_entry) {
+            throw nb::value_error("break_exit must be less than break_entry");
+        }
+    }
+
+    double update(double real0, double real1) {
+        short_stats_.push(real0, real1);
+        long_stats_.push(real0, real1);
+        if (!short_stats_.full() || !long_stats_.full()) {
+            last_ = 0.0;
+            return last_;
+        }
+        last_ = regime_.update(std::abs(short_stats_.correlation() - long_stats_.correlation()));
+        return last_;
+    }
+
+    inline void advance(double real0, double real1) {
+        (void) update(real0, real1);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &real0, const Array1 &real1) {
+        return batch_update2(*this, real0, real1);
+    }
+
+private:
+    RollingPairStats short_stats_;
+    RollingPairStats long_stats_;
+    UpperRegimeHysteresis regime_;
+    double last_;
+};
+
+class PageHinkley {
+public:
+    PageHinkley(double threshold = 1.0, double delta = 0.0)
+        : threshold_(checked_threshold(threshold)),
+          delta_(checked_delta(delta)),
+          mean_(0.0),
+          positive_sum_(0.0),
+          positive_min_(0.0),
+          negative_sum_(0.0),
+          negative_min_(0.0),
+          count_(0),
+          last_(0.0) {}
+
+    double update(double close) {
+        if (count_ == 0) {
+            reset_to_current(close);
+            last_ = 0.0;
+            return last_;
+        }
+
+        ++count_;
+        mean_ += (close - mean_) / static_cast<double>(count_);
+
+        positive_sum_ += close - mean_ - delta_;
+        positive_min_ = std::min(positive_min_, positive_sum_);
+        const double positive_score = positive_sum_ - positive_min_;
+
+        negative_sum_ += mean_ - close - delta_;
+        negative_min_ = std::min(negative_min_, negative_sum_);
+        const double negative_score = negative_sum_ - negative_min_;
+
+        if (positive_score > threshold_ && positive_score >= negative_score) {
+            reset_to_current(close);
+            last_ = 1.0;
+        } else if (negative_score > threshold_) {
+            reset_to_current(close);
+            last_ = -1.0;
+        } else {
+            last_ = 0.0;
+        }
+
+        return last_;
+    }
+
+    inline void advance(double close) {
+        (void) update(close);
+    }
+
+    inline double last() const {
+        return last_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        return batch_update1(*this, close);
+    }
+
+private:
+    static double checked_threshold(double threshold) {
+        if (!std::isfinite(threshold) || threshold <= 0.0) {
+            throw nb::value_error("threshold must be positive and finite");
+        }
+        return threshold;
+    }
+
+    static double checked_delta(double delta) {
+        if (!std::isfinite(delta) || delta < 0.0) {
+            throw nb::value_error("delta must be non-negative and finite");
+        }
+        return delta;
+    }
+
+    inline void reset_to_current(double close) {
+        mean_ = close;
+        positive_sum_ = 0.0;
+        positive_min_ = 0.0;
+        negative_sum_ = 0.0;
+        negative_min_ = 0.0;
+        count_ = 1;
+    }
+
+    double threshold_;
+    double delta_;
+    double mean_;
+    double positive_sum_;
+    double positive_min_;
+    double negative_sum_;
+    double negative_min_;
+    std::size_t count_;
+    double last_;
+};
+
 class StdDev {
 public:
     explicit StdDev(int window, bool fillna = true)
@@ -14817,6 +18219,22 @@ inline double call_advance_checksum(Indicator &self, double arg0, double arg1, d
             }); \
         } \
         return batch_records_three(self, records, FIELD0, FIELD1, FIELD2); \
+    }, nb::arg("records"))
+
+#define RTTA_BATCH4_ARRAY(TYPE, ARG0, ARG1, ARG2, ARG3, FIELD0, FIELD1, FIELD2, FIELD3) \
+    .def("batch", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2, const InputArray &ARG3) { \
+        return self.batch_array(ARG0, ARG1, ARG2, ARG3); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3)) \
+    .def("batch", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2, const FloatInputArray &ARG3) { \
+        return self.batch_array(ARG0, ARG1, ARG2, ARG3); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3)) \
+    .def("batch", [](TYPE &self, nb::iterable records) { \
+        if (table_has_column(records, FIELD0)) { \
+            return dispatch_table4(self, records, FIELD0, FIELD1, FIELD2, FIELD3, [](auto &indicator, const auto &ARG0, const auto &ARG1, const auto &ARG2, const auto &ARG3) { \
+                return indicator.batch_array(ARG0, ARG1, ARG2, ARG3); \
+            }); \
+        } \
+        return batch_records_four(self, records, FIELD0, FIELD1, FIELD2, FIELD3); \
     }, nb::arg("records"))
 
 }  // namespace
@@ -15790,6 +19208,639 @@ NB_MODULE(indicator, m) {
         .def("batch", [](CumulativeReturn &self, nb::iterable records) {
             return batch_records_one(self, records, "close");
         }, nb::arg("records"));
+
+    nb::class_<CUSUM>(m, "CUSUM")
+        .def(nb::init<double, double>(), nb::arg("threshold") = 1.0, nb::arg("drift") = 0.0)
+        .def("update", &CUSUM::update, nb::arg("close"))
+        .def("last", &CUSUM::last)
+        RTTA_ADVANCE1(CUSUM, close)
+        RTTA_REPLAY1(CUSUM, close)
+        RTTA_BATCH1_ARRAY(CUSUM, close, "close");
+
+    nb::class_<EWMAZScoreShiftDetector>(m, "EWMAZScoreShiftDetector")
+        .def(nb::init<double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("threshold") = 3.0,
+             nb::arg("min_variance") = 1.0e-12)
+        .def("update", &EWMAZScoreShiftDetector::update, nb::arg("close"))
+        .def("last", &EWMAZScoreShiftDetector::last)
+        RTTA_ADVANCE1(EWMAZScoreShiftDetector, close)
+        RTTA_REPLAY1(EWMAZScoreShiftDetector, close)
+        RTTA_BATCH1_ARRAY(EWMAZScoreShiftDetector, close, "close");
+
+    nb::class_<RollingMeanShiftDetector>(m, "RollingMeanShiftDetector")
+        .def(nb::init<int, double, double>(),
+             nb::arg("window") = 20,
+             nb::arg("threshold") = 3.0,
+             nb::arg("variance_floor") = 1.0e-12)
+        .def("update", &RollingMeanShiftDetector::update, nb::arg("close"))
+        .def("last", &RollingMeanShiftDetector::last)
+        RTTA_ADVANCE1(RollingMeanShiftDetector, close)
+        RTTA_REPLAY1(RollingMeanShiftDetector, close)
+        RTTA_BATCH1_ARRAY(RollingMeanShiftDetector, close, "close");
+
+    nb::class_<RollingVarianceShiftDetector>(m, "RollingVarianceShiftDetector")
+        .def(nb::init<int, double, double>(),
+             nb::arg("window") = 20,
+             nb::arg("threshold") = 1.0,
+             nb::arg("variance_floor") = 1.0e-12)
+        .def("update", &RollingVarianceShiftDetector::update, nb::arg("close"))
+        .def("last", &RollingVarianceShiftDetector::last)
+        RTTA_ADVANCE1(RollingVarianceShiftDetector, close)
+        RTTA_REPLAY1(RollingVarianceShiftDetector, close)
+        RTTA_BATCH1_ARRAY(RollingVarianceShiftDetector, close, "close");
+
+    nb::class_<RollingMeanVarianceShiftDetector>(m, "RollingMeanVarianceShiftDetector")
+        .def(nb::init<int, double, double, double>(),
+             nb::arg("window") = 20,
+             nb::arg("threshold") = 3.0,
+             nb::arg("variance_weight") = 1.0,
+             nb::arg("variance_floor") = 1.0e-12)
+        .def("update", &RollingMeanVarianceShiftDetector::update, nb::arg("close"))
+        .def("last", &RollingMeanVarianceShiftDetector::last)
+        RTTA_ADVANCE1(RollingMeanVarianceShiftDetector, close)
+        RTTA_REPLAY1(RollingMeanVarianceShiftDetector, close)
+        RTTA_BATCH1_ARRAY(RollingMeanVarianceShiftDetector, close, "close");
+
+    nb::class_<RollingCorrelationShiftDetector>(m, "RollingCorrelationShiftDetector")
+        .def(nb::init<int, double>(), nb::arg("window") = 20, nb::arg("threshold") = 0.25)
+        .def("update", &RollingCorrelationShiftDetector::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &RollingCorrelationShiftDetector::last)
+        RTTA_ADVANCE2(RollingCorrelationShiftDetector, real0, real1)
+        RTTA_REPLAY2(RollingCorrelationShiftDetector, real0, real1)
+        RTTA_BATCH2_ARRAY(RollingCorrelationShiftDetector, real0, real1, "real0", "real1");
+
+    nb::class_<RollingBetaShiftDetector>(m, "RollingBetaShiftDetector")
+        .def(nb::init<int, double>(), nb::arg("window") = 20, nb::arg("threshold") = 0.25)
+        .def("update", &RollingBetaShiftDetector::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &RollingBetaShiftDetector::last)
+        RTTA_ADVANCE2(RollingBetaShiftDetector, real0, real1)
+        RTTA_REPLAY2(RollingBetaShiftDetector, real0, real1)
+        RTTA_BATCH2_ARRAY(RollingBetaShiftDetector, real0, real1, "real0", "real1");
+
+    nb::class_<RollingSpreadLiquidityShiftDetector>(m, "RollingSpreadLiquidityShiftDetector")
+        .def(nb::init<int, double, double>(),
+             nb::arg("window") = 20,
+             nb::arg("threshold") = 1.0e-6,
+             nb::arg("depth_floor") = 1.0e-12)
+        .def("update", &RollingSpreadLiquidityShiftDetector::update, nb::arg("bid_price"), nb::arg("bid_size"), nb::arg("ask_price"), nb::arg("ask_size"))
+        .def("last", &RollingSpreadLiquidityShiftDetector::last)
+        RTTA_ADVANCE4(RollingSpreadLiquidityShiftDetector, bid_price, bid_size, ask_price, ask_size)
+        RTTA_REPLAY4(RollingSpreadLiquidityShiftDetector, bid_price, bid_size, ask_price, ask_size)
+        .def("batch", [](RollingSpreadLiquidityShiftDetector &self, const InputArray &bid_price, const InputArray &bid_size, const InputArray &ask_price, const InputArray &ask_size) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch", [](RollingSpreadLiquidityShiftDetector &self, const FloatInputArray &bid_price, const FloatInputArray &bid_size, const FloatInputArray &ask_price, const FloatInputArray &ask_size) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch", [](RollingSpreadLiquidityShiftDetector &self, nb::iterable records) {
+            if (table_has_column(records, "bid_price")) {
+                return dispatch_table4(self, records, "bid_price", "bid_size", "ask_price", "ask_size", [](auto &indicator, const auto &bid_price, const auto &bid_size, const auto &ask_price, const auto &ask_size) {
+                    return indicator.batch_array(bid_price, bid_size, ask_price, ask_size);
+                });
+            }
+            return batch_records_four(self, records, "bid_price", "bid_size", "ask_price", "ask_size");
+        }, nb::arg("records"));
+
+    nb::class_<ThresholdRegimeDetector>(m, "ThresholdRegimeDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("upper_entry") = 1.0,
+             nb::arg("upper_exit") = 0.5,
+             nb::arg("lower_entry") = -1.0,
+             nb::arg("lower_exit") = -0.5)
+        .def("update", &ThresholdRegimeDetector::update, nb::arg("value"))
+        .def("last", &ThresholdRegimeDetector::last)
+        RTTA_ADVANCE1(ThresholdRegimeDetector, value)
+        RTTA_REPLAY1(ThresholdRegimeDetector, value)
+        RTTA_BATCH1_ARRAY(ThresholdRegimeDetector, value, "value");
+
+    nb::class_<VolatilityRegimeDetector>(m, "VolatilityRegimeDetector")
+        .def(nb::init<double, double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("high_entry") = 1.0,
+             nb::arg("high_exit") = 0.8,
+             nb::arg("low_entry") = 0.2,
+             nb::arg("low_exit") = 0.3)
+        .def("update", &VolatilityRegimeDetector::update, nb::arg("close"))
+        .def("last", &VolatilityRegimeDetector::last)
+        RTTA_ADVANCE1(VolatilityRegimeDetector, close)
+        RTTA_REPLAY1(VolatilityRegimeDetector, close)
+        RTTA_BATCH1_ARRAY(VolatilityRegimeDetector, close, "close");
+
+    nb::class_<ATRRegimeDetector>(m, "ATRRegimeDetector")
+        .def(nb::init<int, double, double, double, double>(),
+             nb::arg("window") = 14,
+             nb::arg("high_entry") = 1.0,
+             nb::arg("high_exit") = 0.8,
+             nb::arg("low_entry") = 0.2,
+             nb::arg("low_exit") = 0.3)
+        .def("update", &ATRRegimeDetector::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        .def("last", &ATRRegimeDetector::last)
+        RTTA_ADVANCE3(ATRRegimeDetector, close, high, low)
+        RTTA_REPLAY3(ATRRegimeDetector, close, high, low)
+        RTTA_BATCH3_ARRAY(ATRRegimeDetector, close, high, low, "close", "high", "low");
+
+    nb::class_<RealizedVarianceRegimeDetector>(m, "RealizedVarianceRegimeDetector")
+        .def(nb::init<int, double, double, double, double>(),
+             nb::arg("window") = 20,
+             nb::arg("high_entry") = 1.0,
+             nb::arg("high_exit") = 0.8,
+             nb::arg("low_entry") = 0.2,
+             nb::arg("low_exit") = 0.3)
+        .def("update", &RealizedVarianceRegimeDetector::update, nb::arg("close"))
+        .def("last", &RealizedVarianceRegimeDetector::last)
+        RTTA_ADVANCE1(RealizedVarianceRegimeDetector, close)
+        RTTA_REPLAY1(RealizedVarianceRegimeDetector, close)
+        RTTA_BATCH1_ARRAY(RealizedVarianceRegimeDetector, close, "close");
+
+    nb::class_<TrendChopRegimeDetector>(m, "TrendChopRegimeDetector")
+        .def(nb::init<int, double, double, double, double>(),
+             nb::arg("window") = 20,
+             nb::arg("trend_entry") = 0.7,
+             nb::arg("trend_exit") = 0.5,
+             nb::arg("chop_entry") = 0.3,
+             nb::arg("chop_exit") = 0.5)
+        .def("update", &TrendChopRegimeDetector::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        .def("last", &TrendChopRegimeDetector::last)
+        RTTA_ADVANCE3(TrendChopRegimeDetector, close, high, low)
+        RTTA_REPLAY3(TrendChopRegimeDetector, close, high, low)
+        RTTA_BATCH3_ARRAY(TrendChopRegimeDetector, close, high, low, "close", "high", "low");
+
+    nb::class_<LiquidityRegimeDetector>(m, "LiquidityRegimeDetector")
+        .def(nb::init<double, double, double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("illiquid_entry") = 1.0e-8,
+             nb::arg("illiquid_exit") = 8.0e-9,
+             nb::arg("liquid_entry") = 1.0e-10,
+             nb::arg("liquid_exit") = 2.0e-10,
+             nb::arg("dollar_floor") = 1.0e-12)
+        .def("update", &LiquidityRegimeDetector::update, nb::arg("close"), nb::arg("volume"))
+        .def("last", &LiquidityRegimeDetector::last)
+        RTTA_ADVANCE2(LiquidityRegimeDetector, close, volume)
+        RTTA_REPLAY2(LiquidityRegimeDetector, close, volume)
+        RTTA_BATCH2_ARRAY(LiquidityRegimeDetector, close, volume, "close", "volume");
+
+    nb::class_<SpreadRegimeDetector>(m, "SpreadRegimeDetector")
+        .def(nb::init<double, double, double, double, double>(),
+             nb::arg("wide_entry") = 0.001,
+             nb::arg("wide_exit") = 0.0008,
+             nb::arg("tight_entry") = 0.0001,
+             nb::arg("tight_exit") = 0.0002,
+             nb::arg("mid_floor") = 1.0e-12)
+        .def("update", &SpreadRegimeDetector::update, nb::arg("bid_price"), nb::arg("ask_price"))
+        .def("last", &SpreadRegimeDetector::last)
+        RTTA_ADVANCE2(SpreadRegimeDetector, bid_price, ask_price)
+        RTTA_REPLAY2(SpreadRegimeDetector, bid_price, ask_price)
+        RTTA_BATCH2_ARRAY(SpreadRegimeDetector, bid_price, ask_price, "bid_price", "ask_price");
+
+    nb::class_<VolumeRegimeDetector>(m, "VolumeRegimeDetector")
+        .def(nb::init<double, double, double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("high_entry") = 2.0,
+             nb::arg("high_exit") = 1.2,
+             nb::arg("low_entry") = 0.5,
+             nb::arg("low_exit") = 0.8,
+             nb::arg("volume_floor") = 1.0e-12)
+        .def("update", &VolumeRegimeDetector::update, nb::arg("volume"))
+        .def("last", &VolumeRegimeDetector::last)
+        RTTA_ADVANCE1(VolumeRegimeDetector, volume)
+        RTTA_REPLAY1(VolumeRegimeDetector, volume)
+        RTTA_BATCH1_ARRAY(VolumeRegimeDetector, volume, "volume");
+
+    nb::class_<TradeIntensityRegimeDetector>(m, "TradeIntensityRegimeDetector")
+        .def(nb::init<double, double, double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("high_entry") = 2.0,
+             nb::arg("high_exit") = 1.2,
+             nb::arg("low_entry") = 0.5,
+             nb::arg("low_exit") = 0.8,
+             nb::arg("intensity_floor") = 1.0e-12)
+        .def("update", &TradeIntensityRegimeDetector::update, nb::arg("transactions"))
+        .def("last", &TradeIntensityRegimeDetector::last)
+        RTTA_ADVANCE1(TradeIntensityRegimeDetector, transactions)
+        RTTA_REPLAY1(TradeIntensityRegimeDetector, transactions)
+        RTTA_BATCH1_ARRAY(TradeIntensityRegimeDetector, transactions, "transactions");
+
+    nb::class_<OrderFlowImbalanceRegimeDetector>(m, "OrderFlowImbalanceRegimeDetector")
+        .def(nb::init<double, double, double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("buy_entry") = 0.5,
+             nb::arg("buy_exit") = 0.2,
+             nb::arg("sell_entry") = -0.5,
+             nb::arg("sell_exit") = -0.2,
+             nb::arg("depth_floor") = 1.0e-12)
+        .def("update", &OrderFlowImbalanceRegimeDetector::update, nb::arg("bid_price"), nb::arg("bid_size"), nb::arg("ask_price"), nb::arg("ask_size"))
+        .def("last", &OrderFlowImbalanceRegimeDetector::last)
+        RTTA_ADVANCE4(OrderFlowImbalanceRegimeDetector, bid_price, bid_size, ask_price, ask_size)
+        RTTA_REPLAY4(OrderFlowImbalanceRegimeDetector, bid_price, bid_size, ask_price, ask_size)
+        RTTA_BATCH4_ARRAY(OrderFlowImbalanceRegimeDetector, bid_price, bid_size, ask_price, ask_size, "bid_price", "bid_size", "ask_price", "ask_size");
+
+    nb::class_<CorrelationRegimeDetector>(m, "CorrelationRegimeDetector")
+        .def(nb::init<int, double, double, double, double>(),
+             nb::arg("window") = 30,
+             nb::arg("high_entry") = 0.8,
+             nb::arg("high_exit") = 0.6,
+             nb::arg("low_entry") = -0.2,
+             nb::arg("low_exit") = 0.0)
+        .def("update", &CorrelationRegimeDetector::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &CorrelationRegimeDetector::last)
+        RTTA_ADVANCE2(CorrelationRegimeDetector, real0, real1)
+        RTTA_REPLAY2(CorrelationRegimeDetector, real0, real1)
+        RTTA_BATCH2_ARRAY(CorrelationRegimeDetector, real0, real1, "real0", "real1");
+
+    nb::class_<BetaRegimeDetector>(m, "BetaRegimeDetector")
+        .def(nb::init<int, double, double, double, double>(),
+             nb::arg("window") = 30,
+             nb::arg("high_entry") = 1.5,
+             nb::arg("high_exit") = 1.2,
+             nb::arg("low_entry") = 0.5,
+             nb::arg("low_exit") = 0.8)
+        .def("update", &BetaRegimeDetector::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &BetaRegimeDetector::last)
+        RTTA_ADVANCE2(BetaRegimeDetector, real0, real1)
+        RTTA_REPLAY2(BetaRegimeDetector, real0, real1)
+        RTTA_BATCH2_ARRAY(BetaRegimeDetector, real0, real1, "real0", "real1");
+
+    nb::class_<PairsSpreadRegimeDetector>(m, "PairsSpreadRegimeDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("z_entry") = 3.0,
+             nb::arg("z_exit") = 1.0,
+             nb::arg("min_variance") = 1.0e-12)
+        .def("update", &PairsSpreadRegimeDetector::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &PairsSpreadRegimeDetector::last)
+        RTTA_ADVANCE2(PairsSpreadRegimeDetector, real0, real1)
+        RTTA_REPLAY2(PairsSpreadRegimeDetector, real0, real1)
+        RTTA_BATCH2_ARRAY(PairsSpreadRegimeDetector, real0, real1, "real0", "real1");
+
+    nb::class_<CointegrationBreakdownMonitor>(m, "CointegrationBreakdownMonitor")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("z_entry") = 3.0,
+             nb::arg("z_exit") = 1.0,
+             nb::arg("min_variance") = 1.0e-12)
+        .def("update", &CointegrationBreakdownMonitor::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &CointegrationBreakdownMonitor::last)
+        RTTA_ADVANCE2(CointegrationBreakdownMonitor, real0, real1)
+        RTTA_REPLAY2(CointegrationBreakdownMonitor, real0, real1)
+        RTTA_BATCH2_ARRAY(CointegrationBreakdownMonitor, real0, real1, "real0", "real1");
+
+    nb::class_<ExecutionCostSlippageRegimeDetector>(m, "ExecutionCostSlippageRegimeDetector")
+        .def(nb::init<double, double, double, double, double>(),
+             nb::arg("high_entry") = 0.001,
+             nb::arg("high_exit") = 0.0008,
+             nb::arg("low_entry") = 0.0001,
+             nb::arg("low_exit") = 0.0002,
+             nb::arg("mid_floor") = 1.0e-12)
+        .def("update", &ExecutionCostSlippageRegimeDetector::update, nb::arg("trade_price"), nb::arg("bid_price"), nb::arg("ask_price"))
+        .def("last", &ExecutionCostSlippageRegimeDetector::last)
+        RTTA_ADVANCE3(ExecutionCostSlippageRegimeDetector, trade_price, bid_price, ask_price)
+        RTTA_REPLAY3(ExecutionCostSlippageRegimeDetector, trade_price, bid_price, ask_price)
+        RTTA_BATCH3_ARRAY(ExecutionCostSlippageRegimeDetector, trade_price, bid_price, ask_price, "trade_price", "bid_price", "ask_price");
+
+    nb::class_<ADWIN>(m, "ADWIN")
+        .def(nb::init<int, int, double>(),
+             nb::arg("max_window") = 256,
+             nb::arg("min_window") = 16,
+             nb::arg("delta") = 0.002)
+        .def("update", &ADWIN::update, nb::arg("value"))
+        .def("last", &ADWIN::last)
+        RTTA_ADVANCE1(ADWIN, value)
+        RTTA_REPLAY1(ADWIN, value)
+        RTTA_BATCH1_ARRAY(ADWIN, value, "value");
+
+    nb::class_<DDM>(m, "DDM")
+        .def(nb::init<int, double, double>(),
+             nb::arg("min_samples") = 30,
+             nb::arg("warning_level") = 2.0,
+             nb::arg("drift_level") = 3.0)
+        .def("update", &DDM::update, nb::arg("error"))
+        .def("last", &DDM::last)
+        RTTA_ADVANCE1(DDM, error)
+        RTTA_REPLAY1(DDM, error)
+        RTTA_BATCH1_ARRAY(DDM, error, "error");
+
+    nb::class_<EDDM>(m, "EDDM")
+        .def(nb::init<int, double, double>(),
+             nb::arg("min_errors") = 30,
+             nb::arg("warning_ratio") = 0.95,
+             nb::arg("drift_ratio") = 0.90)
+        .def("update", &EDDM::update, nb::arg("error"))
+        .def("last", &EDDM::last)
+        RTTA_ADVANCE1(EDDM, error)
+        RTTA_REPLAY1(EDDM, error)
+        RTTA_BATCH1_ARRAY(EDDM, error, "error");
+
+    nb::class_<HDDM>(m, "HDDM")
+        .def(nb::init<int, double, double>(),
+             nb::arg("min_samples") = 30,
+             nb::arg("warning_delta") = 0.01,
+             nb::arg("drift_delta") = 0.001)
+        .def("update", &HDDM::update, nb::arg("error"))
+        .def("last", &HDDM::last)
+        RTTA_ADVANCE1(HDDM, error)
+        RTTA_REPLAY1(HDDM, error)
+        RTTA_BATCH1_ARRAY(HDDM, error, "error");
+
+    nb::class_<KSWIN>(m, "KSWIN")
+        .def(nb::init<int, int, double>(),
+             nb::arg("window") = 100,
+             nb::arg("stat_window") = 30,
+             nb::arg("alpha") = 0.005)
+        .def("update", &KSWIN::update, nb::arg("value"))
+        .def("last", &KSWIN::last)
+        RTTA_ADVANCE1(KSWIN, value)
+        RTTA_REPLAY1(KSWIN, value)
+        RTTA_BATCH1_ARRAY(KSWIN, value, "value");
+
+    nb::class_<ResidualDriftDetector>(m, "ResidualDriftDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("z_entry") = 3.0,
+             nb::arg("z_exit") = 1.0,
+             nb::arg("min_variance") = 1.0e-12)
+        .def("update", &ResidualDriftDetector::update, nb::arg("residual"))
+        .def("last", &ResidualDriftDetector::last)
+        RTTA_ADVANCE1(ResidualDriftDetector, residual)
+        RTTA_REPLAY1(ResidualDriftDetector, residual)
+        RTTA_BATCH1_ARRAY(ResidualDriftDetector, residual, "residual");
+
+    nb::class_<PredictionErrorDriftDetector>(m, "PredictionErrorDriftDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("z_entry") = 3.0,
+             nb::arg("z_exit") = 1.0,
+             nb::arg("min_variance") = 1.0e-12)
+        .def("update", &PredictionErrorDriftDetector::update, nb::arg("prediction"), nb::arg("actual"))
+        .def("last", &PredictionErrorDriftDetector::last)
+        RTTA_ADVANCE2(PredictionErrorDriftDetector, prediction, actual)
+        RTTA_REPLAY2(PredictionErrorDriftDetector, prediction, actual)
+        RTTA_BATCH2_ARRAY(PredictionErrorDriftDetector, prediction, actual, "prediction", "actual");
+
+    nb::class_<HitRateDriftDetector>(m, "HitRateDriftDetector")
+        .def(nb::init<double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("miss_entry") = 0.40,
+             nb::arg("miss_exit") = 0.25)
+        .def("update", &HitRateDriftDetector::update, nb::arg("hit"))
+        .def("last", &HitRateDriftDetector::last)
+        RTTA_ADVANCE1(HitRateDriftDetector, hit)
+        RTTA_REPLAY1(HitRateDriftDetector, hit)
+        RTTA_BATCH1_ARRAY(HitRateDriftDetector, hit, "hit");
+
+    nb::class_<CalibrationDriftDetector>(m, "CalibrationDriftDetector")
+        .def(nb::init<double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("error_entry") = 0.25,
+             nb::arg("error_exit") = 0.15)
+        .def("update", &CalibrationDriftDetector::update, nb::arg("probability"), nb::arg("outcome"))
+        .def("last", &CalibrationDriftDetector::last)
+        RTTA_ADVANCE2(CalibrationDriftDetector, probability, outcome)
+        RTTA_REPLAY2(CalibrationDriftDetector, probability, outcome)
+        RTTA_BATCH2_ARRAY(CalibrationDriftDetector, probability, outcome, "probability", "outcome");
+
+    nb::class_<FeatureDistributionDriftDetector>(m, "FeatureDistributionDriftDetector")
+        .def(nb::init<int, int, double>(),
+             nb::arg("max_window") = 256,
+             nb::arg("min_window") = 16,
+             nb::arg("delta") = 0.002)
+        .def("update", &FeatureDistributionDriftDetector::update, nb::arg("feature"))
+        .def("last", &FeatureDistributionDriftDetector::last)
+        RTTA_ADVANCE1(FeatureDistributionDriftDetector, feature)
+        RTTA_REPLAY1(FeatureDistributionDriftDetector, feature)
+        RTTA_BATCH1_ARRAY(FeatureDistributionDriftDetector, feature, "feature");
+
+    nb::class_<OnlineHMMRegimeFilter>(m, "OnlineHMMRegimeFilter")
+        .def(nb::init<int, double, double, double>(),
+             nb::arg("states") = 2,
+             nb::arg("stay_probability") = 0.95,
+             nb::arg("alpha") = 0.05,
+             nb::arg("min_variance") = 1.0e-6)
+        .def("update", &OnlineHMMRegimeFilter::update, nb::arg("value"))
+        .def("last", &OnlineHMMRegimeFilter::last)
+        .def("last_probability", &OnlineHMMRegimeFilter::last_probability)
+        RTTA_ADVANCE1(OnlineHMMRegimeFilter, value)
+        RTTA_REPLAY1(OnlineHMMRegimeFilter, value)
+        RTTA_BATCH1_ARRAY(OnlineHMMRegimeFilter, value, "value");
+
+    nb::class_<StickyHMMRegimeFilter>(m, "StickyHMMRegimeFilter")
+        .def(nb::init<int, double, double, double>(),
+             nb::arg("states") = 2,
+             nb::arg("stay_probability") = 0.985,
+             nb::arg("alpha") = 0.05,
+             nb::arg("min_variance") = 1.0e-6)
+        .def("update", &StickyHMMRegimeFilter::update, nb::arg("value"))
+        .def("last", &StickyHMMRegimeFilter::last)
+        .def("last_probability", &StickyHMMRegimeFilter::last_probability)
+        RTTA_ADVANCE1(StickyHMMRegimeFilter, value)
+        RTTA_REPLAY1(StickyHMMRegimeFilter, value)
+        RTTA_BATCH1_ARRAY(StickyHMMRegimeFilter, value, "value");
+
+    nb::class_<OnlineMarkovSwitchingVolatilityFilter>(m, "OnlineMarkovSwitchingVolatilityFilter")
+        .def(nb::init<double, double, double>(),
+             nb::arg("stay_probability") = 0.95,
+             nb::arg("alpha") = 0.05,
+             nb::arg("min_variance") = 1.0e-12)
+        .def("update", &OnlineMarkovSwitchingVolatilityFilter::update, nb::arg("close"))
+        .def("last", &OnlineMarkovSwitchingVolatilityFilter::last)
+        .def("last_probability", &OnlineMarkovSwitchingVolatilityFilter::last_probability)
+        RTTA_ADVANCE1(OnlineMarkovSwitchingVolatilityFilter, close)
+        RTTA_REPLAY1(OnlineMarkovSwitchingVolatilityFilter, close)
+        RTTA_BATCH1_ARRAY(OnlineMarkovSwitchingVolatilityFilter, close, "close");
+
+    nb::class_<BoundedBOCPD>(m, "BoundedBOCPD")
+        .def(nb::init<int, double, double, double>(),
+             nb::arg("max_run_length") = 128,
+             nb::arg("hazard") = 0.01,
+             nb::arg("threshold") = 0.5,
+             nb::arg("min_variance") = 1.0e-6)
+        .def("update", &BoundedBOCPD::update, nb::arg("value"))
+        .def("last", &BoundedBOCPD::last)
+        .def("last_probability", &BoundedBOCPD::last_probability)
+        RTTA_ADVANCE1(BoundedBOCPD, value)
+        RTTA_REPLAY1(BoundedBOCPD, value)
+        RTTA_BATCH1_ARRAY(BoundedBOCPD, value, "value");
+
+    nb::class_<OnlineGaussianMixtureRegimeFilter>(m, "OnlineGaussianMixtureRegimeFilter")
+        .def(nb::init<int, double, double>(),
+             nb::arg("components") = 2,
+             nb::arg("alpha") = 0.05,
+             nb::arg("min_variance") = 1.0e-6)
+        .def("update", &OnlineGaussianMixtureRegimeFilter::update, nb::arg("value"))
+        .def("last", &OnlineGaussianMixtureRegimeFilter::last)
+        .def("last_probability", &OnlineGaussianMixtureRegimeFilter::last_probability)
+        RTTA_ADVANCE1(OnlineGaussianMixtureRegimeFilter, value)
+        RTTA_REPLAY1(OnlineGaussianMixtureRegimeFilter, value)
+        RTTA_BATCH1_ARRAY(OnlineGaussianMixtureRegimeFilter, value, "value");
+
+    nb::class_<HiddenSemiMarkovRegimeFilter>(m, "HiddenSemiMarkovRegimeFilter")
+        .def(nb::init<int, double, double, double, double, double>(),
+             nb::arg("states") = 2,
+             nb::arg("stay_probability") = 0.95,
+             nb::arg("expected_duration") = 20.0,
+             nb::arg("duration_strength") = 1.0,
+             nb::arg("alpha") = 0.05,
+             nb::arg("min_variance") = 1.0e-6)
+        .def("update", &HiddenSemiMarkovRegimeFilter::update, nb::arg("value"))
+        .def("last", &HiddenSemiMarkovRegimeFilter::last)
+        .def("last_probability", &HiddenSemiMarkovRegimeFilter::last_probability)
+        RTTA_ADVANCE1(HiddenSemiMarkovRegimeFilter, value)
+        RTTA_REPLAY1(HiddenSemiMarkovRegimeFilter, value)
+        RTTA_BATCH1_ARRAY(HiddenSemiMarkovRegimeFilter, value, "value");
+
+    nb::class_<VolatilityBreakoutDetector>(m, "VolatilityBreakoutDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("z_entry") = 3.0,
+             nb::arg("z_exit") = 1.0,
+             nb::arg("min_variance") = 1.0e-12)
+        .def("update", &VolatilityBreakoutDetector::update, nb::arg("close"))
+        .def("last", &VolatilityBreakoutDetector::last)
+        RTTA_ADVANCE1(VolatilityBreakoutDetector, close)
+        RTTA_REPLAY1(VolatilityBreakoutDetector, close)
+        RTTA_BATCH1_ARRAY(VolatilityBreakoutDetector, close, "close");
+
+    nb::class_<VolatilityCompressionExpansionDetector>(m, "VolatilityCompressionExpansionDetector")
+        .def(nb::init<double, double, double, double, double, double, double>(),
+             nb::arg("short_alpha") = 0.20,
+             nb::arg("long_alpha") = 0.02,
+             nb::arg("expansion_entry") = 1.5,
+             nb::arg("expansion_exit") = 1.1,
+             nb::arg("compression_entry") = 0.6,
+             nb::arg("compression_exit") = 0.8,
+             nb::arg("variance_floor") = 1.0e-12)
+        .def("update", &VolatilityCompressionExpansionDetector::update, nb::arg("close"))
+        .def("last", &VolatilityCompressionExpansionDetector::last)
+        RTTA_ADVANCE1(VolatilityCompressionExpansionDetector, close)
+        RTTA_REPLAY1(VolatilityCompressionExpansionDetector, close)
+        RTTA_BATCH1_ARRAY(VolatilityCompressionExpansionDetector, close, "close");
+
+    nb::class_<MicrostructureNoiseRegimeDetector>(m, "MicrostructureNoiseRegimeDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("noise_entry") = 1.0,
+             nb::arg("noise_exit") = 0.5,
+             nb::arg("spread_floor") = 1.0e-12)
+        .def("update", &MicrostructureNoiseRegimeDetector::update, nb::arg("trade_price"), nb::arg("bid_price"), nb::arg("ask_price"))
+        .def("last", &MicrostructureNoiseRegimeDetector::last)
+        RTTA_ADVANCE3(MicrostructureNoiseRegimeDetector, trade_price, bid_price, ask_price)
+        RTTA_REPLAY3(MicrostructureNoiseRegimeDetector, trade_price, bid_price, ask_price)
+        RTTA_BATCH3_ARRAY(MicrostructureNoiseRegimeDetector, trade_price, bid_price, ask_price, "trade_price", "bid_price", "ask_price");
+
+    nb::class_<BidAskBounceRegimeDetector>(m, "BidAskBounceRegimeDetector")
+        .def(nb::init<double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("bounce_entry") = 0.6,
+             nb::arg("bounce_exit") = 0.4)
+        .def("update", &BidAskBounceRegimeDetector::update, nb::arg("trade_price"), nb::arg("bid_price"), nb::arg("ask_price"))
+        .def("last", &BidAskBounceRegimeDetector::last)
+        RTTA_ADVANCE3(BidAskBounceRegimeDetector, trade_price, bid_price, ask_price)
+        RTTA_REPLAY3(BidAskBounceRegimeDetector, trade_price, bid_price, ask_price)
+        RTTA_BATCH3_ARRAY(BidAskBounceRegimeDetector, trade_price, bid_price, ask_price, "trade_price", "bid_price", "ask_price");
+
+    nb::class_<QuoteMessageRateRegimeDetector>(m, "QuoteMessageRateRegimeDetector")
+        .def(nb::init<double, double, double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("high_entry") = 3.0,
+             nb::arg("high_exit") = 1.5,
+             nb::arg("low_entry") = 0.4,
+             nb::arg("low_exit") = 0.8,
+             nb::arg("message_floor") = 1.0e-12)
+        .def("update", &QuoteMessageRateRegimeDetector::update, nb::arg("quote_messages"))
+        .def("last", &QuoteMessageRateRegimeDetector::last)
+        RTTA_ADVANCE1(QuoteMessageRateRegimeDetector, quote_messages)
+        RTTA_REPLAY1(QuoteMessageRateRegimeDetector, quote_messages)
+        RTTA_BATCH1_ARRAY(QuoteMessageRateRegimeDetector, quote_messages, "quote_messages");
+
+    nb::class_<QuoteStuffingDetector>(m, "QuoteStuffingDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("ratio_entry") = 50.0,
+             nb::arg("ratio_exit") = 20.0,
+             nb::arg("trade_floor") = 1.0e-12)
+        .def("update", &QuoteStuffingDetector::update, nb::arg("quote_messages"), nb::arg("trades"))
+        .def("last", &QuoteStuffingDetector::last)
+        RTTA_ADVANCE2(QuoteStuffingDetector, quote_messages, trades)
+        RTTA_REPLAY2(QuoteStuffingDetector, quote_messages, trades)
+        RTTA_BATCH2_ARRAY(QuoteStuffingDetector, quote_messages, trades, "quote_messages", "trades");
+
+    nb::class_<LeadLagRegimeDetector>(m, "LeadLagRegimeDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("lead_entry") = 0.2,
+             nb::arg("lead_exit") = 0.05,
+             nb::arg("score_floor") = 1.0e-12)
+        .def("update", &LeadLagRegimeDetector::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &LeadLagRegimeDetector::last)
+        RTTA_ADVANCE2(LeadLagRegimeDetector, real0, real1)
+        RTTA_REPLAY2(LeadLagRegimeDetector, real0, real1)
+        RTTA_BATCH2_ARRAY(LeadLagRegimeDetector, real0, real1, "real0", "real1");
+
+    nb::class_<LiquidityDroughtDetector>(m, "LiquidityDroughtDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("drought_entry") = 0.3,
+             nb::arg("drought_exit") = 0.7,
+             nb::arg("liquidity_floor") = 1.0e-12)
+        .def("update", &LiquidityDroughtDetector::update, nb::arg("volume"), nb::arg("bid_size"), nb::arg("ask_size"))
+        .def("last", &LiquidityDroughtDetector::last)
+        RTTA_ADVANCE3(LiquidityDroughtDetector, volume, bid_size, ask_size)
+        RTTA_REPLAY3(LiquidityDroughtDetector, volume, bid_size, ask_size)
+        RTTA_BATCH3_ARRAY(LiquidityDroughtDetector, volume, bid_size, ask_size, "volume", "bid_size", "ask_size");
+
+    nb::class_<SpreadExplosionDetector>(m, "SpreadExplosionDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("alpha") = 0.05,
+             nb::arg("ratio_entry") = 5.0,
+             nb::arg("ratio_exit") = 2.0,
+             nb::arg("spread_floor") = 1.0e-12)
+        .def("update", &SpreadExplosionDetector::update, nb::arg("bid_price"), nb::arg("ask_price"))
+        .def("last", &SpreadExplosionDetector::last)
+        RTTA_ADVANCE2(SpreadExplosionDetector, bid_price, ask_price)
+        RTTA_REPLAY2(SpreadExplosionDetector, bid_price, ask_price)
+        RTTA_BATCH2_ARRAY(SpreadExplosionDetector, bid_price, ask_price, "bid_price", "ask_price");
+
+    nb::class_<MarketOpenCloseTransitionDetector>(m, "MarketOpenCloseTransitionDetector")
+        .def(nb::init<double, double, double, double>(),
+             nb::arg("open_entry") = 0.05,
+             nb::arg("open_exit") = 0.08,
+             nb::arg("close_entry") = 0.95,
+             nb::arg("close_exit") = 0.92)
+        .def("update", &MarketOpenCloseTransitionDetector::update, nb::arg("session_progress"))
+        .def("last", &MarketOpenCloseTransitionDetector::last)
+        RTTA_ADVANCE1(MarketOpenCloseTransitionDetector, session_progress)
+        RTTA_REPLAY1(MarketOpenCloseTransitionDetector, session_progress)
+        RTTA_BATCH1_ARRAY(MarketOpenCloseTransitionDetector, session_progress, "session_progress");
+
+    nb::class_<AuctionContinuousMarketTransitionDetector>(m, "AuctionContinuousMarketTransitionDetector")
+        .def(nb::init<double, double>(),
+             nb::arg("auction_entry") = 0.5,
+             nb::arg("auction_exit") = 0.2)
+        .def("update", &AuctionContinuousMarketTransitionDetector::update, nb::arg("auction_signal"))
+        .def("last", &AuctionContinuousMarketTransitionDetector::last)
+        RTTA_ADVANCE1(AuctionContinuousMarketTransitionDetector, auction_signal)
+        RTTA_REPLAY1(AuctionContinuousMarketTransitionDetector, auction_signal)
+        RTTA_BATCH1_ARRAY(AuctionContinuousMarketTransitionDetector, auction_signal, "auction_signal");
+
+    nb::class_<CrossAssetCorrelationBreakDetector>(m, "CrossAssetCorrelationBreakDetector")
+        .def(nb::init<int, int, double, double>(),
+             nb::arg("short_window") = 10,
+             nb::arg("long_window") = 60,
+             nb::arg("break_entry") = 0.5,
+             nb::arg("break_exit") = 0.25)
+        .def("update", &CrossAssetCorrelationBreakDetector::update, nb::arg("real0"), nb::arg("real1"))
+        .def("last", &CrossAssetCorrelationBreakDetector::last)
+        RTTA_ADVANCE2(CrossAssetCorrelationBreakDetector, real0, real1)
+        RTTA_REPLAY2(CrossAssetCorrelationBreakDetector, real0, real1)
+        RTTA_BATCH2_ARRAY(CrossAssetCorrelationBreakDetector, real0, real1, "real0", "real1");
+
+    nb::class_<PageHinkley>(m, "PageHinkley")
+        .def(nb::init<double, double>(), nb::arg("threshold") = 1.0, nb::arg("delta") = 0.0)
+        .def("update", &PageHinkley::update, nb::arg("close"))
+        .def("last", &PageHinkley::last)
+        RTTA_ADVANCE1(PageHinkley, close)
+        RTTA_REPLAY1(PageHinkley, close)
+        RTTA_BATCH1_ARRAY(PageHinkley, close, "close");
 
     nb::class_<DailyLogReturn>(m, "DailyLogReturn")
         .def(nb::init<bool>(), nb::arg("fillna") = true)

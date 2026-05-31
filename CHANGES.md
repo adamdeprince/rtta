@@ -30,6 +30,40 @@
 - Added `OrderFlowImbalance`, a quote-level best bid/ask price and size
   pressure measure with incremental update/advance, replay, array batch,
   record-list batch, pandas-table batch, benchmark, and correctness coverage.
+- Added `CUSUM`, a causal cumulative-sum event filter with update/advance,
+  replay, array batch, record-list batch, pandas-table batch, benchmark, and
+  correctness coverage.
+- Added `PageHinkley`, a causal directed Page-Hinkley mean-shift event
+  detector with update/advance, replay, array batch, record-list batch,
+  pandas-table batch, benchmark, and correctness coverage.
+- Added `EWMAZScoreShiftDetector`, a causal EWMA mean/variance z-score shift
+  event detector with update/advance, replay, array batch, record-list batch,
+  pandas-table batch, benchmark, and correctness coverage.
+- Added rolling adjacent-window shift detectors for mean, variance,
+  mean-plus-variance, correlation, beta, and quote spread/depth liquidity
+  stress, each with update/advance, replay, array batch, record-list batch,
+  pandas-table batch, benchmark, and correctness coverage.
+- Added `ThresholdRegimeDetector`, a stateful threshold regime detector with
+  upper/lower hysteresis bands and the standard update/advance/replay/batch
+  API surface.
+- Added streaming regime detectors for volatility, ATR, realized variance,
+  trend/chop, liquidity, spread, volume, trade intensity, order-flow
+  imbalance, correlation, beta, pair-spread residual z-score, cointegration
+  breakdown, and execution-cost/slippage regimes. These use causal
+  update/advance/replay/batch APIs with array, record-list, pandas-table,
+  benchmark, and correctness coverage.
+- Added drift/model-health widgets (`ADWIN`, `DDM`, `EDDM`, `HDDM`, `KSWIN`,
+  residual drift, prediction-error drift, hit-rate drift, calibration drift,
+  and feature-distribution drift), probabilistic online regime widgets
+  (online HMM, sticky HMM, Markov-switching volatility, bounded BOCPD,
+  online Gaussian mixture, and hidden semi-Markov-style filters), and
+  finance-specific live widgets for volatility breakouts, compression and
+  expansion, microstructure noise, bid/ask bounce, quote-message rate,
+  quote stuffing, lead/lag, liquidity droughts, spread explosions, market
+  open/close transitions, auction/continuous transitions, and cross-asset
+  correlation breaks. All expose the causal update/advance/replay/batch API
+  with array, record-list, pandas-table, benchmark, and focused consistency
+  coverage.
 - Added `AlphaBetaGammaTrackingFilter`, a steady-state Kalman-like
   price/velocity/acceleration tracker with immutable multi-output results,
   scalar field accessors, replay-output batches, and array/table/record batch
