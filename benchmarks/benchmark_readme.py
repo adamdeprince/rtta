@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Generate README latency tables for RTTA.
+
+This benchmark reports the live per-sample cost that matters for interactive
+research and market simulators:
+
+* ``advance(...)`` updates indicator state without materializing a Python result.
+* ``update(...)`` updates indicator state and returns the current value/result.
+
+Run after installing RTTA into the active environment, for example:
+
+    python -m pip install --no-build-isolation -e .
+    python benchmarks/benchmark_readme.py --samples 50000 --output README_BENCHMARKS.md
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import importlib
+import math
+import platform
+import statistics
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from benchmarks.benchmark_indicators import INDICATORS, IndicatorSpec, generate_market_data  # noqa: E402
+from benchmarks.benchmark_update_latency import (  # noqa: E402
+    benchmark_runner,
+    input_lists,
+    make_method_runner,
+)
+
+
+@dataclass
+class ReadmeBenchRow:
+    indicator: str
+    arity: int
+    advance_ns: float
+    update_ns: float
+
+
+def selected_specs(names: list[str] | None) -> list[IndicatorSpec]:
+    if not names:
+        return list(INDICATORS)
+
+    requested = [name for group in names for name in group.split(",") if name]
+    by_name = {spec.name: spec for spec in INDICATORS}
+    missing = sorted(set(requested) - set(by_name))
+    if missing:
+        raise SystemExit(f"unknown indicator(s): {', '.join(missing)}")
+    return [by_name[name] for name in requested]
+
+
+def make_indicator(rtta: Any, spec: IndicatorSpec) -> Any:
+    indicator_cls = getattr(rtta, spec.name)
+    return indicator_cls(*spec.ctor_args, **spec.ctor_kwargs)
+
+
+def cpu_model() -> str:
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        for line in cpuinfo.read_text(errors="ignore").splitlines():
+            if line.startswith("model name"):
+                return line.split(":", 1)[1].strip()
+            if line.startswith("Hardware"):
+                return line.split(":", 1)[1].strip()
+    return platform.processor() or "unknown"
+
+
+def run_benchmarks(args: argparse.Namespace) -> tuple[list[ReadmeBenchRow], dict[str, str], int]:
+    try:
+        rtta = importlib.import_module("rtta")
+    except ImportError as exc:
+        raise SystemExit(
+            "Could not import rtta. Install the local package first, for example:\n"
+            "  python -m pip install --no-build-isolation -e ."
+        ) from exc
+
+    specs = selected_specs(args.indicator)
+    order = {spec.name: index for index, spec in enumerate(specs)}
+    data = generate_market_data(args.samples, args.seed)
+    rows: list[ReadmeBenchRow] = []
+
+    for spec in specs:
+        lists = input_lists(spec, data)
+
+        def ctor(spec: IndicatorSpec = spec) -> Any:
+            return make_indicator(rtta, spec)
+
+        probe = ctor()
+        if not hasattr(probe, "advance"):
+            raise SystemExit(f"{spec.name} does not expose advance(...); README latency table expects it.")
+
+        advance_ns = benchmark_runner(
+            make_method_runner(ctor, "advance", lists),
+            args.samples,
+            args.repeat,
+            args.warmup,
+        )
+        update_ns = benchmark_runner(
+            make_method_runner(ctor, "update", lists),
+            args.samples,
+            args.repeat,
+            args.warmup,
+        )
+        rows.append(ReadmeBenchRow(spec.name, len(lists), advance_ns, update_ns))
+
+    sort_key = {
+        "registry": lambda row: order[row.indicator],
+        "name": lambda row: row.indicator,
+        "advance": lambda row: -row.advance_ns,
+        "update": lambda row: -row.update_ns,
+    }[args.sort]
+    rows.sort(key=sort_key)
+    if args.top is not None:
+        rows = rows[: args.top]
+
+    versions = {
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+        "rtta": getattr(rtta, "__version__", "installed"),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": cpu_model(),
+    }
+    return rows, versions, len(INDICATORS)
+
+
+def format_ns(value: float | None) -> str:
+    if value is None or not math.isfinite(value):
+        return "n/a"
+    if value < 10:
+        return f"{value:.2f}"
+    if value < 100:
+        return f"{value:.1f}"
+    return f"{value:.0f}"
+
+
+def median(values: list[float]) -> float:
+    return statistics.median(values)
+
+
+def write_markdown(
+    rows: list[ReadmeBenchRow],
+    versions: dict[str, str],
+    indicator_count: int,
+    args: argparse.Namespace,
+    output: Path | None,
+) -> None:
+    advance_values = [row.advance_ns for row in rows]
+    update_values = [row.update_ns for row in rows]
+
+    lines = [
+        f"<!-- Generated by benchmarks/benchmark_readme.py with samples={args.samples}, repeat={args.repeat}, warmup={args.warmup}, seed={args.seed}. -->",
+        f"<!-- Python {versions['python']}; NumPy {versions['numpy']}; RTTA {versions['rtta']}; {versions['platform']}; machine={versions['machine']}; processor={versions['processor']} -->",
+        "",
+        "### README Latency Snapshot",
+        "",
+        f"- Benchmarked algorithms in registry: **{indicator_count}**.",
+        f"- Algorithms shown: **{len(rows)}**.",
+        f"- Median `advance(...)` latency, update state only: **{format_ns(median(advance_values))} ns/update**.",
+        f"- Median `update(...)` latency, update state and return a value/result: **{format_ns(median(update_values))} ns/update**.",
+        "",
+        "| Algorithm | Inputs | update only: `advance(...)` ns/update | update + return: `update(...)` ns/update |",
+        "|---|---:|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    row.indicator,
+                    str(row.arity),
+                    format_ns(row.advance_ns),
+                    format_ns(row.update_ns),
+                ]
+            )
+            + " |"
+        )
+    lines.append("")
+
+    text = "\n".join(lines) + "\n"
+    if output is None:
+        print(text, end="")
+    else:
+        output.write_text(text)
+
+
+def write_csv(rows: list[ReadmeBenchRow], output: Path | None) -> None:
+    fieldnames = [
+        "indicator",
+        "arity",
+        "advance_ns_per_update",
+        "update_ns_per_update",
+    ]
+    stream = sys.stdout if output is None else output.open("w", newline="")
+    try:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "indicator": row.indicator,
+                    "arity": row.arity,
+                    "advance_ns_per_update": row.advance_ns,
+                    "update_ns_per_update": row.update_ns,
+                }
+            )
+    finally:
+        if output is not None:
+            stream.close()
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate README RTTA per-update latency metrics.")
+    parser.add_argument("--samples", type=int, default=50_000, help="Number of generated market samples.")
+    parser.add_argument("--repeat", type=int, default=5, help="Benchmark repeats; the best run is reported.")
+    parser.add_argument("--warmup", type=int, default=1, help="Warmup runs before timing.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic market data.")
+    parser.add_argument("--indicator", action="append", help="Indicator name or comma-separated names to benchmark.")
+    parser.add_argument("--top", type=int, help="Limit output to the first N rows after sorting.")
+    parser.add_argument(
+        "--sort",
+        choices=("registry", "name", "advance", "update"),
+        default="registry",
+        help="Sort output rows.",
+    )
+    parser.add_argument("--format", choices=("markdown", "csv"), default="markdown", help="Output format.")
+    parser.add_argument("--output", type=Path, help="Output path. Defaults to stdout.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    rows, versions, indicator_count = run_benchmarks(args)
+    if args.format == "csv":
+        write_csv(rows, args.output)
+    else:
+        write_markdown(rows, versions, indicator_count, args, args.output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
