@@ -19,6 +19,16 @@ Each note covers:
 - [ClosePressureReversalSignal](close_pressure_reversal_signal.md)
 - [IntradayClockEchoSignal](intraday_clock_echo_signal.md)
 
+## Algorithm Pages
+
+Detailed per-algorithm pages live under [algorithms](algorithms/README.md).
+The first pilot set documents ATR, EMA, MACD, RSI, and SMA directly from the
+C++ `update(...)` recurrences.
+
+## Benchmarks
+
+CPU-specific latency pages are linked from the [benchmark overview](../BENCHMARK.md).
+
 ## General Caveat
 
 These indicators are research prototypes. They produce signals, scores, target
