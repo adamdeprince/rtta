@@ -72,6 +72,17 @@ a:hover {
   letter-spacing: -.04em;
 }
 
+.masthead h1 a,
+.masthead h1 a:visited {
+  color: inherit;
+  border-bottom: 0;
+}
+
+.masthead h1 a:hover {
+  color: inherit;
+  background: transparent;
+}
+
 .masthead .tagline {
   margin: 12px 0 0;
   font-size: 17px;

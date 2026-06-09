@@ -127,6 +127,9 @@ def template(*, title: str, masthead_title: str, tagline: str, body: str, output
     prefix = asset_prefix(output_rel)
     escaped_title = html_escape.escape(title)
     escaped_masthead = html_escape.escape(masthead_title)
+    masthead_content = escaped_masthead
+    if masthead_title == "RTTA":
+        masthead_content = f'<a href="{prefix}rtta.png">{escaped_masthead}</a>'
     return f"""<!doctype html>
 <html lang="en" dir="ltr">
 <head>
@@ -157,7 +160,7 @@ window.MathJax = {{
 <body>
 <div class="page">
 <header class="masthead">
-<h1>{escaped_masthead}</h1>
+<h1>{masthead_content}</h1>
 <p class="tagline">{tagline}</p>
 </header>
 <nav class="nav">

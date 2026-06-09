@@ -10,3 +10,4 @@ html/*
 !html/favicon-*.png
 !html/apple-touch-icon.png
 !html/icon-*.png
+!html/rtta.png
