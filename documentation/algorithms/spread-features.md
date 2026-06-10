@@ -25,11 +25,13 @@ Let \(z_t = (trade_price_t, bid_price_t, ask_price_t)\) denote the observation c
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{SpreadFeatures}(s_{t-1}, (trade_price_t, bid_price_t, ask_price_t); \theta)
+mid_t=\frac{bid_t+ask_t}{2}, \qquad
+spread_t=\max(ask_t-bid_t,0)
 \]
 
 \[
-y_t = G_{SpreadFeatures}(s_t)
+relative\_spread_t=\frac{spread_t}{\max(|mid_t|,\epsilon)}, \qquad
+trade\_location_t=\frac{trade_t-mid_t}{\max(spread_t,\epsilon)}
 \]
 
 `update(...)` returns a result struct with fields `quoted_spread`, `effective_spread`, `realized_spread`.

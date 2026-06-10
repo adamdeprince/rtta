@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`RollingBetaShiftDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`RollingBetaShiftDetector` compares two adjacent rolling windows: a reference window and a recent window. The C++ state moves expired recent samples into the reference window, maintains sufficient statistics, and emits the sign of the statistic difference when it exceeds the configured threshold.
 
 ## Recurrence
 
@@ -25,15 +25,20 @@ Let \(z_t = (real0_t, real1_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+\beta^R_t=\frac{\operatorname{cov}(R^x_t,R^y_t)}{\operatorname{var}(R^y_t)}, \qquad
+\beta^B_t=\frac{\operatorname{cov}(B^x_t,B^y_t)}{\operatorname{var}(B^y_t)}
+\]
+
+\[
+q_t=\beta^R_t-\beta^B_t
 \]
 
 \[
 r_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+1, & q_t > h \\
+-1, & q_t < -h \\
+0, & \text{otherwise}
 \end{cases}
 \]
 

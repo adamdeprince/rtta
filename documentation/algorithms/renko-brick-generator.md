@@ -25,11 +25,12 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{RenkoBrickGenerator}(s_{t-1}, close_t; \theta)
+k_t=\left\lfloor\frac{close_t-anchor_{t-1}}{brick\_size}\right\rfloor
 \]
 
 \[
-y_t = G_{RenkoBrickGenerator}(s_t)
+anchor_t=anchor_{t-1}+k_t\,brick\_size, \qquad
+direction_t=\operatorname{sgn}(k_t)
 \]
 
 `update(...)` returns a result struct with fields `brick_open`, `brick_close`, `direction`, `bricks`, `reversal`.

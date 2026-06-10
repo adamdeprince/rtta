@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`RollingSpreadLiquidityShiftDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`RollingSpreadLiquidityShiftDetector` compares two adjacent rolling windows: a reference window and a recent window. The C++ state moves expired recent samples into the reference window, maintains sufficient statistics, and emits the sign of the statistic difference when it exceeds the configured threshold.
 
 ## Recurrence
 
@@ -25,15 +25,19 @@ Let \(z_t = (bid_price_t, bid_size_t, ask_price_t, ask_size_t)\) denote the obse
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+s_t=\frac{\max(ask_t-bid_t,0)}{\max(bid\_size_t+ask\_size_t,\epsilon)}
+\]
+
+\[
+q_t=\operatorname{mean}(R^s_t)-\operatorname{mean}(B^s_t)
 \]
 
 \[
 r_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+1, & q_t > h \\
+-1, & q_t < -h \\
+0, & \text{otherwise}
 \end{cases}
 \]
 

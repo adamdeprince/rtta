@@ -25,11 +25,16 @@ Let \(z_t = (open_t, high_t, low_t, close_t)\) denote the observation consumed b
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{HeikinAshiTransform}(s_{t-1}, (open_t, high_t, low_t, close_t); \theta)
+HAclose_t=\frac{open_t+high_t+low_t+close_t}{4}
 \]
 
 \[
-y_t = G_{HeikinAshiTransform}(s_t)
+HAopen_t=\frac{HAopen_{t-1}+HAclose_{t-1}}{2}
+\]
+
+\[
+HAhigh_t=\max(high_t,HAopen_t,HAclose_t), \qquad
+HAlow_t=\min(low_t,HAopen_t,HAclose_t)
 \]
 
 `update(...)` returns a result struct with fields `open`, `high`, `low`, `close`.

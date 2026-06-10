@@ -25,11 +25,12 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{UlcerIndex}(s_{t-1}, close_t; \theta)
+H_t=\max_{i\in W_t}close_i, \qquad
+d_t=100\frac{close_t-H_t}{H_t}
 \]
 
 \[
-y_t = G_{UlcerIndex}(s_t)
+y_t=\sqrt{\frac{1}{n}\sum_{i\in W_t}d_i^2}
 \]
 
 The return value is the current scalar indicator value.

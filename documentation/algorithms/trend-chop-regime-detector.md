@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`TrendChopRegimeDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`TrendChopRegimeDetector` first constructs a scalar market-state metric from the current observation and compact streaming state, then passes that metric through explicit entry/exit hysteresis. The metric is named in the recurrence below; the hysteresis keeps the output stable until the metric crosses the opposite exit band.
 
 ## Recurrence
 
@@ -25,17 +25,27 @@ Let \(z_t = (close_t, high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+TR_t=\max(high_t-low_t,\ |high_t-close_{t-1}|,\ |low_t-close_{t-1}|)
 \]
+
+\[
+q_t=\frac{|close_t-close_{t-n}|}{\sum_{i\in W_t}TR_i}
+\]
+
+The metric is an efficiency ratio: values near one indicate directional trend, while values near zero indicate choppy movement.
 
 \[
 r_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
+1, & r_{t-1} \le 0 \text{ and } q_t \ge u_e \\
+0, & r_{t-1} = 1 \text{ and } q_t \le u_x \\
+-1, & r_{t-1} \ge 0 \text{ and } q_t \le \ell_e \\
+0, & r_{t-1} = -1 \text{ and } q_t \ge \ell_x \\
 r_{t-1}, & \text{otherwise}
 \end{cases}
 \]
+
+The entry/exit constants satisfy \(\ell_e < \ell_x \le u_x < u_e\).
 
 The return value is the current scalar indicator value.
 

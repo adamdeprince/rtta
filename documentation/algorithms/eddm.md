@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`EDDM` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`EDDM` is a streaming classifier-error drift detector. It treats positive input values as errors and compares the current error process against the best historical baseline using the detector's bound: binomial standard error for DDM, distance-between-errors degradation for EDDM, and a Hoeffding bound for HDDM.
 
 ## Recurrence
 
@@ -25,15 +25,26 @@ Let \(z_t = error_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+d_k=i_k-i_{k-1}
+\quad \text{for the sample indices } i_k \text{ where } error_{i_k}>0
 \]
 
 \[
-r_t =
+\bar{d}_k=\bar{d}_{k-1}+\frac{d_k-\bar{d}_{k-1}}{k}, \qquad
+s^2_{d,k}=\frac{1}{k-1}\sum_{j=1}^{k}(d_j-\bar{d}_k)^2
+\]
+
+\[
+M_k=\bar{d}_k+2s_{d,k}, \qquad
+\rho_k=\frac{M_k}{\max_{j\le k}M_j}
+\]
+
+\[
+y_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+1, & \rho_k < \rho_{drift}\\
+0.5, & \rho_k < \rho_{warning}\\
+0, & \text{otherwise}
 \end{cases}
 \]
 

@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`QuoteStuffingDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`QuoteStuffingDetector` first constructs a scalar market-state metric from the current observation and compact streaming state, then passes that metric through explicit entry/exit hysteresis. The metric is named in the recurrence below; the hysteresis keeps the output stable until the metric crosses the opposite exit band.
 
 ## Recurrence
 
@@ -25,16 +25,20 @@ Let \(z_t = (quote_messages_t, trades_t)\) denote the observation consumed by on
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+\rho_t=\frac{\max(quote\_messages_t,0)}{\max(\max(trades_t,0),\epsilon)}
+\]
+
+\[
+q_t=\alpha\rho_t+(1-\alpha)q_{t-1}
 \]
 
 \[
 r_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
+1, & r_{t-1} = 0 \text{ and } q_t \ge e \\
+0, & r_{t-1} = 1 \text{ and } q_t \le x \\
 r_{t-1}, & \text{otherwise}
-\end{cases}
+\end{cases}, \qquad x < e
 \]
 
 The return value is the current scalar indicator value.

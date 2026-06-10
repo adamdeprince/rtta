@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`ADWIN` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`ADWIN` maintains an adaptive recent window and searches every admissible split for a statistically meaningful difference between the old and new subwindow means. The signal direction is the sign of the best accepted mean shift; accepting a split discards the older prefix.
 
 ## Recurrence
 
@@ -25,17 +25,31 @@ Let \(z_t = value_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+W_t=\operatorname{tail}_{max\_window}(W_{t-1}\cup\{x_t\})
 \]
 
 \[
-r_t =
+\epsilon(c)=R_t
+\sqrt{\frac{1}{2}\log\left(\frac{4}{\delta}\right)
+\left(\frac{1}{c}+\frac{1}{|W_t|-c}\right)}
+\]
+
+\[
+c^\*=\arg\max_c |\bar{x}_{c:|W_t|}-\bar{x}_{1:c}|
+\quad \text{s.t.}\quad
+|\bar{x}_{c:|W_t|}-\bar{x}_{1:c}|>\epsilon(c)
+\]
+
+\[
+y_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+\operatorname{sgn}(\bar{x}_{c^\*:|W_t|}-\bar{x}_{1:c^\*}), & c^\* \text{ exists}\\
+0, & \text{otherwise}
 \end{cases}
 \]
+
+When a cut is accepted, the older prefix is discarded and the retained suffix
+becomes the next adaptive window.
 
 The return value is the current scalar indicator value.
 

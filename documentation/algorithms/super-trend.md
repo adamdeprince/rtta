@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`SuperTrend` maintains rolling extrema, ranges, or envelopes. The C++ state updates the relevant window/range statistics once per input sample.
+`SuperTrend` builds ATR-scaled bands around the high/low midpoint and trails the active band in the direction of the current trend. Crosses through the active band flip the trend side; otherwise the band only tightens, which makes the indicator a volatility-adjusted trailing stop.
 
 ## Recurrence
 
@@ -25,14 +25,29 @@ Let \(z_t = (close_t, high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{SuperTrend}(s_{t-1}, (close_t, high_t, low_t); \theta)
+ATR_t=\operatorname{ATR}_n(close_t,high_t,low_t), \qquad
+B^+_t=\frac{high_t+low_t}{2}+mATR_t, \quad
+B^-_t=\frac{high_t+low_t}{2}-mATR_t
 \]
 
 \[
-y_t = G_{SuperTrend}(s_t)
+U_t=\begin{cases}B^+_t, & B^+_t<U_{t-1}\text{ or }close_{t-1}>U_{t-1}\\U_{t-1},&\text{otherwise}\end{cases}
+\]
+
+\[
+L_t=\begin{cases}B^-_t, & B^-_t>L_{t-1}\text{ or }close_{t-1}<L_{t-1}\\L_{t-1},&\text{otherwise}\end{cases}
+\]
+
+\[
+trend_t=\begin{cases}1,& close_t\ge L_t\\-1,& close_t\le U_t\\trend_{t-1},&\text{otherwise}\end{cases}, \qquad
+value_t=\begin{cases}L_t,& trend_t=1\\U_t,& trend_t=-1\end{cases}
 \]
 
 `update(...)` returns a result struct with fields `value`, `direction`, `upper`, `lower`.
+
+## Composed Primitives
+
+[`ATR`](atr.md)
 
 ## Implementation Notes
 

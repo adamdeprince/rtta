@@ -25,11 +25,21 @@ Let \(z_t = (real0_t, real1_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{CointegrationBreakdownMonitor}(s_{t-1}, (real0_t, real1_t); \theta)
+\beta_t=\frac{C^{xy}_t}{V^y_t}, \qquad
+e_t=x_t-(\beta_t y_t+\alpha_t)
 \]
 
 \[
-y_t = G_{CointegrationBreakdownMonitor}(s_t)
+q_t=\left|\frac{e_t-\bar{e}_{t-1}}{\sqrt{\max(s^2_{e,t-1},\epsilon)}}\right|
+\]
+
+\[
+r_t =
+\begin{cases}
+1, & r_{t-1} = 0 \text{ and } q_t \ge e \\
+0, & r_{t-1} = 1 \text{ and } q_t \le x \\
+r_{t-1}, & \text{otherwise}
+\end{cases}, \qquad x < e
 \]
 
 The return value is the current scalar indicator value.

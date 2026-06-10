@@ -25,12 +25,19 @@ Let \(z_t = (close_t, high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{Vortex}(s_{t-1}, (close_t, high_t, low_t); \theta)
+TR_t=\max(high_t-low_t,\ |high_t-close_{t-1}|,\ |low_t-close_{t-1}|)
 \]
 
 \[
-y_t = G_{Vortex}(s_t)
+VM^+_t=|high_t-low_{t-1}|, \qquad VM^-_t=|low_t-high_{t-1}|
 \]
+
+\[
+VI^+_t=\frac{\sum_{i\in W_t}VM^+_i}{\sum_{i\in W_t}TR_i}, \qquad
+VI^-_t=\frac{\sum_{i\in W_t}VM^-_i}{\sum_{i\in W_t}TR_i}
+\]
+
+The result fields are \(VI^+_t\), \(VI^-_t\), and their difference.
 
 `update(...)` returns a result struct with fields `positive`, `negative`, `difference`.
 

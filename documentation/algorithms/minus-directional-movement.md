@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`MinusDirectionalMovement` implements the streaming form of Negative directional movement. Each `update(...)` call consumes exactly one new observation tuple and advances the internal state before returning the current value or result struct.
+`MinusDirectionalMovement` is part of Wilder's directional-movement system. The update compares today's high/low extension with the previous bar, smooths directional movement and true range, and then reports either a directional component, a normalized directional imbalance, or an additional Wilder-smoothed trend-strength rating.
 
 ## Recurrence
 
@@ -25,11 +25,19 @@ Let \(z_t = (high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{MinusDirectionalMovement}(s_{t-1}, (high_t, low_t); \theta)
+up_t=high_t-high_{t-1}, \qquad down_t=low_{t-1}-low_t
 \]
 
 \[
-y_t = G_{MinusDirectionalMovement}(s_t)
+DM^+_t=\begin{cases}up_t, & up_t>down_t \text{ and } up_t>0\\0,&\text{otherwise}\end{cases}
+\]
+
+\[
+DM^-_t=\begin{cases}down_t, & down_t>up_t \text{ and } down_t>0\\0,&\text{otherwise}\end{cases}
+\]
+
+\[
+y_t=\operatorname{WilderEMA}_n(DM^{\pm}_t)
 \]
 
 The return value is the current scalar indicator value.

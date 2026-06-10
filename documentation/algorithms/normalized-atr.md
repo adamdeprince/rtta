@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`NormalizedATR` implements the streaming form of ATR normalized by close. Each `update(...)` call consumes exactly one new observation tuple and advances the internal state before returning the current value or result struct.
+`NormalizedATR` expresses the current `ATR` volatility estimate relative to the current close. This makes a dollar-denominated range comparable across price levels while preserving the same one-step Wilder true-range smoothing used by `ATR`.
 
 ## Recurrence
 
@@ -25,14 +25,18 @@ Let \(z_t = (close_t, high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{NormalizedATR}(s_{t-1}, (close_t, high_t, low_t); \theta)
+ATR_t=\operatorname{ATR}_n(close_t,high_t,low_t)
 \]
 
 \[
-y_t = G_{NormalizedATR}(s_t)
+y_t=\frac{ATR_t}{close_t}
 \]
 
 The return value is the current scalar indicator value.
+
+## Composed Primitives
+
+[`ATR`](atr.md)
 
 ## Implementation Notes
 

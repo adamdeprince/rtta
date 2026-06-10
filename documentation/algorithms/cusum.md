@@ -25,11 +25,16 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{CUSUM}(s_{t-1}, close_t; \theta)
+\Delta_t=close_t-close_{t-1}
 \]
 
 \[
-y_t = G_{CUSUM}(s_t)
+S^+_t=\max(0,S^+_{t-1}+\Delta_t-\kappa), \qquad
+S^-_t=\min(0,S^-_{t-1}+\Delta_t+\kappa)
+\]
+
+\[
+y_t=\begin{cases}1,&S^+_t>h\\-1,&S^-_t<-h\\0,&\text{otherwise}\end{cases}
 \]
 
 The return value is the current scalar indicator value.

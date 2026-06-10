@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`MassIndex` implements the streaming form of Range-expansion reversal indicator. Each `update(...)` call consumes exactly one new observation tuple and advances the internal state before returning the current value or result struct.
+`MassIndex` studies range expansion rather than direction. It double-smooths the high-low range with `EMA`, forms their ratio, and sums that ratio over a window so persistent range bulges become visible as a reversal-risk signal.
 
 ## Recurrence
 
@@ -25,14 +25,20 @@ Let \(z_t = (high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{MassIndex}(s_{t-1}, (high_t, low_t); \theta)
+R_t=high_t-low_t, \qquad
+E_t=\operatorname{EMA}_n(R_t), \qquad
+D_t=\operatorname{EMA}_n(E_t)
 \]
 
 \[
-y_t = G_{MassIndex}(s_t)
+y_t=\sum_{i\in W_t}\frac{E_i}{D_i}
 \]
 
 The return value is the current scalar indicator value.
+
+## Composed Primitives
+
+[`EMA`](ema.md)
 
 ## Implementation Notes
 

@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`ZigZagSwingDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`ZigZagSwingDetector` maintains the current swing direction, the active extreme, and the last confirmed pivot. A new pivot is confirmed only after price reverses from the active extreme by the configured percentage, which filters smaller oscillations out of the swing path.
 
 ## Recurrence
 
@@ -25,17 +25,31 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+\tau=\frac{percent\_change}{100}
 \]
 
 \[
-r_t =
+direction_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+1, & direction_{t-1}=0 \text{ and } close_t\ge start(1+\tau)\\
+-1, & direction_{t-1}=0 \text{ and } close_t\le start(1-\tau)\\
+-1, & direction_{t-1}=1 \text{ and } close_t\le extreme_{t-1}(1-\tau)\\
+1, & direction_{t-1}=-1 \text{ and } close_t\ge extreme_{t-1}(1+\tau)\\
+direction_{t-1}, & \text{otherwise}
 \end{cases}
 \]
+
+\[
+extreme_t =
+\begin{cases}
+\max(extreme_{t-1},close_t), & direction_t=1\\
+\min(extreme_{t-1},close_t), & direction_t=-1\\
+close_t \text{ if farther from } start, & direction_t=0
+\end{cases}
+\]
+
+When direction flips, the previous extreme becomes the confirmed pivot and the
+current close starts the new extreme search.
 
 `update(...)` returns a result struct with fields `value`, `direction`, `pivot`, `pivot_index`.
 

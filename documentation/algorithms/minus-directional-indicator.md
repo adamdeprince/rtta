@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`MinusDirectionalIndicator` implements the streaming form of Negative directional indicator. Each `update(...)` call consumes exactly one new observation tuple and advances the internal state before returning the current value or result struct.
+`MinusDirectionalIndicator` is part of Wilder's directional-movement system. The update compares today's high/low extension with the previous bar, smooths directional movement and true range, and then reports either a directional component, a normalized directional imbalance, or an additional Wilder-smoothed trend-strength rating.
 
 ## Recurrence
 
@@ -25,14 +25,29 @@ Let \(z_t = (close_t, high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{MinusDirectionalIndicator}(s_{t-1}, (close_t, high_t, low_t); \theta)
+DI^+_t=100\frac{\operatorname{WilderEMA}_n(DM^+_t)}{\operatorname{ATR}_n(TR_t)}, \qquad
+DI^-_t=100\frac{\operatorname{WilderEMA}_n(DM^-_t)}{\operatorname{ATR}_n(TR_t)}
 \]
 
 \[
-y_t = G_{MinusDirectionalIndicator}(s_t)
+DX_t=100\frac{|DI^+_t-DI^-_t|}{DI^+_t+DI^-_t}
 \]
 
+\[
+ADX_t=\operatorname{WilderEMA}_n(DX_t), \qquad
+ADXR_t=\frac{ADX_t+ADX_{t-n}}{2}
+\]
+
+`PlusDirectionalIndicator` returns \(DI^+_t\), `MinusDirectionalIndicator`
+returns \(DI^-_t\), `DirectionalMovementIndex` returns \(DX_t\),
+`AverageDirectionalMovementIndex` returns \(ADX_t\), and
+`AverageDirectionalMovementIndexRating` returns \(ADXR_t\).
+
 The return value is the current scalar indicator value.
+
+## Composed Primitives
+
+[`ATR`](atr.md)
 
 ## Implementation Notes
 

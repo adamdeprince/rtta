@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`EWMAZScoreShiftDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`EWMAZScoreShiftDetector` standardizes the current error or move against an EWMA mean and variance estimated from prior samples. The detector uses the resulting z-score with hysteresis or reset logic so isolated noisy observations do not become persistent regimes by themselves.
 
 ## Recurrence
 
@@ -25,17 +25,25 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+z_t=\frac{close_t-\mu_{t-1}}{\sqrt{\max(\sigma^2_{t-1},\epsilon)}}
 \]
 
 \[
-r_t =
+y_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+1, & z_t>h\\
+-1, & z_t<-h\\
+0, & \text{otherwise}
 \end{cases}
 \]
+
+\[
+\mu_t=\mu_{t-1}+\alpha(close_t-\mu_{t-1}), \qquad
+\sigma^2_t=(1-\alpha)(\sigma^2_{t-1}+\alpha(close_t-\mu_{t-1})^2)
+\]
+
+When \(y_t\ne0\), the C++ implementation resets \(\mu_t\) to the current close
+and clears the variance estimate.
 
 The return value is the current scalar indicator value.
 

@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`HDDM` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`HDDM` is a streaming classifier-error drift detector. It treats positive input values as errors and compares the current error process against the best historical baseline using the detector's bound: binomial standard error for DDM, distance-between-errors degradation for EDDM, and a Hoeffding bound for HDDM.
 
 ## Recurrence
 
@@ -25,15 +25,21 @@ Let \(z_t = error_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+\bar{e}_t=\frac{1}{t}\sum_{i=1}^{t}\mathbf{1}[error_i>0], \qquad
+b_t(\delta)=\sqrt{\frac{\log(1/\delta)}{2t}}
 \]
 
 \[
-r_t =
+(\bar{e}^\*_t,b^\*_t)=
+\arg\min_{i\le t}\left(\bar{e}_i+b_i(\delta_{drift})\right)
+\]
+
+\[
+y_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+1, & \bar{e}_t-\bar{e}^\*_t>b_t(\delta_{drift})+b^\*_t\\
+0.5, & \bar{e}_t-\bar{e}^\*_t>b_t(\delta_{warning})+b^\*_t\\
+0, & \text{otherwise}
 \end{cases}
 \]
 

@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`PageHinkley` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`PageHinkley` tracks cumulative positive and negative deviations from an online mean after subtracting a small drift allowance. A signal fires when one cumulative excursion rises far enough above its own running minimum; the detector then resets to the current close.
 
 ## Recurrence
 
@@ -25,17 +25,30 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+\mu_t=\mu_{t-1}+\frac{close_t-\mu_{t-1}}{t}
 \]
 
 \[
-r_t =
+P_t=P_{t-1}+close_t-\mu_t-\delta, \qquad
+N_t=N_{t-1}+\mu_t-close_t-\delta
+\]
+
+\[
+S^+_t=P_t-\min_{i\le t}P_i, \qquad
+S^-_t=N_t-\min_{i\le t}N_i
+\]
+
+\[
+y_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+1, & S^+_t > h \text{ and } S^+_t \ge S^-_t\\
+-1, & S^-_t > h\\
+0, & \text{otherwise}
 \end{cases}
 \]
+
+After a nonzero signal the C++ implementation resets the running mean and
+cumulative sums to the current close.
 
 The return value is the current scalar indicator value.
 

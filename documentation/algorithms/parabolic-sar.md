@@ -25,12 +25,16 @@ Let \(z_t = (high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{ParabolicSAR}(s_{t-1}, (high_t, low_t); \theta)
+SAR_t=SAR_{t-1}+AF_{t-1}(EP_{t-1}-SAR_{t-1})
 \]
 
 \[
-y_t = G_{ParabolicSAR}(s_t)
+EP_t=\begin{cases}\max(EP_{t-1},high_t),&trend_t=1\\\min(EP_{t-1},low_t),&trend_t=-1\end{cases}
 \]
+
+When price crosses the candidate SAR, the trend reverses, \(SAR_t\) is reset to
+the prior extreme point, and the acceleration factor restarts before increasing
+toward its cap on new extremes.
 
 The return value is the current scalar indicator value.
 

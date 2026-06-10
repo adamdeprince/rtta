@@ -25,12 +25,11 @@ Let \(z_t = value_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{Delay}(s_{t-1}, value_t; \theta)
+y_t=x_{t-n}
 \]
 
-\[
-y_t = G_{Delay}(s_t)
-\]
+The C++ implementation stores the last \(n\) observations in a ring buffer and
+returns the overwritten value on each update.
 
 The return value is the current scalar indicator value.
 

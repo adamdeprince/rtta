@@ -34,6 +34,10 @@ y_t = G(H_t,L_t,close_t)
 
 `update(...)` returns a result struct with fields `middle`, `upper`, `lower`.
 
+## Composed Primitives
+
+[`EMA`](ema.md), [`ATR`](atr.md)
+
 ## Implementation Notes
 
 The recurrence is implemented in `src/rtta/indicator.cpp` in `class KeltnerChannel`.

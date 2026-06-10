@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`ATRP` is a causal smoother or average. It updates compact rolling or exponential state with the newest observation and returns the current smoothed estimate.
+`ATRP` expresses the current `ATR` volatility estimate relative to the current close. This makes a dollar-denominated range comparable across price levels while preserving the same one-step Wilder true-range smoothing used by `ATR`.
 
 ## Recurrence
 
@@ -25,14 +25,18 @@ Let \(z_t = (close_t, high_t, low_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{ATRP}(s_{t-1}, (close_t, high_t, low_t); \theta)
+ATR_t=\operatorname{ATR}_n(close_t,high_t,low_t)
 \]
 
 \[
-y_t = G_{ATRP}(s_t)
+y_t=\frac{ATR_t}{close_t}
 \]
 
 The return value is the current scalar indicator value.
+
+## Composed Primitives
+
+[`ATR`](atr.md)
 
 ## Implementation Notes
 

@@ -34,6 +34,10 @@ y_t = G(H_t,L_t,close_t)
 
 The return value is the current scalar indicator value.
 
+## Composed Primitives
+
+[`SMA`](sma.md)
+
 ## Implementation Notes
 
 The recurrence is implemented in `src/rtta/indicator.cpp` in `class KeltnerChannelOriginal`.

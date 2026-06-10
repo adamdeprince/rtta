@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`BidAskBounceRegimeDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`BidAskBounceRegimeDetector` first constructs a scalar market-state metric from the current observation and compact streaming state, then passes that metric through explicit entry/exit hysteresis. The metric is named in the recurrence below; the hysteresis keeps the output stable until the metric crosses the opposite exit band.
 
 ## Recurrence
 
@@ -25,16 +25,21 @@ Let \(z_t = (trade_price_t, bid_price_t, ask_price_t)\) denote the observation c
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+side_t=\begin{cases}1, & trade_t\ge (bid_t+ask_t)/2\\ -1, & \text{otherwise}\end{cases}
+\]
+
+\[
+b_t=\mathbf{1}[side_t\ne side_{t-1}], \qquad
+q_t=\alpha b_t+(1-\alpha)q_{t-1}
 \]
 
 \[
 r_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
+1, & r_{t-1} = 0 \text{ and } q_t \ge e \\
+0, & r_{t-1} = 1 \text{ and } q_t \le x \\
 r_{t-1}, & \text{otherwise}
-\end{cases}
+\end{cases}, \qquad x < e
 \]
 
 The return value is the current scalar indicator value.

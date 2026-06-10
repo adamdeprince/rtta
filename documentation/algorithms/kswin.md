@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`KSWIN` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`KSWIN` compares the empirical distribution of a recent subwindow with the older reference portion of the rolling window using the Kolmogorov-Smirnov supremum distance. The output direction is determined by which subwindow has the larger mean when the KS statistic clears its critical value.
 
 ## Recurrence
 
@@ -25,15 +25,23 @@ Let \(z_t = value_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+A_t=W_t[1:|W_t|-m], \qquad B_t=W_t[|W_t|-m+1:|W_t|]
 \]
 
 \[
-r_t =
+D_t=\sup_x |\widehat{F}_{A_t}(x)-\widehat{F}_{B_t}(x)|
+\]
+
+\[
+c_\alpha=\sqrt{-\frac{1}{2}\log(\alpha/2)
+\left(\frac{1}{|A_t|}+\frac{1}{|B_t|}\right)}
+\]
+
+\[
+y_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+\operatorname{sgn}(\bar{B}_t-\bar{A}_t), & D_t>c_\alpha\\
+0, & \text{otherwise}
 \end{cases}
 \]
 

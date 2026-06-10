@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`RollingMeanVarianceShiftDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`RollingMeanVarianceShiftDetector` compares two adjacent rolling windows: a reference window and a recent window. The C++ state moves expired recent samples into the reference window, maintains sufficient statistics, and emits the sign of the statistic difference when it exceeds the configured threshold.
 
 ## Recurrence
 
@@ -25,15 +25,25 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+z^\mu_t=\frac{\bar{x}^{R}_t-\bar{x}^{B}_t}
+{\sqrt{\sigma^{2,R}_t/n+\sigma^{2,B}_t/n+\epsilon}},
+\qquad
+z^\sigma_t=\log\left(\frac{\sigma^{2,R}_t+\epsilon}{\sigma^{2,B}_t+\epsilon}\right)
 \]
 
 \[
-r_t =
+q_t=\sqrt{(z^\mu_t)^2+w(z^\sigma_t)^2}, \qquad
+d_t=\begin{cases}
+z^\mu_t, & |z^\mu_t|\ge |\sqrt{w}z^\sigma_t|\\
+\sqrt{w}z^\sigma_t, & \text{otherwise}
+\end{cases}
+\]
+
+\[
+y_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
-r_{t-1}, & \text{otherwise}
+\operatorname{sgn}(d_t), & q_t>h\\
+0, & \text{otherwise}
 \end{cases}
 \]
 

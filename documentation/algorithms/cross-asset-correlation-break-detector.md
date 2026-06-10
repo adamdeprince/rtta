@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`CrossAssetCorrelationBreakDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`CrossAssetCorrelationBreakDetector` runs short and long rolling correlation estimates on the same pair of streams and measures their absolute divergence. An upper hysteresis state turns that divergence into a persistent break flag until the short/long correlations reconverge below the exit threshold.
 
 ## Recurrence
 
@@ -25,19 +25,25 @@ Let \(z_t = (real0_t, real1_t)\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+q_t=|\rho^{short}_t-\rho^{long}_t|
 \]
+
+The short and long correlations are maintained by two rolling `Correlation`-style windows.
 
 \[
 r_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
+1, & r_{t-1} = 0 \text{ and } q_t \ge e \\
+0, & r_{t-1} = 1 \text{ and } q_t \le x \\
 r_{t-1}, & \text{otherwise}
-\end{cases}
+\end{cases}, \qquad x < e
 \]
 
 The return value is the current scalar indicator value.
+
+## Composed Primitives
+
+[`Correlation`](correlation.md)
 
 ## Implementation Notes
 

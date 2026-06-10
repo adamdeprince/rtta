@@ -16,7 +16,7 @@ a Python return value.
 
 ## Theory Of Operation
 
-`ResidualDriftDetector` converts each observation into a streaming score and then applies threshold or hysteresis logic. The state is deliberately sticky where the C++ class models regimes, so small reversals do not immediately flip the output.
+`ResidualDriftDetector` standardizes the current error or move against an EWMA mean and variance estimated from prior samples. The detector uses the resulting z-score with hysteresis or reset logic so isolated noisy observations do not become persistent regimes by themselves.
 
 ## Recurrence
 
@@ -25,17 +25,26 @@ Let \(z_t = residual_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F(s_{t-1}, z_t)
+q_t=\frac{residual_t-\mu_{t-1}}{\sqrt{\max(\sigma^2_{t-1},\epsilon)}}
+\]
+
+\[
+\mu_t=\mu_{t-1}+\alpha(residual_t-\mu_{t-1}), \qquad
+\sigma^2_t=(1-\alpha)(\sigma^2_{t-1}+\alpha(residual_t-\mu_{t-1})^2)
 \]
 
 \[
 r_t =
 \begin{cases}
-1, & score(s_t) \ge u \\
--1, & score(s_t) \le l \\
+1, & r_{t-1} \le 0 \text{ and } q_t \ge u_e \\
+0, & r_{t-1} = 1 \text{ and } q_t \le u_x \\
+-1, & r_{t-1} \ge 0 \text{ and } q_t \le \ell_e \\
+0, & r_{t-1} = -1 \text{ and } q_t \ge \ell_x \\
 r_{t-1}, & \text{otherwise}
 \end{cases}
 \]
+
+The entry/exit constants satisfy \(\ell_e < \ell_x \le u_x < u_e\).
 
 The return value is the current scalar indicator value.
 

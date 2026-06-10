@@ -25,11 +25,7 @@ Let \(z_t = close_t\) denote the observation consumed by one
 window lengths, thresholds, and smoothing constants.
 
 \[
-s_t = F_{ROC}(s_{t-1}, close_t; \theta)
-\]
-
-\[
-y_t = G_{ROC}(s_t)
+y_t=\frac{close_t-close_{t-n}}{close_{t-n}}
 \]
 
 The return value is the current scalar indicator value.
