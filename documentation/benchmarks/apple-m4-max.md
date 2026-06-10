@@ -10,7 +10,7 @@ These results were collected on 2026-06-09. Public documentation identifies benc
 - Platform: `macOS-15.3.1-arm64-arm-64bit-Mach-O`
 - Python: `3.14.5`
 - NumPy: `2.4.6`
-- RTTA: `0.2.0`
+- RTTA: `0.2.1`
 - Samples: `50000`
 - Repeats: `5`
 - Warmup repeats: `1`
@@ -219,4 +219,3 @@ python benchmarks/benchmark_readme.py --samples 50000 --repeat 5 --warmup 1 --ou
 | [WeightedMovingAverage](../algorithms/weighted-moving-average.md) | 1 | 26.2 | 29.9 |
 | [WilliamsR](../algorithms/williams-r.md) | 3 | 61.6 | 65.3 |
 | [ZigZagSwingDetector](../algorithms/zig-zag-swing-detector.md) | 1 | 28.2 | 50.9 |
-

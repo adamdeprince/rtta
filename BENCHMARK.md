@@ -17,6 +17,6 @@ python benchmarks/benchmark_readme.py --samples 50000 --repeat 5 --warmup 1 --ou
 
 ## Results By CPU
 
-- [Intel Xeon 6975P-C](documentation/benchmarks/intel-xeon-6975p-c.md): `Linux-7.0.0-1004-aws-x86_64-with-glibc2.43`, `x86_64`, Python `3.14.4`, NumPy `2.4.6`, RTTA `0.2.0`; median `advance(...)` **51.6 ns/update**, median `update(...)` **59.4 ns/update**.
-- [Apple M4 Max](documentation/benchmarks/apple-m4-max.md): `macOS-15.3.1-arm64-arm-64bit-Mach-O`, `arm64`, Python `3.14.5`, NumPy `2.4.6`, RTTA `0.2.0`; median `advance(...)` **37.9 ns/update**, median `update(...)` **43.2 ns/update**.
-- [Loongson-3A6000](documentation/benchmarks/loongson-3a6000.md): `Linux-5.4.18-110-generic-loongarch64-with-glibc2.28`, `loongarch64`, Python `3.14.4`, NumPy `2.4.6`, RTTA `0.2.0`; median `advance(...)` **121 ns/update**, median `update(...)` **152 ns/update**.
+- [Intel Xeon 6975P-C](documentation/benchmarks/intel-xeon-6975p-c.md): `Linux-7.0.0-1004-aws-x86_64-with-glibc2.43`, `x86_64`, Python `3.14.4`, NumPy `2.4.6`, RTTA `0.2.1`; median `advance(...)` **51.6 ns/update**, median `update(...)` **59.4 ns/update**.
+- [Apple M4 Max](documentation/benchmarks/apple-m4-max.md): `macOS-15.3.1-arm64-arm-64bit-Mach-O`, `arm64`, Python `3.14.5`, NumPy `2.4.6`, RTTA `0.2.1`; median `advance(...)` **37.9 ns/update**, median `update(...)` **43.2 ns/update**.
+- [Loongson-3A6000](documentation/benchmarks/loongson-3a6000.md): `Linux-5.4.18-110-generic-loongarch64-with-glibc2.28`, `loongarch64`, Python `3.14.4`, NumPy `2.4.6`, RTTA `0.2.1`; median `advance(...)` **121 ns/update**, median `update(...)` **152 ns/update**.

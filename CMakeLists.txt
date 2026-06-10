@@ -5,7 +5,7 @@ if (NOT DEFINED SKBUILD_PROJECT_NAME)
 endif()
 
 if (NOT DEFINED SKBUILD_PROJECT_VERSION)
-  set(SKBUILD_PROJECT_VERSION 0.2.0)
+  set(SKBUILD_PROJECT_VERSION 0.2.1)
 endif()
 
 project(${SKBUILD_PROJECT_NAME} VERSION ${SKBUILD_PROJECT_VERSION} LANGUAGES CXX)
@@ -28,7 +28,7 @@ execute_process(
 )
 if (NOT FAST_KALMAN_INCLUDE_RESULT EQUAL 0)
   message(FATAL_ERROR
-    "fast-kalman==0.2.2 must be installed in the build environment. "
+    "fast-kalman==0.2.3 must be installed in the build environment. "
     "It is listed in pyproject.toml build-system.requires.")
 endif()
 if (NOT EXISTS "${FAST_KALMAN_INCLUDE_DIR}/kalman/kalman.hpp")

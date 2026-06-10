@@ -115,7 +115,7 @@ If you use RTTA in research, benchmarks, or published work, cite it with:
   author       = {DePrince, Adam},
   title        = {{pyrtta}: Low Latency Incremental Technical Analysis},
   year         = {2026},
-  version      = {0.2.0},
+  version      = {0.2.1},
   howpublished = {\url{https://github.com/adamdeprince/rtta}},
   note         = {Python package name: pyrtta; import package name: rtta}
 }

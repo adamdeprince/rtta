@@ -1,5 +1,13 @@
 # Changes
 
+## 0.2.1
+
+- Added the generated documentation site source, including per-algorithm
+  Markdown pages, benchmark pages split by CPU type, and the HTML build tools.
+- Added RTTA static-site favicon assets and easter-egg image assets under Git
+  LFS.
+- Bumped the package version to `0.2.1`.
+
 ## 0.2.0
 
 - Renamed the Python distribution to `pyrtta` while preserving `rtta` as the

@@ -10,7 +10,7 @@ These results were collected on 2026-06-09. Public documentation identifies benc
 - Platform: `Linux-7.0.0-1004-aws-x86_64-with-glibc2.43`
 - Python: `3.14.4`
 - NumPy: `2.4.6`
-- RTTA: `0.2.0`
+- RTTA: `0.2.1`
 - Samples: `50000`
 - Repeats: `5`
 - Warmup repeats: `1`
@@ -219,4 +219,3 @@ python benchmarks/benchmark_readme.py --samples 50000 --repeat 5 --warmup 1 --ou
 | [WeightedMovingAverage](../algorithms/weighted-moving-average.md) | 1 | 33.4 | 38.5 |
 | [WilliamsR](../algorithms/williams-r.md) | 3 | 86.4 | 90.0 |
 | [ZigZagSwingDetector](../algorithms/zig-zag-swing-detector.md) | 1 | 32.8 | 67.6 |
-
