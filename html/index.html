@@ -1,0 +1,1756 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RTTA — Causal technical analysis at streaming speed</title>
+  <meta name="description" content="RTTA is a low-latency C++23 and Python library for incremental technical indicators, online change detection, market regimes, and research signals.">
+  <meta name="theme-color" content="#c7f04a">
+  <meta property="og:title" content="RTTA — Market signals, without a time machine.">
+  <meta property="og:description" content="188 causal, stateful market algorithms. Tick-by-tick C++23 performance with a clean Python API.">
+  <meta property="og:type" content="website">
+  <link rel="icon" type="image/png" href="goblin.png">
+  <link rel="apple-touch-icon" href="goblin.png">
+  <link rel="manifest" href="site.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #f2efe4;
+      --paper-deep: #e4dfcf;
+      --ink: #11130f;
+      --ink-soft: #292d25;
+      --muted: #686b62;
+      --acid: #c7f04a;
+      --acid-dark: #5c7d1d;
+      --orange: #ff6847;
+      --white: #fbfaf4;
+      --line: rgba(17, 19, 15, .24);
+      --line-light: rgba(255, 255, 255, .18);
+      --display: "Archivo Black", Impact, sans-serif;
+      --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--ink);
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--ink);
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(rgba(17, 19, 15, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(17, 19, 15, .035) 1px, transparent 1px);
+      background-size: 42px 42px;
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    img,
+    svg {
+      display: block;
+      max-width: 100%;
+    }
+
+    a {
+      color: inherit;
+      text-decoration-color: rgba(17, 19, 15, .35);
+      text-underline-offset: 4px;
+    }
+
+    a:hover,
+    a:focus-visible {
+      color: var(--orange);
+      text-decoration-color: currentColor;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    :focus-visible {
+      outline: 3px solid var(--orange);
+      outline-offset: 4px;
+    }
+
+    .skip-link {
+      position: fixed;
+      z-index: 100;
+      top: 12px;
+      left: 12px;
+      padding: 10px 14px;
+      color: var(--white);
+      background: var(--ink);
+      font-family: var(--mono);
+      font-size: 12px;
+      transform: translateY(-160%);
+    }
+
+    .skip-link:focus {
+      color: var(--white);
+      transform: translateY(0);
+    }
+
+    .site-header {
+      min-height: 74px;
+      display: flex;
+      align-items: stretch;
+      border-bottom: 1px solid var(--ink);
+      background: rgba(242, 239, 228, .96);
+    }
+
+    .brand-area {
+      min-width: 310px;
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      padding: 0 28px;
+      border-right: 1px solid var(--ink);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      font-family: var(--display);
+      font-size: 24px;
+      letter-spacing: -.05em;
+      text-decoration: none;
+    }
+
+    .brand:hover,
+    .brand:focus-visible {
+      color: var(--ink);
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      overflow: hidden;
+      border: 1px solid var(--ink);
+      background: var(--acid);
+    }
+
+    .brand-mark img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      mix-blend-mode: multiply;
+    }
+
+    .package-name {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+
+    .primary-nav {
+      display: flex;
+      align-items: stretch;
+      margin-left: auto;
+    }
+
+    .primary-nav a,
+    .header-cta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 20px;
+      border-right: 1px solid var(--ink);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-decoration: none;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .primary-nav a:hover,
+    .primary-nav a:focus-visible {
+      color: var(--white);
+      background: var(--ink);
+    }
+
+    .header-cta {
+      min-width: 152px;
+      border-right: 0;
+      color: var(--ink);
+      background: var(--acid);
+    }
+
+    .header-cta:hover,
+    .header-cta:focus-visible {
+      color: var(--white);
+      background: var(--ink);
+    }
+
+    .hero {
+      min-height: 720px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(480px, .95fr);
+      border-bottom: 1px solid var(--ink);
+    }
+
+    .hero-copy {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 92px clamp(36px, 6vw, 104px) 76px;
+    }
+
+    .eyebrow,
+    .kicker {
+      margin: 0 0 24px;
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .11em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .eyebrow::before {
+      width: 9px;
+      height: 9px;
+      content: "";
+      background: var(--orange);
+      box-shadow: 14px 0 0 var(--acid);
+    }
+
+    .hero h1 {
+      max-width: 920px;
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(54px, 7.4vw, 118px);
+      font-weight: 400;
+      line-height: .88;
+      letter-spacing: -.07em;
+      text-wrap: balance;
+    }
+
+    .hero h1 em {
+      color: var(--acid-dark);
+      font-style: normal;
+    }
+
+    .hero-lede {
+      max-width: 690px;
+      margin: 34px 0 0;
+      color: var(--ink-soft);
+      font-size: clamp(17px, 1.5vw, 21px);
+      line-height: 1.55;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 26px;
+      margin-top: 38px;
+    }
+
+    .button {
+      min-height: 52px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 26px;
+      padding: 0 22px;
+      border: 1px solid var(--ink);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-decoration: none;
+      text-transform: uppercase;
+    }
+
+    .button-dark {
+      color: var(--white);
+      background: var(--ink);
+      box-shadow: 7px 7px 0 var(--acid);
+    }
+
+    .button-dark:hover,
+    .button-dark:focus-visible {
+      color: var(--ink);
+      background: var(--acid);
+      box-shadow: 7px 7px 0 var(--orange);
+    }
+
+    .text-link {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 24px;
+      margin: 40px 0 0;
+      padding: 0;
+      list-style: none;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .hero-meta li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .hero-meta li::before {
+      width: 5px;
+      height: 5px;
+      content: "";
+      background: var(--acid-dark);
+    }
+
+    .mascot-stage {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      border-left: 1px solid var(--ink);
+      background: var(--acid);
+      isolation: isolate;
+    }
+
+    .mascot-stage::before,
+    .mascot-stage::after {
+      position: absolute;
+      content: "";
+      pointer-events: none;
+    }
+
+    .mascot-stage::before {
+      inset: 0;
+      z-index: -1;
+      opacity: .35;
+      background-image:
+        linear-gradient(rgba(17, 19, 15, .24) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(17, 19, 15, .24) 1px, transparent 1px);
+      background-size: 46px 46px;
+    }
+
+    .mascot-stage::after {
+      right: -100px;
+      bottom: -130px;
+      width: 480px;
+      height: 480px;
+      border: 1px solid rgba(17, 19, 15, .32);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 70px rgba(17, 19, 15, .05),
+        0 0 0 140px rgba(17, 19, 15, .04);
+    }
+
+    .stage-topline {
+      position: absolute;
+      z-index: 3;
+      top: 24px;
+      right: 24px;
+      left: 24px;
+      display: flex;
+      justify-content: space-between;
+      padding-bottom: 13px;
+      border-bottom: 1px solid rgba(17, 19, 15, .5);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .live {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .live i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--orange);
+      box-shadow: 0 0 0 4px rgba(255, 104, 71, .2);
+    }
+
+    .mascot-stage > img {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: 50% 54%;
+      mix-blend-mode: multiply;
+      filter: contrast(1.05);
+      transform: scale(1.08);
+      transform-origin: center bottom;
+    }
+
+    .latency-card {
+      position: absolute;
+      z-index: 4;
+      top: 100px;
+      left: 24px;
+      min-width: 190px;
+      padding: 18px;
+      border: 1px solid var(--ink);
+      background: var(--paper);
+      box-shadow: 7px 7px 0 var(--ink);
+    }
+
+    .latency-card span,
+    .tick-card span {
+      display: block;
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .latency-card strong {
+      display: block;
+      margin: 7px 0 3px;
+      font-family: var(--display);
+      font-size: 48px;
+      font-weight: 400;
+      line-height: .95;
+      letter-spacing: -.06em;
+    }
+
+    .latency-card strong small {
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0;
+    }
+
+    .latency-card p {
+      margin: 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+      line-height: 1.4;
+      text-transform: uppercase;
+    }
+
+    .tick-card {
+      position: absolute;
+      z-index: 4;
+      right: 24px;
+      bottom: 24px;
+      width: min(250px, calc(100% - 48px));
+      border: 1px solid var(--acid);
+      color: var(--white);
+      background: var(--ink);
+      box-shadow: 7px 7px 0 var(--orange);
+    }
+
+    .tick-card header {
+      display: flex;
+      justify-content: space-between;
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line-light);
+    }
+
+    .tick-card ol {
+      margin: 0;
+      padding: 10px 13px 12px;
+      list-style: none;
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .tick-card li {
+      display: grid;
+      grid-template-columns: 1fr .7fr auto;
+      gap: 10px;
+      padding: 4px 0;
+    }
+
+    .tick-card b {
+      color: var(--acid);
+      font-weight: 500;
+    }
+
+    .tick-card .down {
+      color: var(--orange);
+    }
+
+    .proof-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-bottom: 1px solid var(--ink);
+      background: var(--ink);
+    }
+
+    .proof-strip article {
+      min-height: 156px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 24px clamp(20px, 3vw, 40px);
+      color: var(--white);
+    }
+
+    .proof-strip article + article {
+      border-left: 1px solid var(--line-light);
+    }
+
+    .proof-strip strong {
+      color: var(--acid);
+      font-family: var(--display);
+      font-size: clamp(36px, 4vw, 58px);
+      font-weight: 400;
+      line-height: .9;
+      letter-spacing: -.06em;
+    }
+
+    .proof-strip strong span {
+      margin-left: 5px;
+      color: var(--white);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0;
+    }
+
+    .proof-strip p {
+      margin: 22px 0 0;
+      color: #c3c7bd;
+      font-family: var(--mono);
+      font-size: 9px;
+      line-height: 1.45;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .section {
+      padding: 112px clamp(28px, 7vw, 112px);
+      border-bottom: 1px solid var(--ink);
+    }
+
+    .section-heading {
+      display: grid;
+      grid-template-columns: .65fr 1.35fr;
+      gap: 48px;
+      margin-bottom: 64px;
+    }
+
+    .section-heading h2,
+    .toolbox-copy h2,
+    .install h2 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(42px, 5.8vw, 82px);
+      font-weight: 400;
+      line-height: .95;
+      letter-spacing: -.065em;
+      text-wrap: balance;
+    }
+
+    .section-heading > div > p,
+    .toolbox-copy > p,
+    .install-copy > p {
+      max-width: 650px;
+      margin: 26px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .causal-flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--ink);
+      background: var(--white);
+    }
+
+    .flow-step {
+      position: relative;
+      min-height: 230px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 21px;
+    }
+
+    .flow-step + .flow-step {
+      border-left: 1px solid var(--ink);
+    }
+
+    .flow-step:not(:last-child)::after {
+      position: absolute;
+      z-index: 2;
+      top: 50%;
+      right: -13px;
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--ink);
+      content: "→";
+      background: var(--acid);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .flow-step > span {
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .08em;
+    }
+
+    .flow-step strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 19px;
+      line-height: 1.25;
+    }
+
+    .flow-step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .flow-step-output {
+      background: var(--acid);
+    }
+
+    .flow-step-output p {
+      color: var(--ink-soft);
+    }
+
+    .future-lock {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 22px;
+      padding: 15px 18px;
+      border: 1px dashed var(--ink);
+      background: rgba(255, 104, 71, .11);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .future-lock b {
+      color: var(--orange);
+    }
+
+    .code-proof {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      margin-top: 76px;
+      border: 1px solid var(--ink);
+      background: var(--ink);
+    }
+
+    .code-window {
+      min-width: 0;
+      color: var(--white);
+    }
+
+    .window-title {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 48px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line-light);
+      color: #aeb4a9;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .window-title i {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+
+    .window-title i:first-child {
+      background: var(--orange);
+    }
+
+    .window-title i:nth-child(2) {
+      background: #efc449;
+    }
+
+    .window-title i:nth-child(3) {
+      margin-right: 8px;
+      background: var(--acid);
+    }
+
+    pre {
+      margin: 0;
+      padding: 30px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: clamp(12px, 1.1vw, 15px);
+      line-height: 1.75;
+    }
+
+    code {
+      font-family: var(--mono);
+    }
+
+    .code-keyword {
+      color: var(--orange);
+    }
+
+    .code-name {
+      color: var(--acid);
+    }
+
+    .code-comment {
+      color: #747b70;
+    }
+
+    .code-proof-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: clamp(34px, 5vw, 72px);
+      border-left: 1px solid var(--line-light);
+      color: var(--white);
+      background:
+        radial-gradient(circle at top right, rgba(199, 240, 74, .15), transparent 42%),
+        var(--ink);
+    }
+
+    .code-proof-copy span {
+      color: var(--acid);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+
+    .code-proof-copy h3 {
+      margin: 20px 0 16px;
+      font-size: clamp(28px, 3.2vw, 46px);
+      line-height: 1.03;
+      letter-spacing: -.05em;
+    }
+
+    .code-proof-copy p {
+      max-width: 48ch;
+      margin: 0;
+      color: #adb3a8;
+    }
+
+    .capabilities {
+      background: var(--paper-deep);
+    }
+
+    .capability-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      border-top: 1px solid var(--ink);
+      border-left: 1px solid var(--ink);
+    }
+
+    .capability-card {
+      position: relative;
+      min-height: 340px;
+      display: grid;
+      grid-template-columns: 52px 1fr;
+      gap: 24px;
+      padding: clamp(28px, 4vw, 52px);
+      border-right: 1px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+      background: var(--paper);
+    }
+
+    .capability-card:nth-child(1) {
+      background: var(--acid);
+    }
+
+    .capability-card:nth-child(4) {
+      color: var(--white);
+      background: var(--ink);
+    }
+
+    .card-number {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .08em;
+    }
+
+    .capability-card h3 {
+      max-width: 520px;
+      margin: 0 0 18px;
+      font-size: clamp(25px, 2.5vw, 39px);
+      line-height: 1.05;
+      letter-spacing: -.05em;
+    }
+
+    .capability-card p {
+      max-width: 58ch;
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .capability-card:nth-child(1) p {
+      color: var(--ink-soft);
+    }
+
+    .capability-card:nth-child(4) p {
+      color: #adb3a8;
+    }
+
+    .capability-card a {
+      align-self: end;
+      justify-self: start;
+      margin-top: 34px;
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .toolbox {
+      display: grid;
+      grid-template-columns: .82fr 1.18fr;
+      padding: 0;
+      color: var(--white);
+      background: var(--ink);
+    }
+
+    .toolbox-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 110px clamp(32px, 6vw, 100px);
+    }
+
+    .toolbox-copy .kicker {
+      color: var(--acid);
+    }
+
+    .toolbox-copy h2 {
+      color: var(--white);
+    }
+
+    .toolbox-copy > p {
+      color: #adb3a8;
+    }
+
+    .toolbox-copy .button {
+      align-self: flex-start;
+      margin-top: 34px;
+      color: var(--ink);
+      background: var(--acid);
+    }
+
+    .toolbox-copy .button:hover,
+    .toolbox-copy .button:focus-visible {
+      color: var(--white);
+      background: var(--orange);
+    }
+
+    .algorithm-groups {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      border-left: 1px solid var(--line-light);
+    }
+
+    .algorithm-group {
+      min-height: 265px;
+      padding: 34px;
+      border-right: 1px solid var(--line-light);
+      border-bottom: 1px solid var(--line-light);
+    }
+
+    .algorithm-group > span {
+      color: var(--orange);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .algorithm-group h3 {
+      margin: 22px 0 14px;
+      font-size: 22px;
+      line-height: 1.15;
+      letter-spacing: -.035em;
+    }
+
+    .algorithm-group p {
+      margin: 0;
+      color: #989f94;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.8;
+    }
+
+    .benchmarks {
+      background: var(--paper);
+    }
+
+    .benchmark-layout {
+      display: grid;
+      grid-template-columns: minmax(360px, .7fr) minmax(0, 1.3fr);
+      gap: clamp(48px, 6vw, 96px);
+    }
+
+    .benchmark-intro h2 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(44px, 4vw, 56px);
+      font-weight: 400;
+      line-height: .92;
+      letter-spacing: -.065em;
+    }
+
+    .benchmark-intro > p {
+      margin: 28px 0;
+      color: var(--muted);
+    }
+
+    .benchmark-note {
+      padding: 18px;
+      border: 1px solid var(--ink);
+      border-left: 7px solid var(--orange);
+      font-family: var(--mono);
+      font-size: 9px;
+      line-height: 1.55;
+      text-transform: uppercase;
+    }
+
+    .benchmark-board {
+      border: 1px solid var(--ink);
+      background: var(--white);
+    }
+
+    .board-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 14px 17px;
+      border-bottom: 1px solid var(--ink);
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .latency-averages {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .latency-average {
+      min-height: 260px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(24px, 3vw, 38px);
+    }
+
+    .latency-average + .latency-average {
+      border-left: 1px solid var(--ink);
+    }
+
+    .latency-average:first-child {
+      background: var(--acid);
+    }
+
+    .latency-average > span,
+    .latency-average p,
+    .benchmark-method span,
+    .benchmark-method b {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .latency-average strong {
+      display: block;
+      margin: 26px 0 20px;
+      font-family: var(--display);
+      font-size: clamp(58px, 7vw, 94px);
+      font-weight: 400;
+      line-height: .82;
+      letter-spacing: -.07em;
+    }
+
+    .latency-average strong small {
+      margin-left: 7px;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0;
+    }
+
+    .latency-average p {
+      max-width: 30ch;
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .latency-average:first-child p {
+      color: var(--ink-soft);
+    }
+
+    .benchmark-method {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--ink);
+    }
+
+    .benchmark-method div {
+      min-height: 82px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 16px 18px;
+    }
+
+    .benchmark-method div + div {
+      border-left: 1px solid var(--line);
+    }
+
+    .benchmark-method span {
+      color: var(--muted);
+      font-size: 8px;
+    }
+
+    .benchmark-method b {
+      margin-top: 5px;
+      font-size: 10px;
+    }
+
+    .install {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(50px, 8vw, 130px);
+      align-items: center;
+      color: var(--white);
+      background:
+        radial-gradient(circle at 12% 20%, rgba(199, 240, 74, .17), transparent 28%),
+        var(--ink);
+    }
+
+    .install .kicker {
+      color: var(--acid);
+    }
+
+    .install h2 {
+      color: var(--white);
+    }
+
+    .install-copy > p {
+      color: #adb3a8;
+    }
+
+    .terminal {
+      min-width: 0;
+      border: 1px solid var(--acid);
+      background: #090a08;
+      box-shadow: 12px 12px 0 var(--acid);
+    }
+
+    .terminal header {
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 15px;
+      border-bottom: 1px solid var(--line-light);
+      color: #8e9589;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .copy-button {
+      border: 0;
+      color: var(--acid);
+      background: transparent;
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+
+    .copy-button:hover,
+    .copy-button:focus-visible {
+      color: var(--orange);
+    }
+
+    .terminal pre {
+      color: var(--white);
+      font-size: clamp(15px, 2vw, 22px);
+    }
+
+    .prompt {
+      color: var(--orange);
+    }
+
+    .package {
+      color: var(--acid);
+    }
+
+    .install-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px 28px;
+      margin-top: 30px;
+    }
+
+    .install-links a {
+      color: var(--white);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .install-links a:hover,
+    .install-links a:focus-visible {
+      color: var(--acid);
+    }
+
+    .site-footer {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 30px;
+      align-items: center;
+      min-height: 110px;
+      padding: 24px clamp(28px, 6vw, 90px);
+      color: #b3b8ae;
+      background: var(--ink);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+
+    .footer-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--white);
+      font-family: var(--display);
+      font-size: 20px;
+      letter-spacing: -.04em;
+      text-decoration: none;
+    }
+
+    .footer-brand img {
+      width: 38px;
+      height: 38px;
+      object-fit: cover;
+      background: var(--acid);
+      mix-blend-mode: screen;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+    }
+
+    .site-footer > p {
+      margin: 0;
+      text-align: right;
+    }
+
+    @media (max-width: 1100px) {
+      .site-header {
+        flex-wrap: wrap;
+      }
+
+      .brand-area {
+        min-height: 70px;
+        flex: 1;
+      }
+
+      .primary-nav {
+        width: 100%;
+        order: 3;
+        overflow-x: auto;
+        border-top: 1px solid var(--ink);
+      }
+
+      .primary-nav a {
+        min-height: 48px;
+        flex: 1;
+      }
+
+      .primary-nav a:first-child {
+        border-left: 0;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .mascot-stage {
+        min-height: 650px;
+        border-top: 1px solid var(--ink);
+        border-left: 0;
+      }
+
+      .mascot-stage > img {
+        transform: scale(1.04);
+      }
+
+      .section-heading {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+
+      .toolbox,
+      .benchmark-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbox-copy {
+        border-bottom: 1px solid var(--line-light);
+      }
+
+      .algorithm-groups {
+        border-left: 0;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .brand-area {
+        min-width: 0;
+        padding: 0 18px;
+      }
+
+      .package-name {
+        display: none;
+      }
+
+      .header-cta {
+        min-width: 124px;
+        padding: 0 13px;
+      }
+
+      .hero-copy {
+        padding: 72px 24px 58px;
+      }
+
+      .hero h1 {
+        font-size: clamp(52px, 17vw, 78px);
+      }
+
+      .mascot-stage {
+        min-height: 560px;
+      }
+
+      .mascot-stage > img {
+        object-position: 50% 58%;
+        transform: scale(1.08);
+      }
+
+      .latency-card {
+        top: 90px;
+        min-width: 162px;
+      }
+
+      .latency-card strong {
+        font-size: 39px;
+      }
+
+      .proof-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .proof-strip article:nth-child(3) {
+        border-left: 0;
+        border-top: 1px solid var(--line-light);
+      }
+
+      .proof-strip article:nth-child(4) {
+        border-top: 1px solid var(--line-light);
+      }
+
+      .section {
+        padding: 82px 24px;
+      }
+
+      .causal-flow {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-step {
+        min-height: 178px;
+      }
+
+      .flow-step + .flow-step {
+        border-top: 1px solid var(--ink);
+        border-left: 0;
+      }
+
+      .flow-step:not(:last-child)::after {
+        top: auto;
+        right: 24px;
+        bottom: -13px;
+        content: "↓";
+      }
+
+      .code-proof,
+      .capability-grid,
+      .algorithm-groups,
+      .install {
+        grid-template-columns: 1fr;
+      }
+
+      .code-proof-copy {
+        border-top: 1px solid var(--line-light);
+        border-left: 0;
+      }
+
+      .capability-card {
+        min-height: 300px;
+        grid-template-columns: 40px 1fr;
+        gap: 12px;
+      }
+
+      .toolbox-copy {
+        padding: 82px 24px;
+      }
+
+      .latency-averages {
+        grid-template-columns: 1fr;
+      }
+
+      .latency-average + .latency-average {
+        border-top: 1px solid var(--ink);
+        border-left: 0;
+      }
+
+      .benchmark-method {
+        grid-template-columns: 1fr;
+      }
+
+      .benchmark-method div + div {
+        border-top: 1px solid var(--line);
+        border-left: 0;
+      }
+
+      .install {
+        gap: 55px;
+      }
+
+      .site-footer {
+        grid-template-columns: 1fr;
+        justify-items: start;
+      }
+
+      .footer-links {
+        justify-content: flex-start;
+      }
+
+      .site-footer > p {
+        text-align: left;
+      }
+    }
+
+    @media (max-width: 440px) {
+      .primary-nav a {
+        padding: 0 14px;
+      }
+
+      .hero-actions {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .proof-strip {
+        grid-template-columns: 1fr;
+      }
+
+      .proof-strip article + article,
+      .proof-strip article:nth-child(3) {
+        border-top: 1px solid var(--line-light);
+        border-left: 0;
+      }
+
+      .tick-card {
+        display: none;
+      }
+
+      .capability-card {
+        grid-template-columns: 1fr;
+      }
+
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="brand-area">
+      <a class="brand" href="index.html" aria-label="RTTA home">
+        <span class="brand-mark" aria-hidden="true"><img src="goblin.png" alt=""></span>
+        <span>RTTA</span>
+      </a>
+      <span class="package-name">pyrtta / Python + C++23</span>
+    </div>
+    <nav class="primary-nav" aria-label="Primary navigation">
+      <a href="#design">Causal design</a>
+      <a href="#capabilities">Capabilities</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="README.html">Docs</a>
+    </nav>
+    <a class="header-cta" href="https://github.com/adamdeprince/rtta" rel="noopener">
+      GitHub&nbsp; ↗
+    </a>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Streaming market intelligence</p>
+        <h1>Market signals,<br>without a <em>time machine.</em></h1>
+        <p class="hero-lede">RTTA is a low-latency C++23 engine for technical indicators, online change detection, regime monitoring, and research signals—wrapped in a clean Python API and designed to stay causal one tick at a time.</p>
+        <div class="hero-actions">
+          <a class="button button-dark" href="#install">Install pyrtta <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="ALGOS.html">Explore 188 algorithms <span aria-hidden="true">↗</span></a>
+        </div>
+        <ul class="hero-meta" aria-label="Project details">
+          <li>Apache 2.0</li>
+          <li>Python 3.9+</li>
+          <li>C++23 / nanobind</li>
+          <li>Tick-by-tick state</li>
+        </ul>
+      </div>
+
+      <div class="mascot-stage" aria-label="RTTA Silkie mascot and live update readout">
+        <div class="stage-topline">
+          <span>RTTA / CAUSAL ENGINE</span>
+          <span class="live"><i></i> Live state</span>
+        </div>
+        <div class="latency-card">
+          <span>Average update + result</span>
+          <strong>84.9<small> ns</small></strong>
+          <p>Across three published CPU runs</p>
+        </div>
+        <img src="goblin.png" width="1254" height="1254" alt="A black-and-white Silkie chicken, the RTTA mascot">
+        <div class="tick-card" aria-label="Example tick stream">
+          <header><span>Tick stream</span><span>RSI(14)</span></header>
+          <ol>
+            <li><span>12:45:01.123</span><span>3471.25</span><b>61.8</b></li>
+            <li><span>12:45:01.124</span><span>3471.26</span><b>62.1</b></li>
+            <li><span>12:45:01.125</span><span>3471.19</span><b class="down">58.7</b></li>
+            <li><span>12:45:01.126</span><span>3471.28</span><b>63.0</b></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="proof-strip" aria-label="RTTA highlights">
+      <article>
+        <strong>188</strong>
+        <p>Benchmarked causal algorithms<br>in the current registry</p>
+      </article>
+      <article>
+        <strong>70.2<span>ns</span></strong>
+        <p>Average state-only advance<br>Across published CPU runs</p>
+      </article>
+      <article>
+        <strong>84.9<span>ns</span></strong>
+        <p>Average update with result<br>Across published CPU runs</p>
+      </article>
+      <article>
+        <strong>3<span>CPU families</span></strong>
+        <p>Published benchmark ledgers<br>ARM · x86 · LoongArch</p>
+      </article>
+    </section>
+
+    <section class="section" id="design">
+      <div class="section-heading">
+        <p class="kicker">01 / CAUSAL BY CONSTRUCTION</p>
+        <div>
+          <h2>One tick in. One honest answer out.</h2>
+          <p>RTTA algorithms are stateful objects. They consume observations in chronological order and can only react to what they have already seen—so the API itself helps keep accidental lookahead out of live systems and research loops.</p>
+        </div>
+      </div>
+
+      <div class="causal-flow" aria-label="Causal market-data processing flow">
+        <article class="flow-step">
+          <span>01 / OBSERVE</span>
+          <div>
+            <strong>A new market event arrives.</strong>
+            <p>Close, OHLCV, quote, trade, feature, or cross-asset observation.</p>
+          </div>
+        </article>
+        <article class="flow-step">
+          <span>02 / UPDATE</span>
+          <div>
+            <strong>Advance exactly one state.</strong>
+            <p>Call update when you need a value, or advance when you only need the transition.</p>
+          </div>
+        </article>
+        <article class="flow-step">
+          <span>03 / REMEMBER</span>
+          <div>
+            <strong>Keep the minimum live state.</strong>
+            <p>Rolling windows, filters, regimes, and detectors remain ready for the next tick.</p>
+          </div>
+        </article>
+        <article class="flow-step flow-step-output">
+          <span>04 / REACT</span>
+          <div>
+            <strong>Read the current result.</strong>
+            <p>Feed a feature, risk check, research signal, dashboard, or simulator decision.</p>
+          </div>
+        </article>
+      </div>
+      <div class="future-lock"><b>Future data: locked</b><span>The next observation cannot leak backward through the object API.</span></div>
+
+      <div class="code-proof">
+        <div class="code-window">
+          <div class="window-title"><i></i><i></i><i></i><span>live_signal.py</span></div>
+          <pre><code><span class="code-keyword">import</span> <span class="code-name">rtta</span>
+
+rsi = rtta.RSI()
+
+<span class="code-keyword">for</span> close <span class="code-keyword">in</span> close_stream:
+    value = rsi.update(close)
+
+    <span class="code-keyword">if</span> value &gt; 70.0:
+        reduce_position()
+
+<span class="code-comment"># State is already ready for the next tick.</span></code></pre>
+        </div>
+        <div class="code-proof-copy">
+          <span>THE OBVIOUS API IS THE LIVE API</span>
+          <h3>No dataframe ceremony on the hot path.</h3>
+          <p>Use small stateful objects in streaming code. For restart and research workflows, batch and replay paths consume history causally in C++ and leave the same object ready for its next live observation.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section capabilities" id="capabilities">
+      <div class="section-heading">
+        <p class="kicker">02 / WHAT IT WATCHES</p>
+        <div>
+          <h2>More than chart indicators.</h2>
+          <p>RTTA puts classic technical analysis beside online model health, liquidity state, market microstructure, and research-grade streaming signals—all behind a consistent incremental surface.</p>
+        </div>
+      </div>
+
+      <div class="capability-grid">
+        <article class="capability-card">
+          <span class="card-number">01</span>
+          <div>
+            <h3>Technical indicators that belong in a live loop.</h3>
+            <p>Moving averages, momentum, oscillators, bands, channels, volatility, volume, returns, price transforms, and adaptive state-space filters.</p>
+            <a href="ALGOS.html">Browse the catalog <span aria-hidden="true">→</span></a>
+          </div>
+        </article>
+        <article class="capability-card">
+          <span class="card-number">02</span>
+          <div>
+            <h3>Detect when the process changes.</h3>
+            <p>CUSUM, Page-Hinkley, ADWIN, KSWIN, EWMA shifts, residual drift, calibration drift, and rolling two-window detectors for means, variance, beta, correlation, and liquidity.</p>
+            <a href="documentation/algorithms/page-hinkley.html">Inspect a detector <span aria-hidden="true">→</span></a>
+          </div>
+        </article>
+        <article class="capability-card">
+          <span class="card-number">03</span>
+          <div>
+            <h3>Keep market regimes online.</h3>
+            <p>Threshold and hysteresis regimes, volatility states, trend/chop, order-flow, correlation, pairs spreads, bounded BOCPD, HMM-style filters, and Gaussian mixtures.</p>
+            <a href="documentation/algorithms/trend-chop-regime-detector.html">See regime monitoring <span aria-hidden="true">→</span></a>
+          </div>
+        </article>
+        <article class="capability-card">
+          <span class="card-number">04</span>
+          <div>
+            <h3>Read the market below the candle.</h3>
+            <p>Order-flow imbalance, bid-ask bounce, VPIN, Amihud illiquidity, Kyle lambda, spread features, quote stuffing, lead-lag state, and execution-cost regimes.</p>
+            <a href="documentation/algorithms/order-flow-imbalance.html">Explore microstructure <span aria-hidden="true">→</span></a>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="toolbox" id="toolbox">
+      <div class="toolbox-copy">
+        <p class="kicker">03 / ONE ENGINE, MANY JOBS</p>
+        <h2>A full market toolbox, kept online.</h2>
+        <p>The same update, advance, last, batch, and replay conventions carry across simple rolling values and multi-output research systems. Learn one shape; move through the whole catalog.</p>
+        <a class="button" href="README.html">Read the API guide <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="algorithm-groups">
+        <article class="algorithm-group">
+          <span>CLASSIC TA</span>
+          <h3>Trend + momentum</h3>
+          <p>EMA · SMA · RSI · MACD · STOCHASTIC · AROON · SUPERTREND · KST · TSI · VORTEX</p>
+        </article>
+        <article class="algorithm-group">
+          <span>ADAPTIVE STATE</span>
+          <h3>Filters + envelopes</h3>
+          <p>KALMAN · PARTICLE FILTER · IMM · GAUSSIAN PROCESS · SAVITZKY–GOLAY · NADARAYA–WATSON</p>
+        </article>
+        <article class="algorithm-group">
+          <span>MODEL HEALTH</span>
+          <h3>Shift + drift</h3>
+          <p>CUSUM · ADWIN · DDM · EDDM · HDDM · KSWIN · PAGE-HINKLEY · EWMA Z-SCORE</p>
+        </article>
+        <article class="algorithm-group">
+          <span>MARKET STATE</span>
+          <h3>Regimes + transitions</h3>
+          <p>BOCPD · ONLINE HMM · STICKY HMM · GMM · VOLATILITY · LIQUIDITY · AUCTION TRANSITIONS</p>
+        </article>
+        <article class="algorithm-group">
+          <span>MICROSTRUCTURE</span>
+          <h3>Flow + liquidity</h3>
+          <p>OFI · VPIN · KYLE LAMBDA · AMIHUD · SPREAD FEATURES · QUOTE INTENSITY · BID-ASK BOUNCE</p>
+        </article>
+        <article class="algorithm-group">
+          <span>RESEARCH SIGNALS</span>
+          <h3>Higher-order live features</h3>
+          <p>MATCHED FLOW · CLOCK ECHO · CLOSE PRESSURE · COINTEGRATION BREAKDOWN · LEAD-LAG</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section benchmarks" id="benchmarks">
+      <div class="benchmark-layout">
+        <div class="benchmark-intro">
+          <p class="kicker">04 / MEASURED LIVE PATH</p>
+          <h2>Nanoseconds, not vibes.</h2>
+          <p>Across three published architecture runs, the per-CPU medians average 70.2 ns for a state-only advance and 84.9 ns for an update that returns a Python result. Every source page still publishes its environment and full 188-algorithm ledger.</p>
+          <div class="benchmark-note">These summaries are the simple average of the three published per-CPU medians. They describe the tested systems as a group, not a processor contest.</div>
+        </div>
+
+        <div class="benchmark-board" aria-label="Average latency across three published CPU runs">
+          <div class="board-header">
+            <span>Typical published per-tick latency</span>
+            <span>Average of per-CPU medians</span>
+          </div>
+          <div class="latency-averages">
+            <article class="latency-average">
+              <span>State only / advance(...)</span>
+              <strong>70.2<small>ns</small></strong>
+              <p>Average state-transition latency across the three published architecture runs.</p>
+            </article>
+            <article class="latency-average">
+              <span>Update + Python result / update(...)</span>
+              <strong>84.9<small>ns</small></strong>
+              <p>Average latency to change state and return the current value or result.</p>
+            </article>
+          </div>
+          <div class="benchmark-method">
+            <div><span>Coverage</span><b>188 algorithms / run</b></div>
+            <div><span>Sample size</span><b>50,000 updates</b></div>
+            <div><span>Published runs</span><b>ARM · x86 · LoongArch</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <a class="button button-dark" href="BENCHMARK.html">Open benchmark ledger <span aria-hidden="true">↗</span></a>
+        <a class="text-link" href="BENCHMARK.html#results-by-cpu">See methodology and source runs <span aria-hidden="true">→</span></a>
+      </div>
+    </section>
+
+    <section class="section install" id="install">
+      <div class="install-copy">
+        <p class="kicker">05 / START STREAMING</p>
+        <h2>Bring your next tick.</h2>
+        <p>Install the Python distribution as pyrtta, then import rtta. The C++ extension, NumPy integration, and stateful algorithm surface arrive together.</p>
+        <div class="install-links">
+          <a href="README.html">Getting started →</a>
+          <a href="ALGOS.html">Algorithm catalog →</a>
+          <a href="https://github.com/adamdeprince/rtta" rel="noopener">Source code ↗</a>
+        </div>
+      </div>
+      <div class="terminal">
+        <header><span>Terminal / Python 3.9+</span><button class="copy-button" type="button" data-copy="pip install pyrtta">Copy command</button></header>
+        <pre><code><span class="prompt">$</span> pip install <span class="package">pyrtta</span></code></pre>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="footer-brand" href="index.html"><img src="goblin.png" alt="">RTTA</a>
+    <nav class="footer-links" aria-label="Footer navigation">
+      <a href="README.html">Docs</a>
+      <a href="BENCHMARK.html">Benchmarks</a>
+      <a href="https://github.com/adamdeprince/rtta/issues" rel="noopener">Issues</a>
+    </nav>
+    <p>Apache 2.0 · Built by <a href="https://goblinreactor.com" rel="noopener">Goblin Reactor ↗</a></p>
+  </footer>
+
+  <script>
+    const copyButton = document.querySelector("[data-copy]");
+    if (copyButton && navigator.clipboard) {
+      copyButton.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(copyButton.dataset.copy);
+        copyButton.textContent = "Copied";
+        window.setTimeout(() => {
+          copyButton.textContent = "Copy command";
+        }, 1600);
+      });
+    }
+  </script>
+</body>
+</html>

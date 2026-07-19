@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build the RTTA static HTML documentation from Markdown sources.
 
-Generated HTML is written to html/ and is intentionally ignored by git. The
-source of truth remains README.md, ALGOS.md, and documentation/**/*.md.
+Generated documentation is written to html/ and is intentionally ignored by
+git. The hand-authored html/index.html landing page and its goblin.png mascot
+are preserved; README.md is rendered to html/README.html.
 """
 
 from __future__ import annotations
@@ -17,23 +18,6 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "html"
 DOCS = ROOT / "documentation"
 STYLE_SOURCE = DOCS / "assets" / "style.css"
-STRIDE_HTML = Path.home() / "dev" / "stride-align" / "html"
-
-FAVICON_FILES = (
-    "favicon.ico",
-    "favicon-16.png",
-    "favicon-32.png",
-    "favicon-48.png",
-    "favicon-64.png",
-    "favicon-128.png",
-    "favicon-180.png",
-    "favicon-192.png",
-    "favicon-256.png",
-    "favicon-512.png",
-    "apple-touch-icon.png",
-    "icon-192.png",
-    "icon-512.png",
-)
 
 
 def markdown_renderer():
@@ -104,7 +88,7 @@ def rewrite_markdown_links(body: str) -> str:
             target, anchor = target.split("#", 1)
             anchor = "#" + anchor
         if target == "README.md":
-            target = "index.html"
+            target = "README.html"
         elif target.endswith("/README.md"):
             target = target[:-9] + "index.html"
         elif target.endswith(".md"):
@@ -129,7 +113,7 @@ def template(*, title: str, masthead_title: str, tagline: str, body: str, output
     escaped_masthead = html_escape.escape(masthead_title)
     masthead_content = escaped_masthead
     if masthead_title == "RTTA":
-        masthead_content = f'<a href="{prefix}rtta.png">{escaped_masthead}</a>'
+        masthead_content = f'<a href="{prefix}index.html">{escaped_masthead}</a>'
     return f"""<!doctype html>
 <html lang="en" dir="ltr">
 <head>
@@ -137,14 +121,12 @@ def template(*, title: str, masthead_title: str, tagline: str, body: str, output
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escaped_title}</title>
 <meta name="description" content="RTTA technical analysis documentation">
-<link rel="icon" href="{prefix}favicon.ico" sizes="any">
-<link rel="icon" type="image/png" href="{prefix}favicon-32.png" sizes="32x32">
-<link rel="icon" type="image/png" href="{prefix}favicon-16.png" sizes="16x16">
-<link rel="apple-touch-icon" href="{prefix}apple-touch-icon.png" sizes="180x180">
+<link rel="icon" type="image/png" href="{prefix}goblin.png">
+<link rel="apple-touch-icon" href="{prefix}goblin.png">
 <link rel="manifest" href="{prefix}site.webmanifest">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{prefix}style.css">
 <script>
 window.MathJax = {{
@@ -158,19 +140,26 @@ window.MathJax = {{
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 </head>
 <body>
+<a class="skip-link" href="#content">Skip to content</a>
 <div class="page">
 <header class="masthead">
+<div class="docs-topline">
+<a class="docs-brand" href="{prefix}index.html"><span class="docs-mascot" aria-hidden="true"><img src="{prefix}goblin.png" alt=""></span><strong>RTTA</strong><small>Documentation</small></a>
+<a class="docs-credit" href="https://goblinreactor.com" rel="noopener">Built by Goblin Reactor <b>↗</b></a>
+</div>
+<div class="masthead-copy">
 <h1>{masthead_content}</h1>
 <p class="tagline">{tagline}</p>
+</div>
 </header>
-<nav class="nav">
-<a class="home" href="{prefix}index.html">README</a><a class="github" href="{prefix}ALGOS.html">Algorithms</a><a class="github" href="{prefix}BENCHMARK.html">Benchmarks</a><a class="github" href="https://github.com/adamdeprince/rtta" rel="noopener">Source Code</a>
+<nav class="nav" aria-label="Documentation navigation">
+<a class="home" href="{prefix}index.html">Home</a><a class="github" href="{prefix}README.html">README</a><a class="github" href="{prefix}ALGOS.html">Algorithms</a><a class="github" href="{prefix}BENCHMARK.html">Benchmarks</a><a class="github" href="https://github.com/adamdeprince/rtta" rel="noopener">Source Code</a>
 </nav>
-<main class="content">
+<main class="content" id="content">
 {body}
 </main>
 <footer class="footer">
-RTTA · low-latency incremental technical analysis
+<span>RTTA · low-latency incremental technical analysis</span><a href="https://goblinreactor.com" rel="noopener">Goblin Reactor ↗</a>
 </footer>
 </div>
 </body>
@@ -180,9 +169,9 @@ RTTA · low-latency incremental technical analysis
 
 def output_for_markdown(path: Path) -> Path:
     rel = path.relative_to(ROOT)
+    if rel == Path("README.md"):
+        return Path("README.html")
     if rel.name == "README.md":
-        if rel.parent == Path("."):
-            return Path("index.html")
         return rel.parent / "index.html"
     return rel.with_suffix(".html")
 
@@ -211,19 +200,10 @@ def copy_assets() -> None:
     OUT.mkdir(exist_ok=True)
     shutil.copy2(STYLE_SOURCE, OUT / "style.css")
 
-    for name in FAVICON_FILES:
-        target = OUT / name
-        if target.exists():
-            continue
-        source = STRIDE_HTML / name
-        if source.exists():
-            shutil.copy2(source, target)
-
     (OUT / "site.webmanifest").write_text(
         '{\n'
         '  "icons": [\n'
-        '    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },\n'
-        '    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }\n'
+        '    { "src": "/goblin.png", "sizes": "1254x1254", "type": "image/png" }\n'
         '  ]\n'
         '}\n',
         encoding="utf-8",
@@ -234,6 +214,8 @@ def clean_generated_html() -> None:
     if not OUT.exists():
         return
     for path in OUT.rglob("*.html"):
+        if path == OUT / "index.html":
+            continue
         path.unlink()
 
 

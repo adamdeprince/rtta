@@ -6,8 +6,5 @@ __pycache__
 build
 dist
 html/*
-!html/favicon.ico
-!html/favicon-*.png
-!html/apple-touch-icon.png
-!html/icon-*.png
-!html/rtta.png
+!html/index.html
+!html/goblin.png
