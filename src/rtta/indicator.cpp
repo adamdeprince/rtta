@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1542,10 +1543,23 @@ inline double result_checksum(const IntradayClockEchoSignalResult &value) {
            (value.ready ? 1.0 : 0.0);
 }
 
+inline void ring_advance(std::size_t &index, std::size_t capacity) {
+    ++index;
+    if (index == capacity) {
+        index = 0;
+    }
+}
+
+inline std::size_t ring_offset(std::size_t start, std::size_t offset, std::size_t capacity) {
+    const std::size_t index = start + offset;
+    return index >= capacity ? index - capacity : index;
+}
+
 class RollingExtremeQueue {
 public:
     RollingExtremeQueue(std::size_t capacity, bool maximum)
-        : values_(std::max<std::size_t>(capacity, 1)),
+        : values_(std::bit_ceil(std::max<std::size_t>(capacity, 1))),
+          mask_(values_.size() - 1),
           head_(0),
           tail_(0),
           count_(0),
@@ -1594,13 +1608,6 @@ private:
         return count_ == 0;
     }
 
-    inline void advance(std::size_t &index) const {
-        ++index;
-        if (index == values_.size()) {
-            index = 0;
-        }
-    }
-
     inline Entry &front() {
         return values_[head_];
     }
@@ -1610,7 +1617,7 @@ private:
     }
 
     inline Entry &back() {
-        return values_[tail_ == 0 ? values_.size() - 1 : tail_ - 1];
+        return values_[(tail_ - 1) & mask_];
     }
 
     inline void push_back(Entry entry) {
@@ -1618,21 +1625,22 @@ private:
             pop_front();
         }
         values_[tail_] = entry;
-        advance(tail_);
+        tail_ = (tail_ + 1) & mask_;
         ++count_;
     }
 
     inline void pop_front() {
-        advance(head_);
+        head_ = (head_ + 1) & mask_;
         --count_;
     }
 
     inline void pop_back() {
-        tail_ = tail_ == 0 ? values_.size() - 1 : tail_ - 1;
+        tail_ = (tail_ - 1) & mask_;
         --count_;
     }
 
     std::vector<Entry> values_;
+    std::size_t mask_;
     std::size_t head_;
     std::size_t tail_;
     std::size_t count_;
@@ -1643,8 +1651,9 @@ class RollingWindow {
 public:
     explicit RollingWindow(int window)
         : values_(static_cast<std::size_t>(std::max(window, 1)), 0.0),
-          min_(values_.size() + 1, false),
-          max_(values_.size() + 1, true),
+          capacity_(values_.size()),
+          min_(capacity_ + 1, false),
+          max_(capacity_ + 1, true),
           next_(0),
           count_(0),
           sequence_(0),
@@ -1652,23 +1661,23 @@ public:
           sumsq_(0.0) {}
 
     inline void push(double value) {
-        if (count_ == values_.size()) {
-            sum_ -= values_[next_];
-            sumsq_ -= values_[next_] * values_[next_];
+        if (count_ == capacity_) {
+            const double oldest = values_[next_];
+            sum_ -= oldest;
+            sumsq_ -= oldest * oldest;
         } else {
             ++count_;
         }
 
         const std::size_t index = sequence_++;
         values_[next_] = value;
-        next_ = (next_ + 1) % values_.size();
+        ring_advance(next_, capacity_);
         sum_ += value;
         sumsq_ += value * value;
 
         min_.push(value, index);
         max_.push(value, index);
         expire_old_values();
-
     }
 
     inline std::size_t size() const {
@@ -1676,11 +1685,11 @@ public:
     }
 
     inline std::size_t capacity() const {
-        return values_.size();
+        return capacity_;
     }
 
     inline bool full() const {
-        return count_ == values_.size();
+        return count_ == capacity_;
     }
 
     inline double newest() const {
@@ -1692,20 +1701,25 @@ public:
     }
 
     inline double at(std::size_t oldest_offset) const {
-        const std::size_t start = count_ == values_.size() ? next_ : 0;
-        return values_[(start + oldest_offset) % values_.size()];
+        const std::size_t start = count_ == capacity_ ? next_ : 0;
+        return values_[ring_offset(start, oldest_offset, capacity_)];
     }
 
     inline double sum() const {
         return sum_;
     }
 
+    inline double sumsq() const {
+        return sumsq_;
+    }
+
     inline double stddev() const {
         if (count_ < 2) {
             return 0.0;
         }
-        const double n = static_cast<double>(count_);
-        const double variance = std::max(0.0, (sumsq_ / n) - (sum_ / n) * (sum_ / n));
+        const double inv_n = 1.0 / static_cast<double>(count_);
+        const double mean = sum_ * inv_n;
+        const double variance = std::max(0.0, sumsq_ * inv_n - mean * mean);
         return std::sqrt(variance);
     }
 
@@ -1727,8 +1741,8 @@ public:
 
     inline void reset() {
         std::fill(values_.begin(), values_.end(), 0.0);
-        min_ = RollingExtremeQueue(values_.size() + 1, false);
-        max_ = RollingExtremeQueue(values_.size() + 1, true);
+        min_ = RollingExtremeQueue(capacity_ + 1, false);
+        max_ = RollingExtremeQueue(capacity_ + 1, true);
         next_ = 0;
         count_ = 0;
         sequence_ = 0;
@@ -1748,6 +1762,7 @@ private:
     }
 
     std::vector<double> values_;
+    std::size_t capacity_;
     RollingExtremeQueue min_;
     RollingExtremeQueue max_;
     std::size_t next_;
@@ -1761,6 +1776,7 @@ class RollingBuffer {
 public:
     explicit RollingBuffer(int window)
         : values_(static_cast<std::size_t>(std::max(window, 1)), 0.0),
+          capacity_(values_.size()),
           next_(0),
           count_(0) {}
 
@@ -1773,7 +1789,7 @@ public:
         }
 
         values_[next_] = value;
-        next_ = (next_ + 1) % values_.size();
+        ring_advance(next_, capacity_);
         return old;
     }
 
@@ -1782,11 +1798,11 @@ public:
     }
 
     inline std::size_t capacity() const {
-        return values_.size();
+        return capacity_;
     }
 
     inline bool full() const {
-        return count_ == values_.size();
+        return count_ == capacity_;
     }
 
     inline double oldest() const {
@@ -1795,7 +1811,54 @@ public:
 
     inline double at(std::size_t oldest_offset) const {
         const std::size_t start = full() ? next_ : 0;
-        return values_[(start + oldest_offset) % values_.size()];
+        return values_[ring_offset(start, oldest_offset, capacity_)];
+    }
+
+    inline const double *data() const {
+        return values_.data();
+    }
+
+    inline double *data() {
+        return values_.data();
+    }
+
+    inline std::size_t next_index() const {
+        return next_;
+    }
+
+    // Count of samples strictly less than `value` (for percent-rank).
+    inline std::size_t count_below(double value) const {
+        std::size_t below = 0;
+        if (!full()) {
+            for (std::size_t i = 0; i < count_; ++i) {
+                below += static_cast<std::size_t>(values_[i] < value);
+            }
+            return below;
+        }
+        const double *data = values_.data();
+        for (std::size_t i = 0; i < capacity_; ++i) {
+            below += static_cast<std::size_t>(data[i] < value);
+        }
+        return below;
+    }
+
+    // Mean absolute deviation from `mean` over the current contents.
+    inline double mean_abs_deviation(double mean) const {
+        if (count_ == 0) {
+            return 0.0;
+        }
+        double total = 0.0;
+        if (!full()) {
+            for (std::size_t i = 0; i < count_; ++i) {
+                total += std::abs(values_[i] - mean);
+            }
+        } else {
+            const double *data = values_.data();
+            for (std::size_t i = 0; i < capacity_; ++i) {
+                total += std::abs(data[i] - mean);
+            }
+        }
+        return total / static_cast<double>(count_);
     }
 
     inline bool has_lag(std::size_t bars_back) const {
@@ -1813,6 +1876,7 @@ public:
 
 private:
     std::vector<double> values_;
+    std::size_t capacity_;
     std::size_t next_;
     std::size_t count_;
 };
@@ -1821,6 +1885,8 @@ class RollingQuantile {
 public:
     RollingQuantile(int window, double quantile)
         : values_(static_cast<std::size_t>(std::max(window, 1)), nan()),
+          capacity_(values_.size()),
+          scratch_(capacity_),
           quantile_(quantile),
           next_(0),
           count_(0),
@@ -1839,8 +1905,8 @@ public:
             return;
         }
         values_[next_] = value;
-        next_ = (next_ + 1) % values_.size();
-        if (count_ < values_.size()) {
+        ring_advance(next_, capacity_);
+        if (count_ < capacity_) {
             ++count_;
         }
         dirty_ = true;
@@ -1862,29 +1928,30 @@ public:
         if (!dirty_) {
             return cached_value_;
         }
-        std::vector<double> finite_values;
-        finite_values.reserve(count_);
+        std::size_t finite = 0;
         for (std::size_t i = 0; i < count_; ++i) {
             if (std::isfinite(values_[i])) {
-                finite_values.push_back(values_[i]);
+                scratch_[finite++] = values_[i];
             }
         }
-        if (finite_values.empty()) {
+        if (finite == 0) {
             cached_value_ = nan();
             dirty_ = false;
             return cached_value_;
         }
 
-        const double index = quantile_ * static_cast<double>(finite_values.size() - 1);
+        const double index = quantile_ * static_cast<double>(finite - 1);
         const std::size_t selected = static_cast<std::size_t>(std::ceil(index));
-        std::nth_element(finite_values.begin(), finite_values.begin() + selected, finite_values.end());
-        cached_value_ = finite_values[selected];
+        std::nth_element(scratch_.begin(), scratch_.begin() + static_cast<std::ptrdiff_t>(selected), scratch_.begin() + static_cast<std::ptrdiff_t>(finite));
+        cached_value_ = scratch_[selected];
         dirty_ = false;
         return cached_value_;
     }
 
 private:
     std::vector<double> values_;
+    std::size_t capacity_;
+    mutable std::vector<double> scratch_;
     double quantile_;
     std::size_t next_;
     std::size_t count_;
@@ -1897,6 +1964,7 @@ public:
     explicit PendingMatchedFlowPredictions(int horizon)
         : close_(static_cast<std::size_t>(std::max(horizon, 1)), nan()),
           prediction_(static_cast<std::size_t>(std::max(horizon, 1)), nan()),
+          capacity_(close_.size()),
           head_(0),
           count_(0) {
         if (horizon <= 0) {
@@ -1905,24 +1973,26 @@ public:
     }
 
     inline bool matured() const {
-        return count_ >= close_.size();
+        return count_ >= capacity_;
     }
 
     inline std::pair<double, double> pop() {
         const std::pair<double, double> value{close_[head_], prediction_[head_]};
-        head_ = (head_ + 1) % close_.size();
+        ring_advance(head_, capacity_);
         --count_;
         return value;
     }
 
     inline void push(double close, double prediction) {
-        const std::size_t index = (head_ + count_) % close_.size();
-        close_[index] = close;
-        prediction_[index] = prediction;
-        if (count_ < close_.size()) {
+        if (count_ < capacity_) {
+            const std::size_t index = ring_offset(head_, count_, capacity_);
+            close_[index] = close;
+            prediction_[index] = prediction;
             ++count_;
         } else {
-            head_ = (head_ + 1) % close_.size();
+            close_[head_] = close;
+            prediction_[head_] = prediction;
+            ring_advance(head_, capacity_);
         }
     }
 
@@ -1936,6 +2006,7 @@ public:
 private:
     std::vector<double> close_;
     std::vector<double> prediction_;
+    std::size_t capacity_;
     std::size_t head_;
     std::size_t count_;
 };
@@ -1944,24 +2015,25 @@ class RollingSumWindow {
 public:
     explicit RollingSumWindow(int window)
         : values_(static_cast<std::size_t>(std::max(window, 1)), 0.0),
+          capacity_(values_.size()),
           next_(0),
           count_(0),
           sum_(0.0) {}
 
     inline void push(double value) {
-        if (count_ == values_.size()) {
+        if (count_ == capacity_) {
             sum_ -= values_[next_];
         } else {
             ++count_;
         }
 
         values_[next_] = value;
-        next_ = (next_ + 1) % values_.size();
+        ring_advance(next_, capacity_);
         sum_ += value;
     }
 
     inline bool full() const {
-        return count_ == values_.size();
+        return count_ == capacity_;
     }
 
     inline std::size_t size() const {
@@ -1981,6 +2053,7 @@ public:
 
 private:
     std::vector<double> values_;
+    std::size_t capacity_;
     std::size_t next_;
     std::size_t count_;
     double sum_;
@@ -2040,8 +2113,7 @@ private:
     }
 
     inline void expire_old_values() {
-        const std::size_t oldest = oldest_index();
-        values_.expire_before(oldest);
+        values_.expire_before(oldest_index());
     }
 
     std::size_t window_;
@@ -2055,19 +2127,20 @@ inline double safe_divide(double numerator, double denominator, double fallback 
 }
 
 inline double normal_cdf(double value) {
-    return 0.5 * std::erfc(-value / std::sqrt(2.0));
+    return 0.5 * std::erfc(-value * 0.7071067811865475244);
 }
 
-inline double true_range(double close, double high, double low, double prev_close) {
-    return std::max({
-        high - low,
-        std::abs(high - prev_close),
-        std::abs(low - prev_close),
-    });
+inline double true_range(double /*close*/, double high, double low, double prev_close) {
+    const double range = high - low;
+    const double high_gap = std::abs(high - prev_close);
+    const double low_gap = std::abs(low - prev_close);
+    const double gap = high_gap > low_gap ? high_gap : low_gap;
+    return range > gap ? range : gap;
 }
 
 inline double money_flow_multiplier(double close, double high, double low) {
-    return high == low ? 0.0 : ((close - low) - (high - close)) / (high - low);
+    const double range = high - low;
+    return range == 0.0 ? 0.0 : ((close - low) - (high - close)) / range;
 }
 
 namespace batch_kernels {
@@ -3070,6 +3143,7 @@ public:
           count_(0) {}
 
     double update(double value) {
+        // Keep the classic form for bit-stable agreement with reference implementations.
         value_ = (value_ * (window_ - 1.0) + value) / window_;
         ++count_;
         return value_;
@@ -3102,9 +3176,9 @@ class Delay {
 public:
     explicit Delay(int window = 1, bool fillna = true)
         : index_(0),
-          max_(window),
+          capacity_(static_cast<std::size_t>(std::max(window, 1))),
           fillna_(fillna),
-          buffer_(static_cast<std::size_t>(window), 0.0),
+          buffer_(capacity_, 0.0),
           first_(true) {}
 
     double update(double value) {
@@ -3113,24 +3187,19 @@ public:
             std::fill(buffer_.begin(), buffer_.end(), fillna_ ? 0.0 : nan());
         }
 
-        const double retval = buffer_[static_cast<std::size_t>(index_)];
-        buffer_[static_cast<std::size_t>(index_)] = value;
-
-        ++index_;
-        if (index_ == max_) {
-            index_ = 0;
-        }
-
+        const double retval = buffer_[index_];
+        buffer_[index_] = value;
+        ring_advance(index_, capacity_);
         return retval;
     }
 
     double peek() const {
-        return buffer_[static_cast<std::size_t>(index_)];
+        return buffer_[index_];
     }
 
 private:
-    int index_;
-    int max_;
+    std::size_t index_;
+    std::size_t capacity_;
     bool fillna_;
     std::vector<double> buffer_;
     bool first_;
@@ -3380,13 +3449,13 @@ private:
 class EMA {
 public:
     explicit EMA(double window = 1.0, bool fillna = false)
-        : first_pass_(true),
+        : last_value_(0.0),
+          weighted_multiplier_(2.0 / (1.0 + window)),
+          inverted_multiplier_(1.0 - weighted_multiplier_),
           index_(0),
           window_(std::max(static_cast<int>(window), 1)),
-          fillna_(fillna),
-          last_value_(0.0),
-          weighted_multiplier_(2.0 / (1.0 + window)),
-          inverted_multiplier_(1.0 - weighted_multiplier_) {}
+          first_pass_(true),
+          fillna_(fillna) {}
 
     double update(double value) {
         if (first_pass_ && index_ == 0) {
@@ -3431,6 +3500,8 @@ public:
         long index = index_;
         bool first_pass = first_pass_;
         std::size_t i = 0;
+        const double alpha = weighted_multiplier_;
+        const double one_minus = inverted_multiplier_;
 
         if (first_pass) {
             for (; i < size && first_pass; ++i) {
@@ -3439,7 +3510,7 @@ public:
                     last = value;
                 }
 
-                last = weighted_multiplier_ * value + last * inverted_multiplier_;
+                last = alpha * value + last * one_minus;
                 ++index;
 
                 if (index == window_) {
@@ -3451,7 +3522,7 @@ public:
         }
 
         for (; i < size; ++i) {
-            last = weighted_multiplier_ * values[i] + last * inverted_multiplier_;
+            last = alpha * values[i] + last * one_minus;
             ++index;
             output[i] = last;
         }
@@ -3463,13 +3534,13 @@ public:
     }
 
 private:
-    bool first_pass_;
-    long index_;
-    int window_;
-    bool fillna_;
     double last_value_;
     double weighted_multiplier_;
     double inverted_multiplier_;
+    long index_;
+    int window_;
+    bool first_pass_;
+    bool fillna_;
 };
 
 namespace batch_kernels {
@@ -3514,48 +3585,38 @@ void t3_moving_average(
 class SMA {
 public:
     explicit SMA(int window = 1, bool fillna = false)
-        : first_pass_(true),
-          history_(static_cast<std::size_t>(window), 0.0),
-          index_(0),
-          window_(window),
-          fillna_(fillna),
+        : history_(static_cast<std::size_t>(std::max(window, 1)), 0.0),
           tally_(0.0),
-          stored_mean_(nan()),
-          mean_(nan()) {}
+          mean_(nan()),
+          index_(0),
+          window_(std::max(window, 1)),
+          first_pass_(true),
+          fillna_(fillna) {}
 
     int length() const {
         return window_;
     }
 
     double mean() const {
-        return stored_mean_;
+        return mean_;
     }
 
     double update(double value) {
-        tally_ -= history_[static_cast<std::size_t>(index_)];
-        tally_ += value;
-        history_[static_cast<std::size_t>(index_)] = value;
+        tally_ += value - history_[index_];
+        history_[index_] = value;
 
         ++index_;
-
-        if (index_ == window_) {
+        if (index_ == static_cast<std::size_t>(window_)) {
             index_ = 0;
             first_pass_ = false;
         }
 
         if (first_pass_) {
-            if (!fillna_) {
-                mean_ = nan();
-                stored_mean_ = mean_;
-                return mean_;
-            }
-            mean_ = tally_ / index_;
-            stored_mean_ = mean_;
+            mean_ = fillna_ ? tally_ / static_cast<double>(index_) : nan();
             return mean_;
         }
 
-        mean_ = tally_ / window_;
-        stored_mean_ = mean_;
+        mean_ = tally_ / static_cast<double>(window_);
         return mean_;
     }
 
@@ -3564,26 +3625,25 @@ public:
         std::vector<double> output(size);
         const double *values = input.data();
         bool first_pass = first_pass_;
-        int index = index_;
+        std::size_t index = index_;
         double tally = tally_;
         double mean = mean_;
+        const std::size_t window = static_cast<std::size_t>(window_);
 
         for (std::size_t i = 0; i < size; ++i) {
-            tally -= history_[static_cast<std::size_t>(index)];
-            tally += values[i];
-            history_[static_cast<std::size_t>(index)] = values[i];
+            tally += values[i] - history_[index];
+            history_[index] = values[i];
 
             ++index;
-
-            if (index == window_) {
+            if (index == window) {
                 index = 0;
                 first_pass = false;
             }
 
             if (first_pass) {
-                mean = fillna_ ? tally / index : nan();
+                mean = fillna_ ? tally / static_cast<double>(index) : nan();
             } else {
-                mean = tally / window_;
+                mean = tally / static_cast<double>(window);
             }
             output[i] = mean;
         }
@@ -3592,19 +3652,17 @@ public:
         index_ = index;
         tally_ = tally;
         mean_ = mean;
-        stored_mean_ = mean;
         return make_array(std::move(output));
     }
 
 private:
-    bool first_pass_;
     std::vector<double> history_;
-    int index_;
-    int window_;
-    bool fillna_;
     double tally_;
-    double stored_mean_;
     double mean_;
+    std::size_t index_;
+    int window_;
+    bool first_pass_;
+    bool fillna_;
 };
 
 namespace batch_kernels {
@@ -5127,8 +5185,9 @@ public:
     nb::object batch(const InputArray &input) {
         const std::size_t size = input.shape(0);
         std::vector<double> output(size);
+        const double *values = input.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(input(i));
+            output[i] = update(values[i]);
         }
         return make_array(std::move(output));
     }
@@ -7153,6 +7212,133 @@ public:
         return last_;
     }
 
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    IntradayClockEchoSignalBatchResult batch_array(
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+
+        std::vector<double> slot(size);
+        std::vector<double> samples_for_slot(size);
+        std::vector<double> bar_return(size);
+        std::vector<double> residual_return(size);
+        std::vector<double> clock_echo(size);
+        std::vector<double> flow_confirm(size);
+        std::vector<double> volume_sync(size);
+        std::vector<double> prediction(size);
+        std::vector<double> radius(size);
+        std::vector<double> score(size);
+        std::vector<double> signal(size);
+        std::vector<double> target_fraction(size);
+        std::vector<double> max_trade_dollars(size);
+        std::vector<double> realized_error(size);
+        std::vector<double> ready(size);
+
+        const auto *open_values = open.data();
+        const auto *high_values = high.data();
+        const auto *low_values = low.data();
+        const auto *close_values = close.data();
+        const auto *volume_values = volume.data();
+
+        for (std::size_t i = 0; i < size; ++i) {
+            const IntradayClockEchoSignalResult out = update(
+                static_cast<double>(open_values[i]),
+                static_cast<double>(high_values[i]),
+                static_cast<double>(low_values[i]),
+                static_cast<double>(close_values[i]),
+                static_cast<double>(volume_values[i]));
+            slot[i] = out.slot;
+            samples_for_slot[i] = out.samples_for_slot;
+            bar_return[i] = out.bar_return;
+            residual_return[i] = out.residual_return;
+            clock_echo[i] = out.clock_echo;
+            flow_confirm[i] = out.flow_confirm;
+            volume_sync[i] = out.volume_sync;
+            prediction[i] = out.prediction;
+            radius[i] = out.radius;
+            score[i] = out.score;
+            signal[i] = out.signal;
+            target_fraction[i] = out.target_fraction;
+            max_trade_dollars[i] = out.max_trade_dollars;
+            realized_error[i] = out.realized_error;
+            ready[i] = out.ready;
+        }
+
+        return {
+            make_array(std::move(slot)),
+            make_array(std::move(samples_for_slot)),
+            make_array(std::move(bar_return)),
+            make_array(std::move(residual_return)),
+            make_array(std::move(clock_echo)),
+            make_array(std::move(flow_confirm)),
+            make_array(std::move(volume_sync)),
+            make_array(std::move(prediction)),
+            make_array(std::move(radius)),
+            make_array(std::move(score)),
+            make_array(std::move(signal)),
+            make_array(std::move(target_fraction)),
+            make_array(std::move(max_trade_dollars)),
+            make_array(std::move(realized_error)),
+            make_array(std::move(ready)),
+        };
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_update_array(
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            checksum += result_checksum(update(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i])));
+        }
+        return checksum;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3, typename Array4>
+    double replay_advance_array(
+        const Array0 &open,
+        const Array1 &high,
+        const Array2 &low,
+        const Array3 &close,
+        const Array4 &volume) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        double checksum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            advance(
+                static_cast<double>(open.data()[i]),
+                static_cast<double>(high.data()[i]),
+                static_cast<double>(low.data()[i]),
+                static_cast<double>(close.data()[i]),
+                static_cast<double>(volume.data()[i]));
+            checksum += result_checksum(last_);
+        }
+        return checksum;
+    }
+
     void reset() {
         std::fill(slot_echo_.begin(), slot_echo_.end(), nan());
         std::fill(slot_abs_err_.begin(), slot_abs_err_.end(), nan());
@@ -7400,16 +7586,23 @@ public:
 
     nb::object batch(const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume) {
         const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
         std::vector<double> output(size);
+        const double *c = close.data();
+        const double *h = high.data();
+        const double *l = low.data();
+        const double *v = volume.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i), high(i), low(i), volume(i));
+            output[i] = update(c[i], h[i], l[i], v[i]);
         }
         return make_array(std::move(output));
     }
 
 private:
-    RollingWindow money_flow_volume_;
-    RollingWindow volume_;
+    RollingSumWindow money_flow_volume_;
+    RollingSumWindow volume_;
     bool fillna_;
 };
 
@@ -7429,9 +7622,12 @@ public:
 
     nb::object batch(const InputArray &close, const InputArray &volume) {
         const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
         std::vector<double> output(size);
+        const double *c = close.data();
+        const double *v = volume.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i), volume(i));
+            output[i] = update(c[i], v[i]);
         }
         return make_array(std::move(output));
     }
@@ -7477,26 +7673,31 @@ private:
 
         last_ = {
             (!fillna_ && eom_.size() == 1) ? nan() : value,
-            (!fillna_ && !eom_.full()) ? nan() : eom_.sum() / eom_.size(),
+            (!fillna_ && !eom_.full()) ? nan() : eom_.sum() / static_cast<double>(eom_.size()),
         };
     }
 
 public:
     EaseOfMovementBatchResult batch(const InputArray &high, const InputArray &low, const InputArray &volume) {
         const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
         std::vector<double> eom(size);
         std::vector<double> sma(size);
+        const double *h = high.data();
+        const double *l = low.data();
+        const double *v = volume.data();
         for (std::size_t i = 0; i < size; ++i) {
-            const EaseOfMovementResult out = update(high(i), low(i), volume(i));
-            eom[i] = out.ease_of_movement;
-            sma[i] = out.sma;
+            update_core(h[i], l[i], v[i]);
+            eom[i] = last_.ease_of_movement;
+            sma[i] = last_.sma;
         }
 
         return {make_array(std::move(eom)), make_array(std::move(sma))};
     }
 
 private:
-    RollingWindow eom_;
+    RollingSumWindow eom_;
     double previous_high_;
     double previous_low_;
     bool first_;
@@ -7529,20 +7730,23 @@ public:
         if (!fillna_ && !smoothing_.full()) {
             return nan();
         }
-        return smoothing_.sum() / smoothing_.size();
+        return smoothing_.sum() / static_cast<double>(smoothing_.size());
     }
 
     nb::object batch(const InputArray &close, const InputArray &volume) {
         const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
         std::vector<double> output(size);
+        const double *c = close.data();
+        const double *v = volume.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i), volume(i));
+            output[i] = update(c[i], v[i]);
         }
         return make_array(std::move(output));
     }
 
 private:
-    RollingWindow smoothing_;
+    RollingSumWindow smoothing_;
     int smoothing_window_;
     double value_;
     double previous_close_;
@@ -7571,9 +7775,12 @@ public:
 
     nb::object batch(const InputArray &close, const InputArray &volume) {
         const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
         std::vector<double> output(size);
+        const double *c = close.data();
+        const double *v = volume.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i), volume(i));
+            output[i] = update(c[i], v[i]);
         }
         return make_array(std::move(output));
     }
@@ -7593,7 +7800,7 @@ public:
           fillna_(fillna) {}
 
     double update(double close, double high, double low, double volume) {
-        const double typical_price = (high + low + close) / 3.0;
+        const double typical_price = (high + low + close) * (1.0 / 3.0);
         typical_price_volume_.push(typical_price * volume);
         volume_.push(volume);
 
@@ -7605,16 +7812,23 @@ public:
 
     nb::object batch(const InputArray &close, const InputArray &high, const InputArray &low, const InputArray &volume) {
         const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
         std::vector<double> output(size);
+        const double *c = close.data();
+        const double *h = high.data();
+        const double *l = low.data();
+        const double *v = volume.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i), high(i), low(i), volume(i));
+            output[i] = update(c[i], h[i], l[i], v[i]);
         }
         return make_array(std::move(output));
     }
 
 private:
-    RollingWindow typical_price_volume_;
-    RollingWindow volume_;
+    RollingSumWindow typical_price_volume_;
+    RollingSumWindow volume_;
     bool fillna_;
 };
 
@@ -7754,27 +7968,19 @@ public:
           histogram_(bins_),
           count_(0),
           next_(0),
+          total_volume_(0.0),
+          cached_min_(nan()),
+          cached_max_(nan()),
+          range_valid_(false),
           last_{nan(), nan(), nan()} {}
 
     VolumeProfileResult update(double close, double volume) {
-        prices_[next_] = close;
-        volumes_[next_] = volume;
-        if (count_ < window_) {
-            ++count_;
-        }
-        next_ = (next_ + 1) % window_;
-
-        if (!fillna_ && count_ < window_) {
-            last_ = VolumeProfileResult{nan(), nan(), nan()};
-            return last_;
-        }
-
-        last_ = compute();
+        update_core(close, volume);
         return last_;
     }
 
     void advance(double close, double volume) {
-        (void) update(close, volume);
+        update_core(close, volume);
     }
 
     const VolumeProfileResult &last() const {
@@ -7792,12 +7998,10 @@ public:
         const auto *volume_values = volume.data();
 
         for (std::size_t i = 0; i < size; ++i) {
-            const VolumeProfileResult out = update(
-                static_cast<double>(close_values[i]),
-                static_cast<double>(volume_values[i]));
-            point_of_control[i] = out.point_of_control;
-            value_area_high[i] = out.value_area_high;
-            value_area_low[i] = out.value_area_low;
+            update_core(static_cast<double>(close_values[i]), static_cast<double>(volume_values[i]));
+            point_of_control[i] = last_.point_of_control;
+            value_area_high[i] = last_.value_area_high;
+            value_area_low[i] = last_.value_area_low;
         }
 
         return {
@@ -7829,28 +8033,97 @@ private:
         return value_area_percent;
     }
 
-    VolumeProfileResult compute() {
-        double min_price = prices_[0];
-        double max_price = prices_[0];
-        double total_volume = 0.0;
-        for (std::size_t i = 0; i < count_; ++i) {
-            min_price = std::min(min_price, prices_[i]);
-            max_price = std::max(max_price, prices_[i]);
-            total_volume += volumes_[i];
+    inline void update_core(double close, double volume) {
+        const bool was_full = count_ == window_;
+        double expired_price = 0.0;
+        double expired_volume = 0.0;
+        if (was_full) {
+            expired_price = prices_[next_];
+            expired_volume = volumes_[next_];
+            total_volume_ -= expired_volume;
+        } else {
+            ++count_;
         }
 
-        if (total_volume == 0.0 || min_price == max_price) {
+        prices_[next_] = close;
+        volumes_[next_] = volume;
+        total_volume_ += volume;
+        ring_advance(next_, window_);
+
+        if (!fillna_ && count_ < window_) {
+            last_ = VolumeProfileResult{nan(), nan(), nan()};
+            return;
+        }
+
+        const bool range_changed = !range_valid_ ||
+            close < cached_min_ || close > cached_max_ ||
+            (was_full && (expired_price == cached_min_ || expired_price == cached_max_));
+
+        if (range_changed) {
+            last_ = compute_full();
+        } else {
+            // Same price range: O(1) histogram bin updates.
+            const double width = (cached_max_ - cached_min_) / static_cast<double>(bins_);
+            if (was_full && expired_volume != 0.0 && width > 0.0) {
+                std::size_t bin = static_cast<std::size_t>((expired_price - cached_min_) / width);
+                if (bin >= bins_) {
+                    bin = bins_ - 1;
+                }
+                histogram_[bin] -= expired_volume;
+            }
+            if (volume != 0.0 && width > 0.0) {
+                std::size_t bin = static_cast<std::size_t>((close - cached_min_) / width);
+                if (bin >= bins_) {
+                    bin = bins_ - 1;
+                }
+                histogram_[bin] += volume;
+            }
+            last_ = finish_from_histogram(cached_min_, cached_max_, total_volume_);
+        }
+    }
+
+    VolumeProfileResult compute_full() {
+        double min_price = prices_[0];
+        double max_price = prices_[0];
+        // Walk only the live window slots (ring may not start at 0).
+        if (count_ == window_) {
+            for (std::size_t i = 0; i < window_; ++i) {
+                min_price = std::min(min_price, prices_[i]);
+                max_price = std::max(max_price, prices_[i]);
+            }
+        } else {
+            for (std::size_t i = 0; i < count_; ++i) {
+                min_price = std::min(min_price, prices_[i]);
+                max_price = std::max(max_price, prices_[i]);
+            }
+        }
+
+        cached_min_ = min_price;
+        cached_max_ = max_price;
+        range_valid_ = true;
+
+        if (total_volume_ == 0.0 || min_price == max_price) {
+            std::fill(histogram_.begin(), histogram_.end(), 0.0);
             return VolumeProfileResult{min_price, max_price, min_price};
         }
 
         std::fill(histogram_.begin(), histogram_.end(), 0.0);
         const double width = (max_price - min_price) / static_cast<double>(bins_);
-        for (std::size_t i = 0; i < count_; ++i) {
+        const std::size_t live = count_ == window_ ? window_ : count_;
+        for (std::size_t i = 0; i < live; ++i) {
             std::size_t bin = static_cast<std::size_t>((prices_[i] - min_price) / width);
             if (bin >= bins_) {
                 bin = bins_ - 1;
             }
             histogram_[bin] += volumes_[i];
+        }
+
+        return finish_from_histogram(min_price, max_price, total_volume_);
+    }
+
+    VolumeProfileResult finish_from_histogram(double min_price, double max_price, double total_volume) const {
+        if (total_volume == 0.0 || min_price == max_price) {
+            return VolumeProfileResult{min_price, max_price, min_price};
         }
 
         std::size_t point_of_control_bin = 0;
@@ -7876,6 +8149,7 @@ private:
             }
         }
 
+        const double width = (max_price - min_price) / static_cast<double>(bins_);
         const double point_of_control = min_price + (static_cast<double>(point_of_control_bin) + 0.5) * width;
         const double value_area_low = min_price + static_cast<double>(low_bin) * width;
         const double value_area_high = min_price + static_cast<double>(high_bin + 1) * width;
@@ -7891,6 +8165,10 @@ private:
     std::vector<double> histogram_;
     std::size_t count_;
     std::size_t next_;
+    double total_volume_;
+    double cached_min_;
+    double cached_max_;
+    bool range_valid_;
     VolumeProfileResult last_;
 };
 
@@ -8288,8 +8566,9 @@ public:
     nb::object batch(const InputArray &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> output(size);
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i));
+            output[i] = update(c[i]);
         }
         return make_array(std::move(output));
     }
@@ -8522,26 +8801,28 @@ class CommodityChannelIndex {
 public:
     CommodityChannelIndex(int window = 14, bool fillna = true)
         : typical_(window),
+          sum_(0.0),
           fillna_(fillna) {}
 
     double update(double close, double high, double low) {
-        const double typical = (high + low + close) / 3.0;
+        const double typical = (high + low + close) * (1.0 / 3.0);
+        if (typical_.full()) {
+            sum_ -= typical_.oldest();
+        }
         typical_.push(typical);
+        sum_ += typical;
         if (!fillna_ && !typical_.full()) {
             return nan();
         }
 
-        const double mean = typical_.sum() / typical_.size();
-        double mean_deviation = 0.0;
-        for (std::size_t i = 0; i < typical_.size(); ++i) {
-            mean_deviation += std::abs(typical_.at(i) - mean);
-        }
-        mean_deviation /= typical_.size();
+        const double mean = sum_ / static_cast<double>(typical_.size());
+        const double mean_deviation = typical_.mean_abs_deviation(mean);
         return safe_divide(typical - mean, 0.015 * mean_deviation);
     }
 
 private:
-    RollingWindow typical_;
+    RollingBuffer typical_;
+    double sum_;
     bool fillna_;
 };
 
@@ -8861,7 +9142,9 @@ public:
         }
 
         const double n = static_cast<double>(values_.size());
-        const double variance = (sum2_ - sum_ * sum_ / n) / n;
+        const double inv_n = 1.0 / n;
+        const double mean = sum_ * inv_n;
+        const double variance = sum2_ * inv_n - mean * mean;
         return variance < 0.0 && variance > -1e-12 ? 0.0 : variance;
     }
 
@@ -8912,24 +9195,27 @@ public:
         }
 
         const double n = static_cast<double>(values_.size());
+        const double inv_n = 1.0 / n;
         const double sum_x = n * (n - 1.0) * 0.5;
-        const double sum_x2 = (n - 1.0) * n * (2.0 * n - 1.0) / 6.0;
+        const double sum_x2 = (n - 1.0) * n * (2.0 * n - 1.0) * (1.0 / 6.0);
 
         const double denominator = n * sum_x2 - sum_x * sum_x;
         const double slope = safe_divide(n * sum_xy_ - sum_x * sum_y_, denominator);
-        const double intercept = (sum_y_ - slope * sum_x) / n;
+        const double intercept = (sum_y_ - slope * sum_x) * inv_n;
         const double value_out = intercept + slope * (n - 1.0);
 
         return {
             value_out,
             slope,
             intercept,
-            std::atan(slope) * 180.0 / std::acos(-1.0),
+            std::atan(slope) * rad2deg_,
             intercept + slope * n,
         };
     }
 
 private:
+    static constexpr double rad2deg_ = 180.0 / 3.141592653589793238462643383279502884;
+
     RollingBuffer values_;
     int window_;
     bool fillna_;
@@ -9482,8 +9768,11 @@ public:
         std::vector<double> width(size);
         std::vector<double> percent(size);
 
+        const double *c = close.data();
+        const double *h = high.data();
+        const double *l = low.data();
         for (std::size_t i = 0; i < size; ++i) {
-            const DonchianChannelResult out = update(close(i), high(i), low(i));
+            const DonchianChannelResult out = update(c[i], h[i], l[i]);
             upper[i] = out.upper;
             lower[i] = out.lower;
             middle[i] = out.middle;
@@ -9637,8 +9926,9 @@ public:
     nb::object batch(const InputArray &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> output(size);
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i));
+            output[i] = update(c[i]);
         }
         return make_array(std::move(output));
     }
@@ -9842,8 +10132,11 @@ public:
         std::vector<double> negative(size);
         std::vector<double> difference(size);
 
+        const double *c = close.data();
+        const double *h = high.data();
+        const double *l = low.data();
         for (std::size_t i = 0; i < size; ++i) {
-            const VortexResult out = update(close(i), high(i), low(i));
+            const VortexResult out = update(c[i], h[i], l[i]);
             positive[i] = out.positive;
             negative[i] = out.negative;
             difference[i] = out.difference;
@@ -9885,8 +10178,9 @@ public:
     nb::object batch(const InputArray &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> output(size);
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i));
+            output[i] = update(c[i]);
         }
         return make_array(std::move(output));
     }
@@ -9965,8 +10259,9 @@ public:
         std::vector<double> kst(size);
         std::vector<double> signal(size);
         std::vector<double> difference(size);
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            const KSTOscillatorResult out = update(close(i));
+            const KSTOscillatorResult out = update(c[i]);
             kst[i] = out.kst;
             signal[i] = out.signal;
             difference[i] = out.difference;
@@ -10044,8 +10339,10 @@ public:
         std::vector<double> base(size);
         std::vector<double> span_a(size);
         std::vector<double> span_b(size);
+        const double *h = high.data();
+        const double *l = low.data();
         for (std::size_t i = 0; i < size; ++i) {
-            const IchimokuResult out = update(high(i), low(i));
+            const IchimokuResult out = update(h[i], l[i]);
             conversion[i] = out.conversion;
             base[i] = out.base;
             span_a[i] = out.span_a;
@@ -10805,11 +11102,13 @@ public:
         std::vector<double> pvos(size);
         std::vector<double> signals(size);
         std::vector<double> histograms(size);
+        const double *volume_values = volume.data();
 
         for (std::size_t i = 0; i < size; ++i) {
             ++counter_;
-            const double ema_2 = oscillator_2_.update(volume(i));
-            const double pvo = 100.0 * (oscillator_1_.update(volume(i)) - ema_2) / ema_2;
+            const double vol = volume_values[i];
+            const double ema_2 = oscillator_2_.update(vol);
+            const double pvo = 100.0 * (oscillator_1_.update(vol) - ema_2) / ema_2;
             const double signal = signal_.update(pvo);
 
             if (counter_ < 0) {
@@ -10986,12 +11285,7 @@ public:
 
         const double streak_rsi = streak_rsi_.update(streak_);
         changes_.push(change);
-        std::size_t below = 0;
-        for (std::size_t i = 0; i < changes_.size(); ++i) {
-            if (changes_.at(i) < change) {
-                ++below;
-            }
-        }
+        const std::size_t below = changes_.count_below(change);
         const double percent_rank = 100.0 * static_cast<double>(below) / static_cast<double>(changes_.size());
         previous_ = close;
         first_ = false;
@@ -12393,12 +12687,17 @@ public:
                         bool fillna = true)
         : particles_(static_cast<std::size_t>(std::max(particles, 8))),
           weights_(particles_.size(), 1.0 / static_cast<double>(particles_.size())),
+          log_weights_(particles_.size()),
+          resampled_(particles_.size()),
           initial_price_(initial_price),
           initial_velocity_(std::isfinite(initial_velocity) ? initial_velocity : 0.0),
           dt_(dt > 0.0 ? dt : 1.0),
+          sqrt_dt_(std::sqrt(dt_)),
           process_position_scale_(positive_scale(process_position_scale, 0.05)),
           process_velocity_scale_(positive_scale(process_velocity_scale, 0.01)),
           measurement_scale_(positive_scale(measurement_scale, 0.5)),
+          inv_measurement_scale_(1.0 / measurement_scale_),
+          equal_weight_(1.0 / static_cast<double>(particles_.size())),
           resample_threshold_(std::clamp(std::isfinite(resample_threshold) ? resample_threshold : 0.5, 0.0, 1.0)),
           rng_(seed == 0 ? 1 : seed),
           initialized_(false),
@@ -12407,27 +12706,12 @@ public:
           last_{nan(), nan(), nan(), nan()} {}
 
     ParticleFilterTrendResult update(double close) {
-        if (!initialized_) {
-            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
-            if (!std::isfinite(initial_price_)) {
-                update_output(close, static_cast<double>(particles_.size()));
-                ++count_;
-                return output_for_warmup();
-            }
-        }
-
-        propagate_and_weight(close);
-        const double effective_sample_size = effective_sample_size_value();
-        update_output(close, effective_sample_size);
-        if (effective_sample_size < resample_threshold_ * static_cast<double>(particles_.size())) {
-            resample();
-        }
-        ++count_;
+        update_core(close);
         return output_for_warmup();
     }
 
     void advance(double close) {
-        (void) update(close);
+        update_core(close);
     }
 
     const ParticleFilterTrendResult &last() const {
@@ -12469,6 +12753,25 @@ private:
         return (!std::isfinite(value) || value <= 0.0) ? fallback : value;
     }
 
+    inline void update_core(double close) {
+        if (!initialized_) {
+            initialize(std::isfinite(initial_price_) ? initial_price_ : close);
+            if (!std::isfinite(initial_price_)) {
+                update_output(close, static_cast<double>(particles_.size()));
+                ++count_;
+                return;
+            }
+        }
+
+        propagate_and_weight(close);
+        const double effective_sample_size = effective_sample_size_value();
+        update_output(close, effective_sample_size);
+        if (effective_sample_size < resample_threshold_ * static_cast<double>(particles_.size())) {
+            resample();
+        }
+        ++count_;
+    }
+
     double uniform_open() {
         rng_ ^= rng_ >> 12;
         rng_ ^= rng_ << 25;
@@ -12478,6 +12781,7 @@ private:
     }
 
     double standard_normal() {
+        // Box-Muller (matches seeded reference tests).
         const double u1 = std::max(uniform_open(), 1.0e-16);
         const double u2 = uniform_open();
         return std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * pi_ * u2);
@@ -12486,45 +12790,44 @@ private:
     void initialize(double close) {
         const double spread = 0.25 * measurement_scale_;
         const double velocity_spread = process_velocity_scale_;
-        const double equal_weight = 1.0 / static_cast<double>(particles_.size());
         for (std::size_t i = 0; i < particles_.size(); ++i) {
             particles_[i] = Particle{
                 close + spread * standard_normal(),
                 initial_velocity_ + velocity_spread * standard_normal(),
             };
-            weights_[i] = equal_weight;
+            weights_[i] = equal_weight_;
         }
         initialized_ = true;
     }
 
     void propagate_and_weight(double close) {
-        std::vector<double> log_weights(particles_.size());
         double max_log_weight = -std::numeric_limits<double>::infinity();
-        const double sqrt_dt = std::sqrt(dt_);
+        const double pos_noise = process_position_scale_ * sqrt_dt_;
+        const double vel_noise = process_velocity_scale_ * sqrt_dt_;
         for (std::size_t i = 0; i < particles_.size(); ++i) {
             Particle &particle = particles_[i];
-            particle.velocity += process_velocity_scale_ * sqrt_dt * standard_normal();
-            particle.price += particle.velocity * dt_ + process_position_scale_ * sqrt_dt * standard_normal();
+            particle.velocity += vel_noise * standard_normal();
+            particle.price += particle.velocity * dt_ + pos_noise * standard_normal();
             const double innovation = close - particle.price;
-            const double log_weight = std::log(std::max(weights_[i], 1.0e-300)) - std::abs(innovation) / measurement_scale_;
-            log_weights[i] = log_weight;
+            const double log_weight = std::log(std::max(weights_[i], 1.0e-300)) - std::abs(innovation) * inv_measurement_scale_;
+            log_weights_[i] = log_weight;
             max_log_weight = std::max(max_log_weight, log_weight);
         }
 
         double total = 0.0;
         for (std::size_t i = 0; i < particles_.size(); ++i) {
-            weights_[i] = std::exp(log_weights[i] - max_log_weight);
+            weights_[i] = std::exp(log_weights_[i] - max_log_weight);
             total += weights_[i];
         }
         if (!std::isfinite(total) || total <= 0.0) {
-            const double equal_weight = 1.0 / static_cast<double>(particles_.size());
             for (double &weight : weights_) {
-                weight = equal_weight;
+                weight = equal_weight_;
             }
             return;
         }
+        const double inv_total = 1.0 / total;
         for (double &weight : weights_) {
-            weight /= total;
+            weight *= inv_total;
         }
     }
 
@@ -12548,9 +12851,7 @@ private:
     }
 
     void resample() {
-        std::vector<Particle> resampled;
-        resampled.reserve(particles_.size());
-        const double step = 1.0 / static_cast<double>(particles_.size());
+        const double step = equal_weight_;
         double u = uniform_open() * step;
         double cumulative = weights_[0];
         std::size_t index = 0;
@@ -12559,13 +12860,12 @@ private:
                 ++index;
                 cumulative += weights_[index];
             }
-            resampled.push_back(particles_[index]);
+            resampled_[i] = particles_[index];
             u += step;
         }
-        particles_ = std::move(resampled);
-        const double equal_weight = 1.0 / static_cast<double>(particles_.size());
+        particles_.swap(resampled_);
         for (double &weight : weights_) {
-            weight = equal_weight;
+            weight = equal_weight_;
         }
     }
 
@@ -12578,12 +12878,17 @@ private:
 
     std::vector<Particle> particles_;
     std::vector<double> weights_;
+    std::vector<double> log_weights_;
+    std::vector<Particle> resampled_;
     double initial_price_;
     double initial_velocity_;
     double dt_;
+    double sqrt_dt_;
     double process_position_scale_;
     double process_velocity_scale_;
     double measurement_scale_;
+    double inv_measurement_scale_;
+    double equal_weight_;
     double resample_threshold_;
     std::uint64_t rng_;
     bool initialized_;
@@ -12890,59 +13195,28 @@ public:
                                    bool fillna = true)
         : window_(std::max(window, 1)),
           length_scale_(positive_scale(length_scale, 8.0)),
+          inv_length_scale_(1.0 / length_scale_),
           signal_variance_(positive_scale(signal_variance, 1.0)),
           noise_variance_(positive_scale(noise_variance, 0.25)),
           multiplier_(std::isfinite(multiplier) ? std::abs(multiplier) : 2.0),
           values_(window_),
+          matrix_(static_cast<std::size_t>(window_) * static_cast<std::size_t>(window_)),
+          target_(static_cast<std::size_t>(window_)),
+          centered_(static_cast<std::size_t>(window_)),
+          alpha_(static_cast<std::size_t>(window_)),
+          variance_weights_(static_cast<std::size_t>(window_)),
+          cholesky_(static_cast<std::size_t>(window_) * static_cast<std::size_t>(window_)),
+          stationary_ready_(false),
           fillna_(fillna),
           last_{nan(), nan(), nan()} {}
 
     GaussianProcessRegressionBandsResult update(double close) {
-        values_.push(close);
-        if (!fillna_ && !values_.full()) {
-            last_ = GaussianProcessRegressionBandsResult{nan(), nan(), nan()};
-            return last_;
-        }
-
-        const std::size_t size = values_.size();
-        double mean = 0.0;
-        for (std::size_t i = 0; i < size; ++i) {
-            mean += values_.at(i);
-        }
-        mean /= static_cast<double>(size);
-
-        std::vector<double> matrix(size * size);
-        std::vector<double> target(size);
-        std::vector<double> centered(size);
-        for (std::size_t row = 0; row < size; ++row) {
-            const double x_row = static_cast<double>(row) - static_cast<double>(size - 1);
-            target[row] = kernel(x_row, 0.0);
-            centered[row] = values_.at(row) - mean;
-            for (std::size_t col = 0; col < size; ++col) {
-                const double x_col = static_cast<double>(col) - static_cast<double>(size - 1);
-                matrix[row * size + col] = kernel(x_row, x_col);
-            }
-            matrix[row * size + row] += noise_variance_;
-        }
-
-        const std::vector<double> alpha = solve_linear(matrix, centered, size);
-        const std::vector<double> variance_weights = solve_linear(std::move(matrix), target, size);
-
-        double posterior_mean = mean;
-        double explained_variance = 0.0;
-        for (std::size_t i = 0; i < size; ++i) {
-            posterior_mean += target[i] * alpha[i];
-            explained_variance += target[i] * variance_weights[i];
-        }
-
-        const double posterior_variance = std::max(signal_variance_ - explained_variance, 0.0);
-        const double band = multiplier_ * std::sqrt(posterior_variance);
-        last_ = GaussianProcessRegressionBandsResult{posterior_mean, posterior_mean + band, posterior_mean - band};
+        update_core(close);
         return last_;
     }
 
     void advance(double close) {
-        (void) update(close);
+        update_core(close);
     }
 
     const GaussianProcessRegressionBandsResult &last() const {
@@ -12957,10 +13231,10 @@ public:
         std::vector<double> lower(size);
         const auto *values = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            const GaussianProcessRegressionBandsResult out = update(static_cast<double>(values[i]));
-            middle[i] = out.middle;
-            upper[i] = out.upper;
-            lower[i] = out.lower;
+            update_core(static_cast<double>(values[i]));
+            middle[i] = last_.middle;
+            upper[i] = last_.upper;
+            lower[i] = last_.lower;
         }
         return {
             make_array(std::move(middle)),
@@ -12975,11 +13249,121 @@ private:
     }
 
     double kernel(double left, double right) const {
-        const double scaled = (left - right) / length_scale_;
+        const double scaled = (left - right) * inv_length_scale_;
         return signal_variance_ * std::exp(-0.5 * scaled * scaled);
     }
 
-    static std::vector<double> solve_linear(std::vector<double> matrix, std::vector<double> rhs, std::size_t size) {
+    inline void update_core(double close) {
+        values_.push(close);
+        if (!fillna_ && !values_.full()) {
+            last_ = GaussianProcessRegressionBandsResult{nan(), nan(), nan()};
+            return;
+        }
+
+        const std::size_t size = values_.size();
+        double mean = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            mean += values_.at(i);
+        }
+        mean /= static_cast<double>(size);
+
+        for (std::size_t row = 0; row < size; ++row) {
+            const double x_row = static_cast<double>(row) - static_cast<double>(size - 1);
+            target_[row] = kernel(x_row, 0.0);
+            centered_[row] = values_.at(row) - mean;
+        }
+
+        if (size == static_cast<std::size_t>(window_)) {
+            if (!stationary_ready_) {
+                build_stationary_cholesky(size);
+            }
+            cholesky_solve(size, centered_.data(), alpha_.data());
+            cholesky_solve(size, target_.data(), variance_weights_.data());
+        } else {
+            for (std::size_t row = 0; row < size; ++row) {
+                const double x_row = static_cast<double>(row) - static_cast<double>(size - 1);
+                for (std::size_t col = 0; col < size; ++col) {
+                    const double x_col = static_cast<double>(col) - static_cast<double>(size - 1);
+                    matrix_[row * size + col] = kernel(x_row, x_col);
+                }
+                matrix_[row * size + row] += noise_variance_;
+            }
+            solve_linear_inplace(matrix_.data(), centered_.data(), size, alpha_.data());
+            for (std::size_t row = 0; row < size; ++row) {
+                const double x_row = static_cast<double>(row) - static_cast<double>(size - 1);
+                for (std::size_t col = 0; col < size; ++col) {
+                    const double x_col = static_cast<double>(col) - static_cast<double>(size - 1);
+                    matrix_[row * size + col] = kernel(x_row, x_col);
+                }
+                matrix_[row * size + row] += noise_variance_;
+            }
+            solve_linear_inplace(matrix_.data(), target_.data(), size, variance_weights_.data());
+        }
+
+        double posterior_mean = mean;
+        double explained_variance = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            posterior_mean += target_[i] * alpha_[i];
+            explained_variance += target_[i] * variance_weights_[i];
+        }
+
+        const double posterior_variance = std::max(signal_variance_ - explained_variance, 0.0);
+        const double band = multiplier_ * std::sqrt(posterior_variance);
+        last_ = GaussianProcessRegressionBandsResult{posterior_mean, posterior_mean + band, posterior_mean - band};
+    }
+
+    void build_stationary_cholesky(std::size_t size) {
+        for (std::size_t row = 0; row < size; ++row) {
+            const double x_row = static_cast<double>(row) - static_cast<double>(size - 1);
+            for (std::size_t col = 0; col < size; ++col) {
+                const double x_col = static_cast<double>(col) - static_cast<double>(size - 1);
+                cholesky_[row * size + col] = kernel(x_row, x_col);
+            }
+            cholesky_[row * size + row] += noise_variance_;
+        }
+        for (std::size_t i = 0; i < size; ++i) {
+            for (std::size_t j = 0; j <= i; ++j) {
+                double sum = cholesky_[i * size + j];
+                for (std::size_t k = 0; k < j; ++k) {
+                    sum -= cholesky_[i * size + k] * cholesky_[j * size + k];
+                }
+                if (i == j) {
+                    if (sum <= 0.0) {
+                        throw nb::value_error("GaussianProcessRegressionBands kernel matrix is singular");
+                    }
+                    cholesky_[i * size + j] = std::sqrt(sum);
+                } else {
+                    cholesky_[i * size + j] = sum / cholesky_[j * size + j];
+                }
+            }
+            for (std::size_t j = i + 1; j < size; ++j) {
+                cholesky_[i * size + j] = 0.0;
+            }
+        }
+        stationary_ready_ = true;
+    }
+
+    void cholesky_solve(std::size_t size, const double *rhs, double *out) const {
+        for (std::size_t i = 0; i < size; ++i) {
+            double sum = rhs[i];
+            for (std::size_t k = 0; k < i; ++k) {
+                sum -= cholesky_[i * size + k] * out[k];
+            }
+            out[i] = sum / cholesky_[i * size + i];
+        }
+        for (std::size_t i = size; i-- > 0;) {
+            double sum = out[i];
+            for (std::size_t k = i + 1; k < size; ++k) {
+                sum -= cholesky_[k * size + i] * out[k];
+            }
+            out[i] = sum / cholesky_[i * size + i];
+        }
+    }
+
+    static void solve_linear_inplace(double *matrix, const double *rhs, std::size_t size, double *out) {
+        for (std::size_t i = 0; i < size; ++i) {
+            out[i] = rhs[i];
+        }
         for (std::size_t col = 0; col < size; ++col) {
             std::size_t pivot = col;
             double pivot_abs = std::abs(matrix[pivot * size + col]);
@@ -12997,14 +13381,14 @@ private:
                 for (std::size_t item = col; item < size; ++item) {
                     std::swap(matrix[col * size + item], matrix[pivot * size + item]);
                 }
-                std::swap(rhs[col], rhs[pivot]);
+                std::swap(out[col], out[pivot]);
             }
 
             const double divisor = matrix[col * size + col];
             for (std::size_t item = col; item < size; ++item) {
                 matrix[col * size + item] /= divisor;
             }
-            rhs[col] /= divisor;
+            out[col] /= divisor;
 
             for (std::size_t row = 0; row < size; ++row) {
                 if (row == col) {
@@ -13017,18 +13401,25 @@ private:
                 for (std::size_t item = col; item < size; ++item) {
                     matrix[row * size + item] -= factor * matrix[col * size + item];
                 }
-                rhs[row] -= factor * rhs[col];
+                out[row] -= factor * out[col];
             }
         }
-        return rhs;
     }
 
     int window_;
     double length_scale_;
+    double inv_length_scale_;
     double signal_variance_;
     double noise_variance_;
     double multiplier_;
     RollingBuffer values_;
+    std::vector<double> matrix_;
+    std::vector<double> target_;
+    std::vector<double> centered_;
+    std::vector<double> alpha_;
+    std::vector<double> variance_weights_;
+    std::vector<double> cholesky_;
+    bool stationary_ready_;
     bool fillna_;
     GaussianProcessRegressionBandsResult last_;
 };
@@ -13857,7 +14248,7 @@ public:
             first_ = false;
             return fillna_ ? 0.0 : nan();
         }
-        const double retval = safe_divide(close, previous_close_) * 100.0 - 100.0;
+        const double retval = (close - previous_close_) / previous_close_ * 100.0;
         previous_close_ = close;
         return retval;
     }
@@ -13865,8 +14256,9 @@ public:
     nb::object batch(const InputArray &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> output(size);
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i));
+            output[i] = update(c[i]);
         }
         return make_array(std::move(output));
     }
@@ -13898,8 +14290,9 @@ public:
     nb::object batch(const InputArray &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> output(size);
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i));
+            output[i] = update(c[i]);
         }
         return make_array(std::move(output));
     }
@@ -13921,14 +14314,15 @@ public:
             first_close_ = close;
             first_ = false;
         }
-        return safe_divide(close, first_close_) * 100.0 - 100.0;
+        return (close - first_close_) / first_close_ * 100.0;
     }
 
     nb::object batch(const InputArray &close) {
         const std::size_t size = close.shape(0);
         std::vector<double> output(size);
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(close(i));
+            output[i] = update(c[i]);
         }
         return make_array(std::move(output));
     }
@@ -15718,6 +16112,10 @@ public:
         : max_window_(checked_shift_window(max_window)),
           min_window_(checked_shift_window(min_window)),
           delta_(checked_probability_value(delta, "delta")),
+          values_(static_cast<std::size_t>(max_window_), 0.0),
+          prefix_(static_cast<std::size_t>(max_window_) + 1, 0.0),
+          head_(0),
+          count_(0),
           last_(0.0) {
         if (min_window_ * 2 > max_window_) {
             throw nb::value_error("max_window must be at least 2 * min_window");
@@ -15725,23 +16123,27 @@ public:
     }
 
     double update(double value) {
-        values_.push_back(value);
-        if (values_.size() > static_cast<std::size_t>(max_window_)) {
-            values_.erase(values_.begin());
+        if (count_ == static_cast<std::size_t>(max_window_)) {
+            ring_advance(head_, values_.size());
+            --count_;
         }
+        values_[ring_offset(head_, count_, values_.size())] = value;
+        ++count_;
+
         last_ = 0.0;
-        const std::size_t n = values_.size();
+        const std::size_t n = count_;
         if (n < static_cast<std::size_t>(min_window_ * 2)) {
             return last_;
         }
 
-        std::vector<double> prefix(n + 1, 0.0);
-        double minimum = values_[0];
-        double maximum = values_[0];
+        double minimum = at(0);
+        double maximum = minimum;
+        prefix_[0] = 0.0;
         for (std::size_t i = 0; i < n; ++i) {
-            prefix[i + 1] = prefix[i] + values_[i];
-            minimum = std::min(minimum, values_[i]);
-            maximum = std::max(maximum, values_[i]);
+            const double sample = at(i);
+            prefix_[i + 1] = prefix_[i] + sample;
+            minimum = std::min(minimum, sample);
+            maximum = std::max(maximum, sample);
         }
 
         double best_difference = 0.0;
@@ -15751,8 +16153,8 @@ public:
         for (std::size_t cut = static_cast<std::size_t>(min_window_); cut <= n - static_cast<std::size_t>(min_window_); ++cut) {
             const double left_n = static_cast<double>(cut);
             const double right_n = static_cast<double>(n - cut);
-            const double left_mean = prefix[cut] / left_n;
-            const double right_mean = (prefix[n] - prefix[cut]) / right_n;
+            const double left_mean = prefix_[cut] / left_n;
+            const double right_mean = (prefix_[n] - prefix_[cut]) / right_n;
             const double difference = right_mean - left_mean;
             const double epsilon = range * std::sqrt(0.5 * log_term * (1.0 / left_n + 1.0 / right_n));
             if (std::abs(difference) > epsilon && std::abs(difference) > std::abs(best_difference)) {
@@ -15763,7 +16165,9 @@ public:
 
         if (best_cut != 0) {
             last_ = best_difference > 0.0 ? 1.0 : -1.0;
-            values_.erase(values_.begin(), values_.begin() + static_cast<std::ptrdiff_t>(best_cut));
+            // Drop the left segment by advancing the ring head.
+            head_ = ring_offset(head_, best_cut, values_.size());
+            count_ -= best_cut;
         }
         return last_;
     }
@@ -15782,10 +16186,17 @@ public:
     }
 
 private:
+    inline double at(std::size_t oldest_offset) const {
+        return values_[ring_offset(head_, oldest_offset, values_.size())];
+    }
+
     int max_window_;
     int min_window_;
     double delta_;
     std::vector<double> values_;
+    std::vector<double> prefix_;
+    std::size_t head_;
+    std::size_t count_;
     double last_;
 };
 
@@ -16032,6 +16443,11 @@ public:
         : window_(checked_shift_window(window)),
           stat_window_(checked_shift_window(stat_window)),
           alpha_(checked_probability_value(alpha, "alpha")),
+          values_(static_cast<std::size_t>(window_), 0.0),
+          reference_scratch_(static_cast<std::size_t>(window_ - stat_window_)),
+          recent_scratch_(static_cast<std::size_t>(stat_window_)),
+          head_(0),
+          count_(0),
           last_(0.0) {
         if (stat_window_ * 2 > window_) {
             throw nb::value_error("window must be at least 2 * stat_window");
@@ -16039,23 +16455,36 @@ public:
     }
 
     double update(double value) {
-        values_.push_back(value);
-        if (values_.size() > static_cast<std::size_t>(window_)) {
-            values_.erase(values_.begin());
+        if (count_ == static_cast<std::size_t>(window_)) {
+            ring_advance(head_, values_.size());
+            --count_;
         }
-        if (values_.size() < static_cast<std::size_t>(window_)) {
+        values_[ring_offset(head_, count_, values_.size())] = value;
+        ++count_;
+
+        if (count_ < static_cast<std::size_t>(window_)) {
             last_ = 0.0;
             return last_;
         }
 
-        const std::size_t recent_start = values_.size() - static_cast<std::size_t>(stat_window_);
-        std::vector<double> reference(values_.begin(), values_.begin() + static_cast<std::ptrdiff_t>(recent_start));
-        std::vector<double> recent(values_.begin() + static_cast<std::ptrdiff_t>(recent_start), values_.end());
-        const double reference_mean = vector_mean(reference);
-        const double recent_mean = vector_mean(recent);
-        const double statistic = ks_statistic(reference, recent);
+        const std::size_t recent_start = count_ - static_cast<std::size_t>(stat_window_);
+        const std::size_t reference_size = recent_start;
+        for (std::size_t i = 0; i < reference_size; ++i) {
+            reference_scratch_[i] = at(i);
+        }
+        for (std::size_t i = 0; i < static_cast<std::size_t>(stat_window_); ++i) {
+            recent_scratch_[i] = at(recent_start + i);
+        }
+
+        const double reference_mean = vector_mean(reference_scratch_.data(), reference_size);
+        const double recent_mean = vector_mean(recent_scratch_.data(), static_cast<std::size_t>(stat_window_));
+        const double statistic = ks_statistic(
+            reference_scratch_.data(),
+            reference_size,
+            recent_scratch_.data(),
+            static_cast<std::size_t>(stat_window_));
         const double critical = std::sqrt(-0.5 * std::log(alpha_ * 0.5) *
-            (1.0 / static_cast<double>(reference.size()) + 1.0 / static_cast<double>(recent.size())));
+            (1.0 / static_cast<double>(reference_size) + 1.0 / static_cast<double>(stat_window_)));
         last_ = statistic > critical ? (recent_mean >= reference_mean ? 1.0 : -1.0) : 0.0;
         return last_;
     }
@@ -16074,30 +16503,34 @@ public:
     }
 
 private:
-    static double vector_mean(const std::vector<double> &values) {
-        double sum = 0.0;
-        for (double value : values) {
-            sum += value;
-        }
-        return values.empty() ? 0.0 : sum / static_cast<double>(values.size());
+    inline double at(std::size_t oldest_offset) const {
+        return values_[ring_offset(head_, oldest_offset, values_.size())];
     }
 
-    static double ks_statistic(std::vector<double> reference, std::vector<double> recent) {
-        std::sort(reference.begin(), reference.end());
-        std::sort(recent.begin(), recent.end());
+    static double vector_mean(const double *values, std::size_t size) {
+        double sum = 0.0;
+        for (std::size_t i = 0; i < size; ++i) {
+            sum += values[i];
+        }
+        return size == 0 ? 0.0 : sum / static_cast<double>(size);
+    }
+
+    static double ks_statistic(double *reference, std::size_t reference_size, double *recent, std::size_t recent_size) {
+        std::sort(reference, reference + reference_size);
+        std::sort(recent, recent + recent_size);
         std::size_t i = 0;
         std::size_t j = 0;
         double best = 0.0;
-        while (i < reference.size() || j < recent.size()) {
-            const double next = j == recent.size() || (i < reference.size() && reference[i] <= recent[j]) ? reference[i] : recent[j];
-            while (i < reference.size() && reference[i] <= next) {
+        while (i < reference_size || j < recent_size) {
+            const double next = j == recent_size || (i < reference_size && reference[i] <= recent[j]) ? reference[i] : recent[j];
+            while (i < reference_size && reference[i] <= next) {
                 ++i;
             }
-            while (j < recent.size() && recent[j] <= next) {
+            while (j < recent_size && recent[j] <= next) {
                 ++j;
             }
-            const double ref_cdf = static_cast<double>(i) / static_cast<double>(reference.size());
-            const double recent_cdf = static_cast<double>(j) / static_cast<double>(recent.size());
+            const double ref_cdf = static_cast<double>(i) / static_cast<double>(reference_size);
+            const double recent_cdf = static_cast<double>(j) / static_cast<double>(recent_size);
             best = std::max(best, std::abs(ref_cdf - recent_cdf));
         }
         return best;
@@ -16107,6 +16540,10 @@ private:
     int stat_window_;
     double alpha_;
     std::vector<double> values_;
+    std::vector<double> reference_scratch_;
+    std::vector<double> recent_scratch_;
+    std::size_t head_;
+    std::size_t count_;
     double last_;
 };
 
@@ -17369,7 +17806,9 @@ public:
         }
 
         const double n = static_cast<double>(values_.size());
-        const double variance = (sum2_ - sum_ * sum_ / n) / n;
+        const double inv_n = 1.0 / n;
+        const double mean = sum_ * inv_n;
+        const double variance = sum2_ * inv_n - mean * mean;
         return std::sqrt(variance < 0.0 && variance > -1e-12 ? 0.0 : variance);
     }
 
@@ -17400,8 +17839,12 @@ private:
 class BollingerBands {
 public:
     BollingerBands(int window = 20, bool fillna = true)
-        : sma_(window, fillna),
-          stddev_(window, fillna),
+        : values_(window),
+          fillna_(fillna),
+          window_size_(window),
+          counter_(0),
+          sum_(0.0),
+          sum2_(0.0),
           last_{nan(), nan(), nan()} {}
 
     BollingerBandsResult update(double value) {
@@ -17419,13 +17862,38 @@ public:
 
 private:
     inline void update_core(double value) {
-        const double stddev = stddev_.update(value);
-        const double middle = sma_.update(value);
-        last_ = {middle, middle + stddev * 2.0, middle - stddev * 2.0};
+        const bool return_nan = !fillna_ && counter_ < window_size_;
+        ++counter_;
+
+        if (values_.full()) {
+            const double oldest = values_.oldest();
+            sum_ -= oldest;
+            sum2_ -= oldest * oldest;
+        }
+        values_.push(value);
+        sum_ += value;
+        sum2_ += value * value;
+
+        if (return_nan) {
+            last_ = {nan(), nan(), nan()};
+            return;
+        }
+
+        const double n = static_cast<double>(values_.size());
+        const double inv_n = 1.0 / n;
+        const double middle = sum_ * inv_n;
+        const double variance = sum2_ * inv_n - middle * middle;
+        const double stddev = std::sqrt(variance < 0.0 && variance > -1e-12 ? 0.0 : variance);
+        const double band = stddev * 2.0;
+        last_ = {middle, middle + band, middle - band};
     }
 
-    SMA sma_;
-    StdDev stddev_;
+    RollingBuffer values_;
+    bool fillna_;
+    int window_size_;
+    long counter_;
+    double sum_;
+    double sum2_;
     BollingerBandsResult last_;
 };
 
@@ -17498,7 +17966,8 @@ BollingerBandsBatchResult batch_bollinger_bands(BollingerBands &indicator, const
     const auto *values = input.data();
 
     for (std::size_t i = 0; i < size; ++i) {
-        const BollingerBandsResult out = indicator.update(static_cast<double>(values[i]));
+        indicator.advance(static_cast<double>(values[i]));
+        const BollingerBandsResult &out = indicator.last();
         middle[i] = out.middle;
         upper[i] = out.upper;
         lower[i] = out.lower;
@@ -18739,6 +19208,23 @@ NB_MODULE(indicator, m) {
         .def_ro("max_trade_dollars", &IntradayClockEchoSignalResult::max_trade_dollars)
         .def_ro("realized_error", &IntradayClockEchoSignalResult::realized_error)
         .def_ro("ready", &IntradayClockEchoSignalResult::ready);
+
+    nb::class_<IntradayClockEchoSignalBatchResult>(m, "IntradayClockEchoSignalBatchResult")
+        .def_ro("slot", &IntradayClockEchoSignalBatchResult::slot)
+        .def_ro("samples_for_slot", &IntradayClockEchoSignalBatchResult::samples_for_slot)
+        .def_ro("bar_return", &IntradayClockEchoSignalBatchResult::bar_return)
+        .def_ro("residual_return", &IntradayClockEchoSignalBatchResult::residual_return)
+        .def_ro("clock_echo", &IntradayClockEchoSignalBatchResult::clock_echo)
+        .def_ro("flow_confirm", &IntradayClockEchoSignalBatchResult::flow_confirm)
+        .def_ro("volume_sync", &IntradayClockEchoSignalBatchResult::volume_sync)
+        .def_ro("prediction", &IntradayClockEchoSignalBatchResult::prediction)
+        .def_ro("radius", &IntradayClockEchoSignalBatchResult::radius)
+        .def_ro("score", &IntradayClockEchoSignalBatchResult::score)
+        .def_ro("signal", &IntradayClockEchoSignalBatchResult::signal)
+        .def_ro("target_fraction", &IntradayClockEchoSignalBatchResult::target_fraction)
+        .def_ro("max_trade_dollars", &IntradayClockEchoSignalBatchResult::max_trade_dollars)
+        .def_ro("realized_error", &IntradayClockEchoSignalBatchResult::realized_error)
+        .def_ro("ready", &IntradayClockEchoSignalBatchResult::ready);
 
     nb::class_<AccumulationDistribution>(m, "AccumulationDistribution")
         .def(nb::init<>())
@@ -22315,6 +22801,32 @@ NB_MODULE(indicator, m) {
         .def("last", &IntradayClockEchoSignal::last)
         .def("reset", &IntradayClockEchoSignal::reset)
         .def("reset_session", &IntradayClockEchoSignal::reset_session)
+        .def("batch", [](IntradayClockEchoSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](IntradayClockEchoSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](IntradayClockEchoSignal &self, nb::iterable records) {
+            if (table_has_column(records, "open")) {
+                return dispatch_table5(self, records, "open", "high", "low", "close", "volume", [](auto &indicator, const auto &open, const auto &high, const auto &low, const auto &close, const auto &volume) {
+                    return indicator.batch_array(open, high, low, close, volume);
+                });
+            }
+            throw nb::type_error("IntradayClockEchoSignal.batch expects a pandas table with open/high/low/close/volume columns");
+        }, nb::arg("records"))
+        .def("replay_update", [](IntradayClockEchoSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.replay_update_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update", [](IntradayClockEchoSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.replay_update_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_advance", [](IntradayClockEchoSignal &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close, const InputArray &volume) {
+            return self.replay_advance_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_advance", [](IntradayClockEchoSignal &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.replay_advance_array(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
         RTTA_CLOCK_FIELD(slot)
         RTTA_CLOCK_FIELD(samples_for_slot)
         RTTA_CLOCK_FIELD(bar_return)

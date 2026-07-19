@@ -5,7 +5,7 @@ if (NOT DEFINED SKBUILD_PROJECT_NAME)
 endif()
 
 if (NOT DEFINED SKBUILD_PROJECT_VERSION)
-  set(SKBUILD_PROJECT_VERSION 0.2.1)
+  set(SKBUILD_PROJECT_VERSION 0.2.2)
 endif()
 
 project(${SKBUILD_PROJECT_NAME} VERSION ${SKBUILD_PROJECT_VERSION} LANGUAGES CXX)
@@ -39,5 +39,22 @@ endif()
 nanobind_add_module(indicator NB_STATIC src/rtta/indicator.cpp)
 target_compile_features(indicator PRIVATE cxx_std_23)
 target_include_directories(indicator PRIVATE "${FAST_KALMAN_INCLUDE_DIR}")
+
+# Release micro-opts for the incremental update hot path.
+if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+target_compile_options(indicator PRIVATE
+  $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-O3 -DNDEBUG -ffp-contract=off>
+    $<$<CXX_COMPILER_ID:MSVC>:/O2 /DNDEBUG>
+  >
+)
+include(CheckIPOSupported)
+check_ipo_supported(RESULT RTTA_IPO_SUPPORTED OUTPUT RTTA_IPO_ERROR)
+if (RTTA_IPO_SUPPORTED)
+  set_property(TARGET indicator PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+  set_property(TARGET indicator PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+endif()
 
 install(TARGETS indicator LIBRARY DESTINATION rtta)

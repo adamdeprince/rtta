@@ -1,5 +1,24 @@
 # Changes
 
+## 0.2.2
+
+- Microoptimized C++ hot paths in `indicator.cpp`: sum-only rolling windows,
+  branch/power-of-two ring indexing, ConnorsRSI rank scans, Bollinger single-pass
+  mean/variance, incremental VolumeProfile histogram updates when range is
+  stable, ADWIN/KSWIN ring buffers with preallocated scratch, ParticleFilter and
+  GaussianProcess scratch reuse plus stationary GP Cholesky caching, and raw
+  pointer batch loops.
+- Enabled Release-oriented build flags (`-O3`, `-DNDEBUG`, `-ffp-contract=off`,
+  LTO when supported).
+- Re-measured full-registry tick latency on Apple M4 Max, Intel Xeon 6975P-C,
+  and Loongson-3A6000; registry median `advance(...)` improved to about
+  28.5 / 35.9 / 101 ns/update respectively (see `BENCHMARK.md`).
+- Added `tools/run_latency_benchmarks.py` to discover new indicators, run
+  multi-host latency benches, and regenerate benchmark docs.
+- Completed missing `IntradayClockEchoSignal` batch/replay bindings used by the
+  benchmark harness.
+- Bumped the package version to `0.2.2`.
+
 ## 0.2.1
 
 - Added the generated documentation site source, including per-algorithm

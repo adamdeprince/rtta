@@ -84,7 +84,7 @@ poetry run python -m build --wheel
   author       = {DePrince, Adam},
   title        = {{pyrtta}: Low Latency Incremental Technical Analysis},
   year         = {2026},
-  version      = {0.2.1},
+  version      = {0.2.2},
   howpublished = {\url{https://github.com/adamdeprince/rtta}},
   note         = {Python package name: pyrtta; import package name: rtta}
 }

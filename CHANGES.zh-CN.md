@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.2.2
+
+- 对 `indicator.cpp` 中的 C++ 热路径进行微优化：仅求和滚动窗口、分支/2 次幂环形索引、ConnorsRSI 排名扫描、布林带单次均值/方差、价格区间稳定时的 VolumeProfile 增量直方图、ADWIN/KSWIN 环形缓冲与预分配暂存、粒子滤波与高斯过程暂存复用及平稳 GP Cholesky 缓存，以及原始指针批处理循环。
+- 启用面向 Release 的构建选项（`-O3`、`-DNDEBUG`、`-ffp-contract=off`，在支持时启用 LTO）。
+- 在 Apple M4 Max、Intel Xeon 6975P-C 与 Loongson-3A6000 上重新测量全注册表逐笔延迟；中位 `advance(...)` 分别约为 28.5 / 35.9 / 101 ns/update（见 `BENCHMARK.md`）。
+- 新增 `tools/run_latency_benchmarks.py`，用于发现新指标、运行多主机延迟基准并重新生成基准文档。
+- 补全基准 harness 所需的 `IntradayClockEchoSignal` batch/replay 绑定。
+- 软件包版本升级至 `0.2.2`。
+
 ## 0.2.1
 
 - 新增生成文档站点所需的源文件，包括各算法的 Markdown 页面、按 CPU 类型拆分的基准测试页面，以及 HTML 构建工具。

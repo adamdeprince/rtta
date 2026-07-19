@@ -9,3 +9,8 @@ html/*
 !html/index.html
 !html/index.zh-CN.html
 !html/goblin.png
+
+# Multi-host latency benchmark work products
+.benchmark-runs/
+# Remote/local orchestrator virtualenvs
+.venv/
