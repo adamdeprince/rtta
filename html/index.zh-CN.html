@@ -1,16 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RTTA — Causal technical analysis at streaming speed</title>
-  <meta name="description" content="RTTA is a low-latency C++23 and Python library for incremental technical indicators, online change detection, market regimes, and research signals.">
+  <title>RTTA — 流式速度下的因果技术分析</title>
+  <meta name="description" content="RTTA 是一个低延迟 C++23 与 Python 库，提供增量技术指标、在线变化检测、市场状态监控和研究信号。">
   <meta name="theme-color" content="#c7f04a">
-  <meta property="og:title" content="RTTA — Market signals, without a time machine.">
-  <meta property="og:description" content="188 causal, stateful market algorithms. Tick-by-tick C++23 performance with a clean Python API.">
+  <meta property="og:title" content="RTTA — 市场信号，不靠时光机。">
+  <meta property="og:description" content="188 种因果、有状态的市场算法。逐笔 C++23 性能，配以简洁的 Python API。">
   <meta property="og:type" content="website">
-  <link rel="alternate" hreflang="en" href="index.html">
   <link rel="alternate" hreflang="zh-CN" href="index.zh-CN.html">
+  <link rel="alternate" hreflang="en" href="index.html">
   <link rel="icon" type="image/png" href="goblin.png">
   <link rel="apple-touch-icon" href="goblin.png">
   <link rel="manifest" href="site.webmanifest">
@@ -1448,22 +1448,22 @@
   </style>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">跳至正文</a>
 
   <header class="site-header">
     <div class="brand-area">
-      <a class="brand" href="index.html" aria-label="RTTA home">
+      <a class="brand" href="index.zh-CN.html" aria-label="RTTA 首页">
         <span class="brand-mark" aria-hidden="true"><img src="goblin.png" alt=""></span>
         <span>RTTA</span>
       </a>
       <span class="package-name">pyrtta / Python + C++23</span>
     </div>
-    <nav class="primary-nav" aria-label="Primary navigation">
-      <a href="#design">Causal design</a>
-      <a href="#capabilities">Capabilities</a>
-      <a href="#benchmarks">Benchmarks</a>
-      <a href="README.html">Docs</a>
-      <a href="index.zh-CN.html" lang="zh-CN">简体中文</a>
+    <nav class="primary-nav" aria-label="主导航">
+      <a href="#design">因果设计</a>
+      <a href="#capabilities">功能</a>
+      <a href="#benchmarks">基准测试</a>
+      <a href="README.zh-CN.html">文档</a>
+      <a href="index.html" lang="en">English</a>
     </nav>
     <a class="header-cta" href="https://github.com/adamdeprince/rtta" rel="noopener">
       GitHub&nbsp; ↗
@@ -1473,34 +1473,34 @@
   <main id="main">
     <section class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Streaming market intelligence</p>
-        <h1>Market signals,<br>without a <em>time machine.</em></h1>
-        <p class="hero-lede">RTTA is a low-latency C++23 engine for technical indicators, online change detection, regime monitoring, and research signals—wrapped in a clean Python API and designed to stay causal one tick at a time.</p>
+        <p class="eyebrow">流式市场智能</p>
+        <h1>市场信号，<br>不靠<em>时光机。</em></h1>
+        <p class="hero-lede">RTTA 是面向技术指标、在线变化检测、市场状态监控和研究信号的低延迟 C++23 引擎。它提供简洁的 Python API，并以逐笔更新的方式保持严格因果。</p>
         <div class="hero-actions">
-          <a class="button button-dark" href="#install">Install pyrtta <span aria-hidden="true">→</span></a>
-          <a class="text-link" href="ALGOS.html">Explore 188 algorithms <span aria-hidden="true">↗</span></a>
+          <a class="button button-dark" href="#install">安装 pyrtta <span aria-hidden="true">→</span></a>
+          <a class="text-link" href="ALGOS.zh-CN.html">浏览 188 种算法 <span aria-hidden="true">↗</span></a>
         </div>
-        <ul class="hero-meta" aria-label="Project details">
+        <ul class="hero-meta" aria-label="项目详情">
           <li>Apache 2.0</li>
           <li>Python 3.9+</li>
           <li>C++23 / nanobind</li>
-          <li>Tick-by-tick state</li>
+          <li>逐笔有状态更新</li>
         </ul>
       </div>
 
-      <div class="mascot-stage" aria-label="RTTA Silkie mascot and live update readout">
+      <div class="mascot-stage" aria-label="RTTA 丝羽乌骨鸡吉祥物与实时更新读数">
         <div class="stage-topline">
-          <span>RTTA / CAUSAL ENGINE</span>
-          <span class="live"><i></i> Live state</span>
+          <span>RTTA / 因果引擎</span>
+          <span class="live"><i></i> 实时状态</span>
         </div>
         <div class="latency-card">
-          <span>Average update + result</span>
+          <span>更新并返回结果的平均延迟</span>
           <strong>84.9<small> ns</small></strong>
-          <p>Across three published CPU runs</p>
+          <p>三个已发布 CPU 测试的平均值</p>
         </div>
-        <img src="goblin.png" width="1254" height="1254" alt="A black-and-white Silkie chicken, the RTTA mascot">
-        <div class="tick-card" aria-label="Example tick stream">
-          <header><span>Tick stream</span><span>RSI(14)</span></header>
+        <img src="goblin.png" width="1254" height="1254" alt="RTTA 的黑白丝羽乌骨鸡吉祥物">
+        <div class="tick-card" aria-label="逐笔数据流示例">
+          <header><span>逐笔数据流</span><span>RSI(14)</span></header>
           <ol>
             <li><span>12:45:01.123</span><span>3471.25</span><b>61.8</b></li>
             <li><span>12:45:01.124</span><span>3471.26</span><b>62.1</b></li>
@@ -1511,65 +1511,65 @@
       </div>
     </section>
 
-    <section class="proof-strip" aria-label="RTTA highlights">
+    <section class="proof-strip" aria-label="RTTA 亮点">
       <article>
         <strong>188</strong>
-        <p>Benchmarked causal algorithms<br>in the current registry</p>
+        <p>当前注册表中参与基准测试的<br>因果算法</p>
       </article>
       <article>
         <strong>70.2<span>ns</span></strong>
-        <p>Average state-only advance<br>Across published CPU runs</p>
+        <p>仅更新状态的平均 advance 延迟<br>覆盖已发布 CPU 测试</p>
       </article>
       <article>
         <strong>84.9<span>ns</span></strong>
-        <p>Average update with result<br>Across published CPU runs</p>
+        <p>返回结果的平均 update 延迟<br>覆盖已发布 CPU 测试</p>
       </article>
       <article>
-        <strong>3<span>CPU families</span></strong>
-        <p>Published benchmark ledgers<br>ARM · x86 · LoongArch</p>
+        <strong>3<span>种 CPU 架构</span></strong>
+        <p>已发布完整基准测试记录<br>ARM · x86 · LoongArch</p>
       </article>
     </section>
 
     <section class="section" id="design">
       <div class="section-heading">
-        <p class="kicker">01 / CAUSAL BY CONSTRUCTION</p>
+        <p class="kicker">01 / 天生因果</p>
         <div>
-          <h2>One tick in. One honest answer out.</h2>
-          <p>RTTA algorithms are stateful objects. They consume observations in chronological order and can only react to what they have already seen—so the API itself helps keep accidental lookahead out of live systems and research loops.</p>
+          <h2>输入一笔，得到一个诚实答案。</h2>
+          <p>RTTA 算法都是有状态对象。它们按时间顺序接收观测，只能根据已经见过的数据作出反应。因此，API 本身就能帮助实盘系统和研究循环避免无意中的前视偏差。</p>
         </div>
       </div>
 
-      <div class="causal-flow" aria-label="Causal market-data processing flow">
+      <div class="causal-flow" aria-label="因果市场数据处理流程">
         <article class="flow-step">
-          <span>01 / OBSERVE</span>
+          <span>01 / 观测</span>
           <div>
-            <strong>A new market event arrives.</strong>
-            <p>Close, OHLCV, quote, trade, feature, or cross-asset observation.</p>
+            <strong>新的市场事件到达。</strong>
+            <p>收盘价、OHLCV、报价、成交、特征或跨资产观测。</p>
           </div>
         </article>
         <article class="flow-step">
-          <span>02 / UPDATE</span>
+          <span>02 / 更新</span>
           <div>
-            <strong>Advance exactly one state.</strong>
-            <p>Call update when you need a value, or advance when you only need the transition.</p>
+            <strong>只推进一次状态。</strong>
+            <p>需要返回值时调用 update；只需要状态转换时调用 advance。</p>
           </div>
         </article>
         <article class="flow-step">
-          <span>03 / REMEMBER</span>
+          <span>03 / 记忆</span>
           <div>
-            <strong>Keep the minimum live state.</strong>
-            <p>Rolling windows, filters, regimes, and detectors remain ready for the next tick.</p>
+            <strong>只保留必要的实时状态。</strong>
+            <p>滚动窗口、滤波器、市场状态和检测器随时准备接收下一笔数据。</p>
           </div>
         </article>
         <article class="flow-step flow-step-output">
-          <span>04 / REACT</span>
+          <span>04 / 响应</span>
           <div>
-            <strong>Read the current result.</strong>
-            <p>Feed a feature, risk check, research signal, dashboard, or simulator decision.</p>
+            <strong>读取当前结果。</strong>
+            <p>将结果交给特征、风控检查、研究信号、仪表盘或模拟器决策。</p>
           </div>
         </article>
       </div>
-      <div class="future-lock"><b>Future data: locked</b><span>The next observation cannot leak backward through the object API.</span></div>
+      <div class="future-lock"><b>未来数据：已锁定</b><span>下一条观测无法通过对象 API 向过去泄漏。</span></div>
 
       <div class="code-proof">
         <div class="code-window">
@@ -1584,22 +1584,22 @@ rsi = rtta.RSI()
     <span class="code-keyword">if</span> value &gt; 70.0:
         reduce_position()
 
-<span class="code-comment"># State is already ready for the next tick.</span></code></pre>
+<span class="code-comment"># 状态已经准备好接收下一笔数据。</span></code></pre>
         </div>
         <div class="code-proof-copy">
-          <span>THE OBVIOUS API IS THE LIVE API</span>
-          <h3>No dataframe ceremony on the hot path.</h3>
-          <p>Use small stateful objects in streaming code. For restart and research workflows, batch and replay paths consume history causally in C++ and leave the same object ready for its next live observation.</p>
+          <span>最直观的 API，就是实盘 API</span>
+          <h3>热点路径不需要 DataFrame 仪式。</h3>
+          <p>在流式代码中使用小型有状态对象。对于重启和研究工作流，batch 与 replay 路径会在 C++ 中以因果顺序消化历史数据，同时让同一个对象继续准备接收下一条实时观测。</p>
         </div>
       </div>
     </section>
 
     <section class="section capabilities" id="capabilities">
       <div class="section-heading">
-        <p class="kicker">02 / WHAT IT WATCHES</p>
+        <p class="kicker">02 / 它关注什么</p>
         <div>
-          <h2>More than chart indicators.</h2>
-          <p>RTTA puts classic technical analysis beside online model health, liquidity state, market microstructure, and research-grade streaming signals—all behind a consistent incremental surface.</p>
+          <h2>不只是图表指标。</h2>
+          <p>RTTA 将经典技术分析、在线模型健康、流动性状态、市场微观结构和研究级流式信号放在统一的增量接口之后。</p>
         </div>
       </div>
 
@@ -1607,33 +1607,33 @@ rsi = rtta.RSI()
         <article class="capability-card">
           <span class="card-number">01</span>
           <div>
-            <h3>Technical indicators that belong in a live loop.</h3>
-            <p>Moving averages, momentum, oscillators, bands, channels, volatility, volume, returns, price transforms, and adaptive state-space filters.</p>
-            <a href="ALGOS.html">Browse the catalog <span aria-hidden="true">→</span></a>
+            <h3>真正适合实盘循环的技术指标。</h3>
+            <p>移动平均、动量、振荡器、带状指标、通道、波动率、成交量、收益率、价格变换和自适应状态空间滤波器。</p>
+            <a href="ALGOS.zh-CN.html">浏览算法目录 <span aria-hidden="true">→</span></a>
           </div>
         </article>
         <article class="capability-card">
           <span class="card-number">02</span>
           <div>
-            <h3>Detect when the process changes.</h3>
-            <p>CUSUM, Page-Hinkley, ADWIN, KSWIN, EWMA shifts, residual drift, calibration drift, and rolling two-window detectors for means, variance, beta, correlation, and liquidity.</p>
-            <a href="documentation/algorithms/page-hinkley.html">Inspect a detector <span aria-hidden="true">→</span></a>
+            <h3>检测过程何时发生变化。</h3>
+            <p>CUSUM、Page-Hinkley、ADWIN、KSWIN、EWMA 位移、残差漂移、校准漂移，以及面向均值、方差、beta、相关性和流动性的滚动双窗口检测器。</p>
+            <a href="documentation/algorithms/page-hinkley.zh-CN.html">查看检测器 <span aria-hidden="true">→</span></a>
           </div>
         </article>
         <article class="capability-card">
           <span class="card-number">03</span>
           <div>
-            <h3>Keep market regimes online.</h3>
-            <p>Threshold and hysteresis regimes, volatility states, trend/chop, order-flow, correlation, pairs spreads, bounded BOCPD, HMM-style filters, and Gaussian mixtures.</p>
-            <a href="documentation/algorithms/trend-chop-regime-detector.html">See regime monitoring <span aria-hidden="true">→</span></a>
+            <h3>持续在线跟踪市场状态。</h3>
+            <p>阈值与回滞状态、波动率状态、趋势/震荡、订单流、相关性、配对价差、有界 BOCPD、HMM 类滤波器和高斯混合模型。</p>
+            <a href="documentation/algorithms/trend-chop-regime-detector.zh-CN.html">查看状态监控 <span aria-hidden="true">→</span></a>
           </div>
         </article>
         <article class="capability-card">
           <span class="card-number">04</span>
           <div>
-            <h3>Read the market below the candle.</h3>
-            <p>Order-flow imbalance, bid-ask bounce, VPIN, Amihud illiquidity, Kyle lambda, spread features, quote stuffing, lead-lag state, and execution-cost regimes.</p>
-            <a href="documentation/algorithms/order-flow-imbalance.html">Explore microstructure <span aria-hidden="true">→</span></a>
+            <h3>读懂 K 线之下的市场。</h3>
+            <p>订单流失衡、买卖价反弹、VPIN、Amihud 非流动性、Kyle lambda、价差特征、报价填塞、领先/滞后状态和执行成本状态。</p>
+            <a href="documentation/algorithms/order-flow-imbalance.zh-CN.html">探索微观结构 <span aria-hidden="true">→</span></a>
           </div>
         </article>
       </div>
@@ -1641,40 +1641,40 @@ rsi = rtta.RSI()
 
     <section class="toolbox" id="toolbox">
       <div class="toolbox-copy">
-        <p class="kicker">03 / ONE ENGINE, MANY JOBS</p>
-        <h2>A full market toolbox, kept online.</h2>
-        <p>The same update, advance, last, batch, and replay conventions carry across simple rolling values and multi-output research systems. Learn one shape; move through the whole catalog.</p>
-        <a class="button" href="README.html">Read the API guide <span aria-hidden="true">→</span></a>
+        <p class="kicker">03 / 一个引擎，多种工作</p>
+        <h2>始终在线的完整市场工具箱。</h2>
+        <p>从简单滚动数值到多输出研究系统，都遵循同一套 update、advance、last、batch 和 replay 约定。学会一种接口，就能使用整个目录。</p>
+        <a class="button" href="README.zh-CN.html">阅读 API 指南 <span aria-hidden="true">→</span></a>
       </div>
       <div class="algorithm-groups">
         <article class="algorithm-group">
-          <span>CLASSIC TA</span>
-          <h3>Trend + momentum</h3>
+          <span>经典技术分析</span>
+          <h3>趋势与动量</h3>
           <p>EMA · SMA · RSI · MACD · STOCHASTIC · AROON · SUPERTREND · KST · TSI · VORTEX</p>
         </article>
         <article class="algorithm-group">
-          <span>ADAPTIVE STATE</span>
-          <h3>Filters + envelopes</h3>
+          <span>自适应状态</span>
+          <h3>滤波器与包络</h3>
           <p>KALMAN · PARTICLE FILTER · IMM · GAUSSIAN PROCESS · SAVITZKY–GOLAY · NADARAYA–WATSON</p>
         </article>
         <article class="algorithm-group">
-          <span>MODEL HEALTH</span>
-          <h3>Shift + drift</h3>
+          <span>模型健康</span>
+          <h3>位移与漂移</h3>
           <p>CUSUM · ADWIN · DDM · EDDM · HDDM · KSWIN · PAGE-HINKLEY · EWMA Z-SCORE</p>
         </article>
         <article class="algorithm-group">
-          <span>MARKET STATE</span>
-          <h3>Regimes + transitions</h3>
+          <span>市场状态</span>
+          <h3>状态与转换</h3>
           <p>BOCPD · ONLINE HMM · STICKY HMM · GMM · VOLATILITY · LIQUIDITY · AUCTION TRANSITIONS</p>
         </article>
         <article class="algorithm-group">
-          <span>MICROSTRUCTURE</span>
-          <h3>Flow + liquidity</h3>
+          <span>微观结构</span>
+          <h3>流量与流动性</h3>
           <p>OFI · VPIN · KYLE LAMBDA · AMIHUD · SPREAD FEATURES · QUOTE INTENSITY · BID-ASK BOUNCE</p>
         </article>
         <article class="algorithm-group">
-          <span>RESEARCH SIGNALS</span>
-          <h3>Higher-order live features</h3>
+          <span>研究信号</span>
+          <h3>高阶实时特征</h3>
           <p>MATCHED FLOW · CLOCK ECHO · CLOSE PRESSURE · COINTEGRATION BREAKDOWN · LEAD-LAG</p>
         </article>
       </div>
@@ -1683,69 +1683,69 @@ rsi = rtta.RSI()
     <section class="section benchmarks" id="benchmarks">
       <div class="benchmark-layout">
         <div class="benchmark-intro">
-          <p class="kicker">04 / MEASURED LIVE PATH</p>
-          <h2>Nanoseconds, not vibes.</h2>
-          <p>Across three published architecture runs, the per-CPU medians average 70.2 ns for a state-only advance and 84.9 ns for an update that returns a Python result. Every source page still publishes its environment and full 188-algorithm ledger.</p>
-          <div class="benchmark-note">These summaries are the simple average of the three published per-CPU medians. They describe the tested systems as a group, not a processor contest.</div>
+          <p class="kicker">04 / 实测实时路径</p>
+          <h2>讲纳秒，不讲感觉。</h2>
+          <p>在三种已发布架构的测试中，各 CPU 延迟中位数的平均值为：仅推进状态的 advance 为 70.2 ns，返回 Python 结果的 update 为 84.9 ns。每个来源页面仍会公布测试环境和全部 188 种算法的完整记录。</p>
+          <div class="benchmark-note">这里的摘要是三个已发布 CPU 测试中位数的简单平均。它描述的是这组受测系统，而不是一场处理器竞赛。</div>
         </div>
 
-        <div class="benchmark-board" aria-label="Average latency across three published CPU runs">
+        <div class="benchmark-board" aria-label="三个已发布 CPU 测试的平均延迟">
           <div class="board-header">
-            <span>Typical published per-tick latency</span>
-            <span>Average of per-CPU medians</span>
+            <span>已发布的典型逐笔延迟</span>
+            <span>各 CPU 中位数的平均值</span>
           </div>
           <div class="latency-averages">
             <article class="latency-average">
-              <span>State only / advance(...)</span>
+              <span>仅更新状态 / advance(...)</span>
               <strong>70.2<small>ns</small></strong>
-              <p>Average state-transition latency across the three published architecture runs.</p>
+              <p>三个已发布架构测试的平均状态转换延迟。</p>
             </article>
             <article class="latency-average">
-              <span>Update + Python result / update(...)</span>
+              <span>更新并返回 Python 结果 / update(...)</span>
               <strong>84.9<small>ns</small></strong>
-              <p>Average latency to change state and return the current value or result.</p>
+              <p>改变状态并返回当前数值或结果的平均延迟。</p>
             </article>
           </div>
           <div class="benchmark-method">
-            <div><span>Coverage</span><b>188 algorithms / run</b></div>
-            <div><span>Sample size</span><b>50,000 updates</b></div>
-            <div><span>Published runs</span><b>ARM · x86 · LoongArch</b></div>
+            <div><span>覆盖范围</span><b>每次 188 种算法</b></div>
+            <div><span>样本量</span><b>50,000 次更新</b></div>
+            <div><span>已发布测试</span><b>ARM · x86 · LoongArch</b></div>
           </div>
         </div>
       </div>
       <div class="hero-actions">
-        <a class="button button-dark" href="BENCHMARK.html">Open benchmark ledger <span aria-hidden="true">↗</span></a>
-        <a class="text-link" href="BENCHMARK.html#results-by-cpu">See methodology and source runs <span aria-hidden="true">→</span></a>
+        <a class="button button-dark" href="BENCHMARK.zh-CN.html">打开基准测试记录 <span aria-hidden="true">↗</span></a>
+        <a class="text-link" href="BENCHMARK.zh-CN.html#results-by-cpu">查看测试方法与来源数据 <span aria-hidden="true">→</span></a>
       </div>
     </section>
 
     <section class="section install" id="install">
       <div class="install-copy">
-        <p class="kicker">05 / START STREAMING</p>
-        <h2>Bring your next tick.</h2>
-        <p>Install the Python distribution as pyrtta, then import rtta. The C++ extension, NumPy integration, and stateful algorithm surface arrive together.</p>
+        <p class="kicker">05 / 开始流式处理</p>
+        <h2>把下一笔数据交给 RTTA。</h2>
+        <p>以 pyrtta 安装 Python 发行包，再导入 rtta。C++ 扩展、NumPy 集成和有状态算法接口会一并就绪。</p>
         <div class="install-links">
-          <a href="README.html">Getting started →</a>
-          <a href="ALGOS.html">Algorithm catalog →</a>
-          <a href="https://github.com/adamdeprince/rtta" rel="noopener">Source code ↗</a>
+          <a href="README.zh-CN.html">快速开始 →</a>
+          <a href="ALGOS.zh-CN.html">算法目录 →</a>
+          <a href="https://github.com/adamdeprince/rtta" rel="noopener">源代码 ↗</a>
         </div>
       </div>
       <div class="terminal">
-        <header><span>Terminal / Python 3.9+</span><button class="copy-button" type="button" data-copy="pip install pyrtta">Copy command</button></header>
+        <header><span>终端 / Python 3.9+</span><button class="copy-button" type="button" data-copy="pip install pyrtta">复制命令</button></header>
         <pre><code><span class="prompt">$</span> pip install <span class="package">pyrtta</span></code></pre>
       </div>
     </section>
   </main>
 
   <footer class="site-footer">
-    <a class="footer-brand" href="index.html"><img src="goblin.png" alt="">RTTA</a>
-    <nav class="footer-links" aria-label="Footer navigation">
-      <a href="README.html">Docs</a>
-      <a href="BENCHMARK.html">Benchmarks</a>
-      <a href="https://github.com/adamdeprince/rtta/issues" rel="noopener">Issues</a>
-      <a href="index.zh-CN.html" lang="zh-CN">简体中文</a>
+    <a class="footer-brand" href="index.zh-CN.html"><img src="goblin.png" alt="">RTTA</a>
+    <nav class="footer-links" aria-label="页脚导航">
+      <a href="README.zh-CN.html">文档</a>
+      <a href="BENCHMARK.zh-CN.html">基准测试</a>
+      <a href="https://github.com/adamdeprince/rtta/issues" rel="noopener">问题反馈</a>
+      <a href="index.html" lang="en">English</a>
     </nav>
-    <p>Apache 2.0 · Built by <a href="https://goblinreactor.com" rel="noopener">Goblin Reactor ↗</a></p>
+    <p>Apache 2.0 · 由 <a href="https://goblinreactor.com" rel="noopener">Goblin Reactor ↗</a> 构建</p>
   </footer>
 
   <script>
@@ -1753,9 +1753,9 @@ rsi = rtta.RSI()
     if (copyButton && navigator.clipboard) {
       copyButton.addEventListener("click", async () => {
         await navigator.clipboard.writeText(copyButton.dataset.copy);
-        copyButton.textContent = "Copied";
+        copyButton.textContent = "已复制";
         window.setTimeout(() => {
-          copyButton.textContent = "Copy command";
+          copyButton.textContent = "复制命令";
         }, 1600);
       });
     }

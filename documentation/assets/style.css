@@ -273,6 +273,24 @@ a:focus-visible {
   background: var(--ink);
 }
 
+.nav .language-link {
+  margin-left: auto;
+  border-left: 1px solid var(--ink);
+}
+
+[lang="zh-CN"] body,
+[lang="zh-CN"] .content {
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", var(--sans);
+}
+
+[lang="zh-CN"] .masthead h1,
+[lang="zh-CN"] .content h1,
+[lang="zh-CN"] .content h2 {
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", var(--display);
+  font-weight: 700;
+  letter-spacing: -.035em;
+}
+
 .content {
   min-width: 0;
   padding: clamp(54px, 7vw, 82px) clamp(30px, 7vw, 82px) clamp(76px, 9vw, 112px);
@@ -660,6 +678,10 @@ th[align="center"] {
 
   .nav a:first-child {
     border-left: 0;
+  }
+
+  .nav .language-link {
+    margin-left: 0;
   }
 
   .content {

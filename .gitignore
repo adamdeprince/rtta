@@ -7,4 +7,5 @@ build
 dist
 html/*
 !html/index.html
+!html/index.zh-CN.html
 !html/goblin.png

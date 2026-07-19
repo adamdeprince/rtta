@@ -2,13 +2,14 @@
 """Build the RTTA static HTML documentation from Markdown sources.
 
 Generated documentation is written to html/ and is intentionally ignored by
-git. The hand-authored html/index.html landing page and its goblin.png mascot
-are preserved; README.md is rendered to html/README.html.
+git. The hand-authored English and Simplified Chinese landing pages and their
+goblin.png mascot are preserved; README files are rendered beside them.
 """
 
 from __future__ import annotations
 
 import html as html_escape
+import posixpath
 import re
 import shutil
 from pathlib import Path
@@ -18,6 +19,9 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "html"
 DOCS = ROOT / "documentation"
 STYLE_SOURCE = DOCS / "assets" / "style.css"
+ZH_SUFFIX = ".zh-CN"
+LANDING_PAGES = {OUT / "index.html", OUT / "index.zh-CN.html"}
+SKIP_MD_PARTS = {".git", ".pytest_cache", "build", "dist", "html", "TEST_TMP"}
 
 
 def markdown_renderer():
@@ -87,7 +91,11 @@ def rewrite_markdown_links(body: str) -> str:
         if "#" in target:
             target, anchor = target.split("#", 1)
             anchor = "#" + anchor
-        if target == "README.md":
+        if target == "README.zh-CN.md":
+            target = "README.zh-CN.html"
+        elif target.endswith("/README.zh-CN.md"):
+            target = target[:-15] + "index.zh-CN.html"
+        elif target == "README.md":
             target = "README.html"
         elif target.endswith("/README.md"):
             target = target[:-9] + "index.html"
@@ -102,31 +110,80 @@ def wrap_tables(body: str) -> str:
     return re.sub(r"(<table>.*?</table>)", r'<div class="table-scroll">\1</div>', body, flags=re.S)
 
 
+def align_chinese_heading_ids(body: str, english_text: str, path: Path) -> str:
+    """Use the English page's stable heading IDs on its Chinese counterpart."""
+    heading_re = re.compile(r'<h([1-6]) id="([^"]+)">')
+    english_headings = heading_re.findall(render_markdown(english_text))
+    chinese_headings = heading_re.findall(body)
+    if [level for level, _ in english_headings] != [
+        level for level, _ in chinese_headings
+    ]:
+        raise ValueError(
+            f"heading structure changed in {path.relative_to(ROOT)}: "
+            f"{len(english_headings)} English headings vs "
+            f"{len(chinese_headings)} Chinese headings"
+        )
+    english_ids = iter(identifier for _, identifier in english_headings)
+    return heading_re.sub(
+        lambda match: f'<h{match.group(1)} id="{next(english_ids)}">',
+        body,
+    )
+
+
 def asset_prefix(output_rel: Path) -> str:
     depth = len(output_rel.parent.parts)
     return "../" * depth
 
 
-def template(*, title: str, masthead_title: str, tagline: str, body: str, output_rel: Path) -> str:
+def template(
+    *,
+    title: str,
+    masthead_title: str,
+    body: str,
+    output_rel: Path,
+    language: str,
+    counterpart_href: str,
+) -> str:
     prefix = asset_prefix(output_rel)
+    is_zh = language == "zh-CN"
     escaped_title = html_escape.escape(title)
     escaped_masthead = html_escape.escape(masthead_title)
     masthead_content = escaped_masthead
     if masthead_title == "RTTA":
-        masthead_content = f'<a href="{prefix}index.html">{escaped_masthead}</a>'
+        landing = "index.zh-CN.html" if is_zh else "index.html"
+        masthead_content = f'<a href="{prefix}{landing}">{escaped_masthead}</a>'
+    landing = "index.zh-CN.html" if is_zh else "index.html"
+    readme = "README.zh-CN.html" if is_zh else "README.html"
+    algorithms = "ALGOS.zh-CN.html" if is_zh else "ALGOS.html"
+    benchmarks = "BENCHMARK.zh-CN.html" if is_zh else "BENCHMARK.html"
+    labels = {
+        "skip": "跳到正文" if is_zh else "Skip to content",
+        "documentation": "文档" if is_zh else "Documentation",
+        "credit": "由 Goblin Reactor 打造" if is_zh else "Built by Goblin Reactor",
+        "tagline": "增量式、因果技术分析文档" if is_zh else "Incremental, causal technical analysis documentation",
+        "nav": "文档导航" if is_zh else "Documentation navigation",
+        "home": "首页" if is_zh else "Home",
+        "readme": "使用说明" if is_zh else "README",
+        "algorithms": "算法" if is_zh else "Algorithms",
+        "benchmarks": "基准测试" if is_zh else "Benchmarks",
+        "source": "源代码" if is_zh else "Source Code",
+        "language": "English" if is_zh else "简体中文",
+        "hreflang": "en" if is_zh else "zh-CN",
+        "footer": "低延迟增量式技术分析" if is_zh else "low-latency incremental technical analysis",
+    }
     return f"""<!doctype html>
-<html lang="en" dir="ltr">
+<html lang="{language}" dir="ltr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escaped_title}</title>
-<meta name="description" content="RTTA technical analysis documentation">
+<meta name="description" content="{'RTTA 技术分析文档' if is_zh else 'RTTA technical analysis documentation'}">
 <link rel="icon" type="image/png" href="{prefix}goblin.png">
 <link rel="apple-touch-icon" href="{prefix}goblin.png">
 <link rel="manifest" href="{prefix}site.webmanifest">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+SC:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{prefix}style.css">
 <script>
 window.MathJax = {{
@@ -140,26 +197,26 @@ window.MathJax = {{
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 </head>
 <body>
-<a class="skip-link" href="#content">Skip to content</a>
+<a class="skip-link" href="#content">{labels['skip']}</a>
 <div class="page">
 <header class="masthead">
 <div class="docs-topline">
-<a class="docs-brand" href="{prefix}index.html"><span class="docs-mascot" aria-hidden="true"><img src="{prefix}goblin.png" alt=""></span><strong>RTTA</strong><small>Documentation</small></a>
-<a class="docs-credit" href="https://goblinreactor.com" rel="noopener">Built by Goblin Reactor <b>↗</b></a>
+<a class="docs-brand" href="{prefix}{landing}"><span class="docs-mascot" aria-hidden="true"><img src="{prefix}goblin.png" alt=""></span><strong>RTTA</strong><small>{labels['documentation']}</small></a>
+<a class="docs-credit" href="https://goblinreactor.com" rel="noopener">{labels['credit']} <b>↗</b></a>
 </div>
 <div class="masthead-copy">
 <h1>{masthead_content}</h1>
-<p class="tagline">{tagline}</p>
+<p class="tagline">{labels['tagline']}</p>
 </div>
 </header>
-<nav class="nav" aria-label="Documentation navigation">
-<a class="home" href="{prefix}index.html">Home</a><a class="github" href="{prefix}README.html">README</a><a class="github" href="{prefix}ALGOS.html">Algorithms</a><a class="github" href="{prefix}BENCHMARK.html">Benchmarks</a><a class="github" href="https://github.com/adamdeprince/rtta" rel="noopener">Source Code</a>
+<nav class="nav" aria-label="{labels['nav']}">
+<a class="home" href="{prefix}{landing}">{labels['home']}</a><a class="github" href="{prefix}{readme}">{labels['readme']}</a><a class="github" href="{prefix}{algorithms}">{labels['algorithms']}</a><a class="github" href="{prefix}{benchmarks}">{labels['benchmarks']}</a><a class="github" href="https://github.com/adamdeprince/rtta" rel="noopener">{labels['source']}</a><a class="language-link" href="{counterpart_href}" hreflang="{labels['hreflang']}" lang="{labels['hreflang']}">{labels['language']}</a>
 </nav>
 <main class="content" id="content">
 {body}
 </main>
 <footer class="footer">
-<span>RTTA · low-latency incremental technical analysis</span><a href="https://goblinreactor.com" rel="noopener">Goblin Reactor ↗</a>
+<span>RTTA · {labels['footer']}</span><a href="https://goblinreactor.com" rel="noopener">Goblin Reactor ↗</a>
 </footer>
 </div>
 </body>
@@ -167,18 +224,44 @@ window.MathJax = {{
 """
 
 
+def is_chinese_source(path: Path) -> bool:
+    return path.name.endswith(f"{ZH_SUFFIX}.md")
+
+
+def counterpart_source(path: Path) -> Path:
+    if is_chinese_source(path):
+        return path.with_name(path.name.removesuffix(f"{ZH_SUFFIX}.md") + ".md")
+    return path.with_name(path.stem + f"{ZH_SUFFIX}.md")
+
+
 def output_for_markdown(path: Path) -> Path:
     rel = path.relative_to(ROOT)
-    if rel == Path("README.md"):
-        return Path("README.html")
-    if rel.name == "README.md":
-        return rel.parent / "index.html"
+    is_zh = is_chinese_source(path)
+    source_name = rel.name.removesuffix(f"{ZH_SUFFIX}.md") + ".md" if is_zh else rel.name
+    html_suffix = f"{ZH_SUFFIX}.html" if is_zh else ".html"
+    if rel.parent == Path(".") and source_name == "README.md":
+        return Path(f"README{html_suffix}") if is_zh else Path("README.html")
+    if source_name == "README.md":
+        return rel.parent / f"index{ZH_SUFFIX if is_zh else ''}.html"
     return rel.with_suffix(".html")
 
 
 def build_page(path: Path) -> None:
     output_rel = output_for_markdown(path)
+    language = "zh-CN" if is_chinese_source(path) else "en"
+    counterpart_rel = output_for_markdown(counterpart_source(path))
+    counterpart_href = posixpath.relpath(
+        counterpart_rel.as_posix(),
+        start=output_rel.parent.as_posix() if output_rel.parent != Path(".") else ".",
+    )
     body = render_markdown(path.read_text(encoding="utf-8"))
+    if language == "zh-CN":
+        english_path = counterpart_source(path)
+        body = align_chinese_heading_ids(
+            body,
+            english_path.read_text(encoding="utf-8"),
+            path,
+        )
     body = rewrite_markdown_links(body)
     body = wrap_tables(body)
     body, page_h1 = strip_first_h1(body)
@@ -186,9 +269,10 @@ def build_page(path: Path) -> None:
     out_html = template(
         title=f"{title_base} - RTTA",
         masthead_title=title_base,
-        tagline="Incremental, causal technical analysis documentation",
         body=body.rstrip(),
         output_rel=output_rel,
+        language=language,
+        counterpart_href=counterpart_href,
     )
     out_path = OUT / output_rel
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,15 +298,17 @@ def clean_generated_html() -> None:
     if not OUT.exists():
         return
     for path in OUT.rglob("*.html"):
-        if path == OUT / "index.html":
+        if path in LANDING_PAGES:
             continue
         path.unlink()
 
 
 def markdown_sources() -> list[Path]:
-    sources = [ROOT / "README.md", ROOT / "ALGOS.md", ROOT / "BENCHMARK.md"]
-    sources.extend(sorted(DOCS.rglob("*.md")))
-    return sources
+    return sorted(
+        path
+        for path in ROOT.rglob("*.md")
+        if not any(part in SKIP_MD_PARTS for part in path.relative_to(ROOT).parts)
+    )
 
 
 def main() -> int:
