@@ -16,7 +16,10 @@ if (NOT SKBUILD)
     "Use `pip install .` or `python -m build` from the project root.")
 endif()
 
-find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
+# Development.SABIModule is required for nanobind STABLE_ABI / abi3 wheels (CPython 3.12+).
+find_package(Python 3.9
+  REQUIRED COMPONENTS Interpreter Development.Module
+  OPTIONAL_COMPONENTS Development.SABIModule)
 find_package(nanobind CONFIG REQUIRED)
 
 execute_process(
@@ -36,7 +39,8 @@ if (NOT EXISTS "${FAST_KALMAN_INCLUDE_DIR}/kalman/kalman.hpp")
     "fast-kalman was found, but ${FAST_KALMAN_INCLUDE_DIR}/kalman/kalman.hpp does not exist.")
 endif()
 
-nanobind_add_module(indicator NB_STATIC src/rtta/indicator.cpp)
+# STABLE_ABI + scikit-build wheel.py-api=cp312 produces one abi3 wheel for CPython 3.12+.
+nanobind_add_module(indicator NB_STATIC STABLE_ABI src/rtta/indicator.cpp)
 target_compile_features(indicator PRIVATE cxx_std_23)
 target_include_directories(indicator PRIVATE "${FAST_KALMAN_INCLUDE_DIR}")
 

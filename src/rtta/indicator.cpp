@@ -59,7 +59,12 @@ nb::arg array_arg(const char *name) {
 
 std::vector<double> make_record_output(nb::handle records) {
     std::vector<double> output;
-    const Py_ssize_t size_hint = PyObject_LengthHint(records.ptr(), 0);
+    // Prefer limited-API-safe length queries so STABLE_ABI / abi3 wheels can build.
+    Py_ssize_t size_hint = PyObject_Size(records.ptr());
+    if (size_hint < 0) {
+        PyErr_Clear();
+        size_hint = 0;
+    }
     if (size_hint > 0) {
         output.reserve(static_cast<std::size_t>(size_hint));
     }
@@ -1339,9 +1344,16 @@ inline double result_checksum(double value) {
 
 inline double result_checksum(const nb::tuple &values) {
     double checksum = 0.0;
-    const Py_ssize_t size = PyTuple_GET_SIZE(values.ptr());
+    // Use limited-API functions (not PyTuple_GET_SIZE / PyTuple_GET_ITEM macros).
+    const Py_ssize_t size = PyTuple_Size(values.ptr());
+    if (size < 0) {
+        throw nb::python_error();
+    }
     for (Py_ssize_t i = 0; i < size; ++i) {
-        PyObject *item = PyTuple_GET_ITEM(values.ptr(), i);
+        PyObject *item = PyTuple_GetItem(values.ptr(), i);
+        if (item == nullptr) {
+            throw nb::python_error();
+        }
         const double value = PyFloat_AsDouble(item);
         if (PyErr_Occurred() != nullptr) {
             throw nb::python_error();

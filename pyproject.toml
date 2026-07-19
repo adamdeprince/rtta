@@ -38,6 +38,8 @@ minimum-version = "0.12"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/rtta"]
 wheel.exclude = ["**/*.cpp"]
+# Stable ABI wheels for CPython 3.12+ (one binary wheel covers 3.12–3.14 on a given platform).
+wheel.py-api = "cp312"
 sdist.exclude = [".codex"]
 
 [tool.scikit-build.cmake]
