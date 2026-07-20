@@ -1,5 +1,107 @@
 # Changes
 
+## 0.2.3
+
+- Competition research signal: `FlowPressureCapacitySignal` — event-time L1
+  aggressive flow divided by opposing displayed capacity, with causal queue
+  replenishment/withdrawal inference, persistent-imbalance filtering, bounded
+  fair value, and discrete hysteresis. Includes compact signed-flow and detailed
+  buy/sell-flow APIs plus a Massive trade/quote merge, delayed-spread paper book,
+  and forward-midpoint alpha diagnostics.
+
+- Competition research signal: `FourierResidueIdentity` — streaming Fourier-Residue
+  Identity (Portnaya, arXiv:2606.29591, June 2026). Splits return autocorrelation
+  into an individually testable direction (sign, k=2) channel and magnitude (k=4)
+  channel, with per-channel Fejér variance ratios, Lo–MacKinlay heteroskedasticity-
+  robust z*, and the half-period persistence diagnostic. `signal` fires only when
+  the sign channel itself clears significance, so a reversal that is purely
+  magnitude cannot present itself as directional alpha; `magnitude_forecast`
+  carries the volatility-sizing content that stays warranted when direction does
+  not. (It is a separation, not a bid-ask-bounce filter — see the algorithm page.)
+  Adds an `elliptical_ratio`
+  output (beyond the paper) comparing the sign channel to its Grothendieck
+  benchmark (2/π)·arcsin(ρ), which is the scale-free form of the paper's diagnosis.
+
+- Competition research signal: `SqrtImpactFlowSignal` — square-root market impact
+  residual flow (continuation of unused impact + reversion of overshoot),
+  optional tick-signed dollar volume and bar VWAP (Polygon/Massive aggregates or tape).
+
+- Candlestick / CDL pattern pack (TA-Lib-style `+100` / `0` / `-100` outputs):
+  32 individual `CDL*` detectors plus multi-output `CDLPatternPack`.
+
+- Retail one-offs: `RainbowMovingAverage`, `RainbowOscillator`, `ChandeForecastOscillator`,
+  `RangeActionVerificationIndex` (RAVI), `BullsPower`, `BearsPower`, `ProjectionOscillator`,
+  and Dorsey `Inertia`.
+- Research depth: `MessageEventOrderFlowImbalance` (message-tape OFI), `HawkesIntensity`,
+  `WeightedMultiPeerOrderFlowImbalance`, and streaming `ConformalBands`.
+
+- Classical nits: `FibonacciPivotPoints`, `GuppyMMARibbon` (full 12-EMA ribbon),
+  `AndrewsPitchfork`, and `ElderThermometer`.
+
+- Residual changepoint convenience: `KalmanInnovationResidualFOCuS` and
+  `KalmanInnovationResidualBOCPD` (innovation z → FOCuS/BOCPD in one update).
+- `MultiPeerOrderFlowImbalance` for basket peer OFI pressure.
+- `VolumeRunBarGenerator` and `DollarRunBarGenerator` same-sign run bars.
+
+- Research follow-ups: `CrossAssetOrderFlowImbalance`, `ResidualBOCPD`,
+  `RunBarGenerator`, `WoodiePivotPoints`, `CamarillaPivotPoints`, and
+  `MovingAverageVariablePeriod` (MAVP).
+- `Ichimoku` now also emits displaced cloud spans (`span_a_displaced`,
+  `span_b_displaced`).
+
+- Multi-level OFI polish: `MultiLevelOrderFlowImbalance` / `IntegratedOrderFlowImbalance`
+  support float32 update, `(n_samples, levels)` batch/replay, and registry depth-book
+  benchmark hooks (`bid_prices`/`bid_sizes`/`ask_prices`/`ask_sizes`).
+
+- Added Wave 4 research/microstructure ops: `MultiLevelOrderFlowImbalance`,
+  `IntegratedOrderFlowImbalance`, `DecomposedOrderFlowImbalance`,
+  `VolumeBarGenerator`, `DollarBarGenerator`, `ImbalanceBarGenerator`,
+  `FOCuS`, `ResidualFOCuS`, and `DirectionalChangeDetector`.
+
+- Fixed `VolumeOscillator` registry `batch_inputs` (was incorrectly `"input"`,
+  so array batch and pandas-table batch disagreed).
+- Relaxed Schaff Trend Cycle vs `ta` comparison tolerance to account for
+  accumulated floating-point drift (~1e-10).
+- Re-measured full-registry tick latency on Apple M4 Max, Intel Xeon 6975P-C,
+  and Loongson-3A6000 for 247 algorithms (RTTA `0.2.3`); registry median
+  `advance(...)` about 29.9 / 39.2 / 104 ns/update respectively
+  (see `BENCHMARK.md`).
+
+- Added classical Tier C/D: `EhlersSuperSmoother`, `EhlersRoofingFilter`,
+  `EhlersCyberCycle`, `EhlersCenterOfGravity`, `EhlersInstantaneousTrendline`,
+  `EhlersDecycler`, `ParabolicSARExtended`, `KagiChart`, `PointAndFigure`,
+  `GuppyMultipleMovingAverage`, `RollingMedian`, and `GeometricMovingAverage`.
+- `Ichimoku` now takes `close` and returns `lagging_span` (breaking input/output
+  extension).
+
+- Completed classical Tier A/B: multi-output `MACD`/`MACDFix`, `MACDExt`,
+  `RelativeVolatilityIndex`, `PivotPoints`, `QStick`, `PsychologicalLine`,
+  `Bias`, `WilliamsFractals`, `MarketFacilitationIndex`, `SwingIndex`,
+  `AccumulativeSwingIndex`, `VerticalHorizontalFilter`, `RandomWalkIndex`,
+  `PrettyGoodOscillator`, `TrendIntensityIndex`, `WilliamsAD`,
+  `IntradayIntensity`, `TwiggsMoneyFlow`, `ComparativeRelativeStrength`,
+  and `InverseFisherRSI`.
+- `MACD`/`MACDFix` now return `macd`, `signal`, and `histogram` (breaking
+  change from the previous scalar signal-only return).
+
+- Added classical wave-2 indicators: `StochasticMomentumIndex`, `DeMarker`,
+  `IntradayMomentumIndex`, `AccelerationBands`, `ChandelierExit`, `Alligator`,
+  `GatorOscillator`, `AcceleratorOscillator`, `SqueezeMomentum`, `WaveTrend`,
+  and Hilbert suite (`HilbertDominantCyclePeriod`, `HilbertDominantCyclePhase`,
+  `HilbertPhasor`, `HilbertSineWave`, `HilbertTrendMode`, `HilbertTrendline`),
+  each with English algorithm docs, registry entries, and tests.
+- Replaced the Hilbert suite engine with a TA-Lib-compatible streaming
+  implementation of `HT_DCPERIOD`, `HT_DCPHASE`, `HT_PHASOR`, `HT_SINE`,
+  `HT_TRENDMODE`, and `HT_TRENDLINE` (odd/even detrender, WMA smooth, period
+  clamps, phase DFT, trendline, and trend-mode rules).
+
+- Added classical completeness indicators: `SmoothedMovingAverage` (SMMA/RMA/Wilder),
+  `ZeroLagEMA`, `ArnaudLegouxMovingAverage`, `McGinleyDynamic`,
+  `BollingerPercentB`, `BollingerBandwidth`, `MovingAverageEnvelope`,
+  `PositiveVolumeIndex`, `VolumeOscillator`, `EfficiencyRatio`,
+  `HistoricalVolatility`, and `ChaikinVolatility`, each with English algorithm
+  documentation, registry entries, and correctness tests.
+
 ## 0.2.2
 
 - Microoptimized C++ hot paths in `indicator.cpp`: sum-only rolling windows,

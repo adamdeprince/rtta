@@ -16,19 +16,82 @@ from benchmarks.benchmark_indicators import (
 
 
 RESULT_FIELDS = (
+    "baseline",
+    "continuation",
+    "dark_cloud_cover",
+    "doji",
+    "engulfing",
+    "evening_star",
+    "excitation",
+    "flow",
+    "hammer",
+    "hanging_man",
+    "harami",
+    "intensity",
+    "inverted_hammer",
+    "marubozu",
+    "morning_star",
+    "piercing",
+    "reversion",
+    "shooting_star",
+    "spinning_top",
+    "three_black_crows",
+    "three_white_soldiers",
+    "range",
+    "hot",
+    "ratio",
+    "median",
+    "l60",
+    "l50",
+    "l45",
+    "l40",
+    "l35",
+    "l30",
+    "s15",
+    "s12",
+    "s10",
+    "s8",
+    "s5",
+    "peer_mean",
+    "span_b_displaced",
+    "span_a_displaced",
+    "probability",
+    "peer_ofi",
+    "impact",
+    "beta",
+    "total",
+    "statistic",
+    "bars",
+    "complete",
+    "bar_volume",
+    "bar_low",
+    "bar_high",
+    "bar_close",
+    "bar_open",
+    "extremum",
+    "overshoot",
+    "event",
+    "trade",
+    "cancel",
+    "add",
     "acceleration",
     "alpha_flow",
     "angle",
     "base",
     "bar_number",
     "bear_power",
+    "box_price",
+    "boxes",
     "brick_close",
     "brick_open",
     "bricks",
     "bull_power",
+    "cg",
     "chop_probability",
     "close",
     "conversion",
+    "cycle",
+    "decycle",
     "difference",
     "direction",
     "down",
@@ -43,13 +106,19 @@ RESULT_FIELDS = (
     "flow_score",
     "frozen",
     "frozen_rod_return",
+    "highpass",
     "histogram",
     "hedge_ratio",
     "high",
     "high_vol_probability",
+    "inphase",
     "intercept",
+    "jaw",
     "kst",
     "kvo",
+    "lag",
+    "lagging_span",
+    "lead_sine",
     "level",
     "level0",
     "level100",
@@ -57,11 +126,16 @@ RESULT_FIELDS = (
     "level382",
     "level500",
     "level618",
+    "line",
+    "lips",
+    "long_average",
+    "long_exit",
     "low_vol_probability",
     "low",
     "lower",
     "long_trend",
     "loser_z",
+    "macd",
     "mama",
     "max",
     "max_index",
@@ -71,11 +145,13 @@ RESULT_FIELDS = (
     "min_index",
     "momentum",
     "negative",
+    "on",
     "oscillator",
     "open",
     "participation",
     "percent",
     "positive",
+    "pp",
     "pressure_score",
     "prediction",
     "price",
@@ -84,20 +160,32 @@ RESULT_FIELDS = (
     "pivot_index",
     "ppo",
     "pvo",
+    "quadrature",
     "quoted_spread",
+    "r1",
+    "r2",
+    "r3",
     "radius",
     "realized_spread",
     "rel_dollar_volume",
     "residual",
     "reversal",
     "rod_return",
+    "roof",
     "rvi",
+    "s1",
+    "s2",
+    "s3",
     "score",
+    "short_average",
+    "short_exit",
     "signal",
+    "sine",
     "slope",
     "slowd",
     "slowk",
     "sma",
+    "smi",
     "second_derivative",
     "smooth",
     "span_a",
@@ -105,7 +193,10 @@ RESULT_FIELDS = (
     "spread",
     "short_trend",
     "target_fraction",
+    "teeth",
     "transaction_shock",
+    "trendline",
+    "trigger",
     "tsf",
     "trend",
     "trend_probability",
@@ -120,6 +211,8 @@ RESULT_FIELDS = (
     "vwap_gap",
     "width",
     "winner_z",
+    "wt1",
+    "wt2",
     "news_guard",
     "exit_window",
     "range_z",
@@ -141,9 +234,21 @@ def _market_data(dtype):
         name: np.ascontiguousarray(values.astype(dtype, copy=True))
         for name, values in data.arrays.items()
     }
-    lists = {name: values.tolist() for name, values in arrays.items()}
-    series = {name: pandas.Series(values, copy=False) for name, values in arrays.items()}
-    table = pandas.DataFrame(arrays, copy=False)
+    lists = {}
+    for name, values in arrays.items():
+        if values.ndim == 2:
+            lists[name] = [np.ascontiguousarray(values[i]) for i in range(values.shape[0])]
+        else:
+            lists[name] = values.tolist()
+    series = {
+        name: pandas.Series(values, copy=False)
+        for name, values in arrays.items()
+        if values.ndim == 1
+    }
+    table = pandas.DataFrame(
+        {name: values for name, values in arrays.items() if values.ndim == 1},
+        copy=False,
+    )
     data = replace(data, arrays=arrays, lists=lists, series=series, table=table)
     _DATA_CACHE[dtype] = data
     return data
@@ -192,6 +297,10 @@ def test_array_and_pandas_table_batches_match_for_float_dtypes(spec, dtype):
 
     data = _market_data(dtype)
     array_output = make_rtta_array_batch_runner(rtta, spec, data)()
+    if getattr(spec, "depth_book", False):
+        # Depth-book indicators use 2D arrays; pandas table batch is intentionally unsupported.
+        assert array_output is not None
+        return
     table_runner = make_rtta_table_batch_runner(rtta, spec, data)
 
     assert table_runner is not None

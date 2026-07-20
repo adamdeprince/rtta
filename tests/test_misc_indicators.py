@@ -18,7 +18,10 @@ class MiscIndicatorTest(TestCase):
 
     def test(self):
         self.assertTrue(math.isfinite(AbsolutePriceOscillator().update(10)))
-        self.assertTrue(math.isnan(MACDFix(fillna=False).update(10)))
+        macd_fix = MACDFix(fillna=False).update(10)
+        self.assertTrue(math.isnan(macd_fix.macd))
+        self.assertTrue(math.isnan(macd_fix.signal))
+        self.assertTrue(math.isnan(macd_fix.histogram))
         self.assertTrue(math.isfinite(PercentagePrice(fillna=True).update(10).ppo))
         self.assertTrue(math.isfinite(ParabolicSAR().update(10, 9)))
 

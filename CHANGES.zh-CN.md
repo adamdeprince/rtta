@@ -1,5 +1,46 @@
 # 变更记录
 
+## 0.2.3
+
+- 竞赛研究信号：`FlowPressureCapacitySignal`——按事件时间计算的 L1 主动订单流除以对手方显示容量，并加入因果队列补单/撤单推断、持续性失衡滤波、有界公允价值和离散迟滞。既提供精简的有符号订单流 API，也提供详细的买入/卖出订单流 API；另附 Massive 成交/报价合并、按延迟报价支付价差的模拟账簿，以及未来中间价 alpha 诊断。
+
+- 竞赛研究信号：`FourierResidueIdentity`——傅里叶—剩余类恒等式的流式实现（Portnaya，arXiv:2606.29591，2026 年 6 月）。它把收益率自相关拆成可单独检验的方向（符号，k=2）通道和幅度（k=4）通道，并提供逐通道 Fejér 方差比、Lo–MacKinlay 异方差稳健 z* 统计量和半样本持久性诊断。只有符号通道本身达到显著性时，`signal` 才会触发，因此纯粹由幅度造成的反转不会伪装成方向 alpha；当方向没有依据时，`magnitude_forecast` 保留仍有统计依据的波动率头寸规模信息。（这是通道分离工具，不是买卖价反跳过滤器——详见算法页面。）另新增论文之外的 `elliptical_ratio` 输出，把符号通道与 Grothendieck 基准 `(2/π)·arcsin(ρ)` 比较；这正是论文诊断的不受尺度影响形式。
+
+- 竞赛研究信号：`SqrtImpactFlowSignal`——平方根市场冲击残差订单流（未使用冲击的延续 + 超调的回归），可选由逐笔确定符号的成交额和 K 线 VWAP（适用于 Polygon/Massive 聚合数据或逐笔数据）。
+
+- K 线 / CDL 形态包（TA-Lib 风格的 `+100` / `0` / `-100` 输出）：32 个独立 `CDL*` 检测器，以及多输出 `CDLPatternPack`。
+
+- 零散零售指标：`RainbowMovingAverage`、`RainbowOscillator`、`ChandeForecastOscillator`、`RangeActionVerificationIndex`（RAVI）、`BullsPower`、`BearsPower`、`ProjectionOscillator` 和 Dorsey `Inertia`。
+- 研究深度扩展：`MessageEventOrderFlowImbalance`（消息流 OFI）、`HawkesIntensity`、`WeightedMultiPeerOrderFlowImbalance`，以及流式 `ConformalBands`。
+
+- 经典指标补遗：`FibonacciPivotPoints`、`GuppyMMARibbon`（完整 12 条 EMA 带）、`AndrewsPitchfork` 和 `ElderThermometer`。
+
+- 残差变点便利组件：`KalmanInnovationResidualFOCuS` 和 `KalmanInnovationResidualBOCPD`（一次更新即可完成新息 z 分数 → FOCuS/BOCPD）。
+- 新增面向同类资产篮子 OFI 压力的 `MultiPeerOrderFlowImbalance`。
+- 新增同号游程 K 线 `VolumeRunBarGenerator` 与 `DollarRunBarGenerator`。
+
+- 后续研究组件：`CrossAssetOrderFlowImbalance`、`ResidualBOCPD`、`RunBarGenerator`、`WoodiePivotPoints`、`CamarillaPivotPoints` 和 `MovingAverageVariablePeriod`（MAVP）。
+- `Ichimoku` 现在还会输出位移云带（`span_a_displaced`、`span_b_displaced`）。
+
+- 多档 OFI 完善：`MultiLevelOrderFlowImbalance` / `IntegratedOrderFlowImbalance` 支持 float32 更新、形状为 `(n_samples, levels)` 的批处理/replay，以及注册表深度订单簿基准挂钩（`bid_prices`/`bid_sizes`/`ask_prices`/`ask_sizes`）。
+
+- 新增第 4 波研究/微观结构组件：`MultiLevelOrderFlowImbalance`、`IntegratedOrderFlowImbalance`、`DecomposedOrderFlowImbalance`、`VolumeBarGenerator`、`DollarBarGenerator`、`ImbalanceBarGenerator`、`FOCuS`、`ResidualFOCuS` 和 `DirectionalChangeDetector`。
+
+- 修正 `VolumeOscillator` 注册表中的 `batch_inputs`（此前错误地设为 `"input"`，导致数组批处理与 pandas 表批处理不一致）。
+- 放宽 Schaff Trend Cycle 与 `ta` 的比较容差，以容纳累积浮点漂移（约 1e-10）。
+- 在 Apple M4 Max、Intel Xeon 6975P-C 和 Loongson-3A6000 上重新测量 247 种算法的全注册表逐笔延迟（RTTA `0.2.3`）；注册表 `advance(...)` 中位数分别约为 29.9 / 39.2 / 104 ns/update（见 `BENCHMARK.md`）。
+
+- 新增经典 Tier C/D：`EhlersSuperSmoother`、`EhlersRoofingFilter`、`EhlersCyberCycle`、`EhlersCenterOfGravity`、`EhlersInstantaneousTrendline`、`EhlersDecycler`、`ParabolicSARExtended`、`KagiChart`、`PointAndFigure`、`GuppyMultipleMovingAverage`、`RollingMedian` 和 `GeometricMovingAverage`。
+- `Ichimoku` 现在接收 `close` 并返回 `lagging_span`（输入/输出扩展，属于破坏性变更）。
+
+- 完成经典 Tier A/B：多输出 `MACD`/`MACDFix`、`MACDExt`、`RelativeVolatilityIndex`、`PivotPoints`、`QStick`、`PsychologicalLine`、`Bias`、`WilliamsFractals`、`MarketFacilitationIndex`、`SwingIndex`、`AccumulativeSwingIndex`、`VerticalHorizontalFilter`、`RandomWalkIndex`、`PrettyGoodOscillator`、`TrendIntensityIndex`、`WilliamsAD`、`IntradayIntensity`、`TwiggsMoneyFlow`、`ComparativeRelativeStrength` 和 `InverseFisherRSI`。
+- `MACD`/`MACDFix` 现在返回 `macd`、`signal` 和 `histogram`（相对于此前只返回标量信号线的接口，属于破坏性变更）。
+
+- 新增第 2 波经典指标：`StochasticMomentumIndex`、`DeMarker`、`IntradayMomentumIndex`、`AccelerationBands`、`ChandelierExit`、`Alligator`、`GatorOscillator`、`AcceleratorOscillator`、`SqueezeMomentum`、`WaveTrend`，以及 Hilbert 套件（`HilbertDominantCyclePeriod`、`HilbertDominantCyclePhase`、`HilbertPhasor`、`HilbertSineWave`、`HilbertTrendMode`、`HilbertTrendline`）；每种指标都附带英文算法文档、注册表条目和测试。
+- 用与 TA-Lib 兼容的流式实现替换 Hilbert 套件引擎，覆盖 `HT_DCPERIOD`、`HT_DCPHASE`、`HT_PHASOR`、`HT_SINE`、`HT_TRENDMODE` 和 `HT_TRENDLINE`（奇偶去趋势器、WMA 平滑、周期截断、相位 DFT、趋势线和趋势模式规则）。
+
+- 新增经典完整性指标：`SmoothedMovingAverage`（SMMA/RMA/Wilder）、`ZeroLagEMA`、`ArnaudLegouxMovingAverage`、`McGinleyDynamic`、`BollingerPercentB`、`BollingerBandwidth`、`MovingAverageEnvelope`、`PositiveVolumeIndex`、`VolumeOscillator`、`EfficiencyRatio`、`HistoricalVolatility` 和 `ChaikinVolatility`；每种指标都附带英文算法文档、注册表条目和正确性测试。
+
 ## 0.2.2
 
 - 对 `indicator.cpp` 中的 C++ 热路径进行微优化：仅求和滚动窗口、分支/2 次幂环形索引、ConnorsRSI 排名扫描、布林带单次均值/方差、价格区间稳定时的 VolumeProfile 增量直方图、ADWIN/KSWIN 环形缓冲与预分配暂存、粒子滤波与高斯过程暂存复用及平稳 GP Cholesky 缓存，以及原始指针批处理循环。

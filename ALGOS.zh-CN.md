@@ -11,7 +11,7 @@
 | [`EMA`](documentation/algorithms/ema.zh-CN.md) | 对近期样本赋予更大权重的指数移动平均。 |
 | [`EWMA`](documentation/algorithms/ewma.zh-CN.md) | 通过 alpha、span 或 com 参数化的指数加权移动平均。 |
 | [`EWMAZScoreShiftDetector`](documentation/algorithms/ewmaz-score-shift-detector.zh-CN.md) | 用于检测超过阈值位移的因果 EWMA 均值/方差 z 分数事件检测器。 |
-| [`MACD`](documentation/algorithms/macd.zh-CN.md) | 指数平滑异同移动平均振荡器及其信号线和柱状图。 |
+| [`MACD`](documentation/algorithms/macd.zh-CN.md) | 多输出移动平均收敛/发散振荡器，包含 MACD、信号线和柱状图。 |
 | [`ROC`](documentation/algorithms/roc.zh-CN.md) | 以回看期内百分比变化表示的变动率动量。 |
 | [`RSI`](documentation/algorithms/rsi.zh-CN.md) | 相对强弱指数动量振荡器。 |
 | [`SMA`](documentation/algorithms/sma.zh-CN.md) | 滚动窗口内的简单移动平均。 |
@@ -78,7 +78,7 @@
 | [`HiddenSemiMarkovRegimeFilter`](documentation/algorithms/hidden-semi-markov-regime-filter.zh-CN.md) | 带有界持续期偏置的在线高斯隐半马尔可夫类状态滤波器。 |
 | [`HitRateDriftDetector`](documentation/algorithms/hit-rate-drift-detector.zh-CN.md) | 使用失误率回滞检测命中率下降的 EWMA 检测器。 |
 | [`HullMovingAverage`](documentation/algorithms/hull-moving-average.zh-CN.md) | 减少滞后的 HMA 加权移动平均。 |
-| [`Ichimoku`](documentation/algorithms/ichimoku.zh-CN.md) | 一目均衡表的转换线、基准线和先行带分量。 |
+| [`Ichimoku`](documentation/algorithms/ichimoku.zh-CN.md) | 一目均衡表的转换线、基准线、原始及位移先行带和迟行带。 |
 | [`IntradayClockEchoSignal`](documentation/algorithms/intraday-clock-echo-signal.zh-CN.md) | 从过去多个聚合 K 线交易日学习的日内相同时刻收益周期性信号。 |
 | [`InteractingMultipleModelFilter`](documentation/algorithms/interacting-multiple-model-filter.zh-CN.md) | 以在线概率混合低波动、高波动、趋势和震荡模型的四状态 IMM 卡尔曼跟踪器。 |
 | [`KSTOscillator`](documentation/algorithms/kst-oscillator.zh-CN.md) | Pring Know Sure Thing 多变动率平滑振荡器。 |
@@ -106,7 +106,7 @@
 | [`LinearRegressionSlope`](documentation/algorithms/linear-regression-slope.zh-CN.md) | 滚动线性回归拟合的斜率。 |
 | [`Low`](documentation/algorithms/low.zh-CN.md) | 滚动最低值。 |
 | [`LowIndex`](documentation/algorithms/low-index.zh-CN.md) | 滚动最低值的偏移量/索引。 |
-| [`MACDFix`](documentation/algorithms/macd-fix.zh-CN.md) | 移动平均周期固定为 12/26 的 MACD。 |
+| [`MACDFix`](documentation/algorithms/macd-fix.zh-CN.md) | 快慢 EMA 周期固定为 12/26、信号周期可配置的 MACD。 |
 | [`MassIndex`](documentation/algorithms/mass-index.zh-CN.md) | 根据价格区间扩张识别反转的指标。 |
 | [`MarketOpenCloseTransitionDetector`](documentation/algorithms/market-open-close-transition-detector.zh-CN.md) | 根据交易时段进度检测开盘和收盘区间转换。 |
 | [`MatchedFlowConformalSignal`](documentation/algorithms/matched-flow-conformal-signal.zh-CN.md) | 日内 OHLCV 匹配流信号，带类共形滚动误差区间和目标仓位诊断。 |
@@ -192,3 +192,134 @@
 | [`WeightedMovingAverage`](documentation/algorithms/weighted-moving-average.zh-CN.md) | 对近期样本赋予更大权重的加权移动平均。 |
 | [`WilliamsR`](documentation/algorithms/williams-r.zh-CN.md) | Williams %R 超买/超卖振荡器。 |
 | [`ZigZagSwingDetector`](documentation/algorithms/zig-zag-swing-detector.zh-CN.md) | 基于收盘价的波段检测器，滤除低于百分比阈值的价格变动并输出已确认枢轴点。 |
+| [`AccelerationBands`](documentation/algorithms/acceleration-bands.zh-CN.md) | TA-Lib 风格加速带：对缩放后的最高价和最低价极值计算 SMA，并以 SMA 为中轨。 |
+| [`AcceleratorOscillator`](documentation/algorithms/accelerator-oscillator.zh-CN.md) | Bill Williams 加速振荡器：Awesome Oscillator 减去其 SMA。 |
+| [`AccumulativeSwingIndex`](documentation/algorithms/accumulative-swing-index.zh-CN.md) | Wilder 摆动指数的累积和。 |
+| [`Alligator`](documentation/algorithms/alligator.zh-CN.md) | Bill Williams 鳄鱼线：中间价的位移 SMMA 颚线、齿线和唇线。 |
+| [`AndrewsPitchfork`](documentation/algorithms/andrews-pitchfork.zh-CN.md) | 根据百分比波段枢轴点流式构建 Andrews 叉形线中线和平行通道。 |
+| [`ArnaudLegouxMovingAverage`](documentation/algorithms/arnaud-legoux-moving-average.zh-CN.md) | 由 offset 和 sigma 控制高斯权重的 Arnaud Legoux 移动平均。 |
+| [`BearsPower`](documentation/algorithms/bears-power.zh-CN.md) | Elder 空头力量：最低价减收盘价 EMA。 |
+| [`Bias`](documentation/algorithms/bias.zh-CN.md) | 价格相对其简单移动平均的百分比偏差。 |
+| [`BollingerBandwidth`](documentation/algorithms/bollinger-bandwidth.zh-CN.md) | 布林带宽度：滚动均值与标准差包络的（上轨−下轨）/中轨。 |
+| [`BollingerPercentB`](documentation/algorithms/bollinger-percent-b.zh-CN.md) | 布林 %B：价格在滚动均值与标准差包络中的位置。 |
+| [`BullsPower`](documentation/algorithms/bulls-power.zh-CN.md) | Elder 多头力量：最高价减收盘价 EMA。 |
+| [`CamarillaPivotPoints`](documentation/algorithms/camarilla-pivot-points.zh-CN.md) | 根据前一根 K 线 HLC 计算 Camarilla 支撑位和阻力位。 |
+| [`CDL3BlackCrows`](documentation/algorithms/cdl-3-black-crows.zh-CN.md) | 三只乌鸦：连续三根逐步下行的阴线实体。 |
+| [`CDL3Inside`](documentation/algorithms/cdl-3-inside.zh-CN.md) | 三内部上涨/下跌：孕线加确认 K 线。 |
+| [`CDL3Outside`](documentation/algorithms/cdl-3-outside.zh-CN.md) | 三外部上涨/下跌：吞没形态加确认 K 线。 |
+| [`CDL3WhiteSoldiers`](documentation/algorithms/cdl-3-white-soldiers.zh-CN.md) | 三白兵（红三兵）：连续三根逐步上行的阳线实体。 |
+| [`CDLBeltHold`](documentation/algorithms/cdl-belt-hold.zh-CN.md) | 捉腰带线：在极值处开盘并形成长实体。 |
+| [`CDLClosingMarubozu`](documentation/algorithms/cdl-closing-marubozu.zh-CN.md) | 收盘光头光脚线：实体收于或接近 K 线极值。 |
+| [`CDLCounterAttack`](documentation/algorithms/cdl-counter-attack.zh-CN.md) | 反击线：方向相反的长实体收于前一收盘价附近。 |
+| [`CDLDarkCloudCover`](documentation/algorithms/cdl-dark-cloud-cover.zh-CN.md) | 乌云盖顶：阴线收盘穿过前一根阳线实体中点。 |
+| [`CDLDojiStar`](documentation/algorithms/cdl-doji-star.zh-CN.md) | 十字星：长实体之后出现十字线，提示反转风险。 |
+| [`CDLDoji`](documentation/algorithms/cdl-doji.zh-CN.md) | 十字线：真实实体相对全幅极小，表示犹豫。 |
+| [`CDLDragonflyDoji`](documentation/algorithms/cdl-dragonfly-doji.zh-CN.md) | 蜻蜓十字：带长下影线的十字线，表示看涨拒绝。 |
+| [`CDLEngulfing`](documentation/algorithms/cdl-engulfing.zh-CN.md) | 吞没形态：当前实体完全吞没前一实体，提示反转。 |
+| [`CDLEveningDojiStar`](documentation/algorithms/cdl-evening-doji-star.zh-CN.md) | 黄昏十字星：中间 K 线为十字线的黄昏星。 |
+| [`CDLEveningStar`](documentation/algorithms/cdl-evening-star.zh-CN.md) | 黄昏星：三根 K 线组成的看跌反转形态。 |
+| [`CDLGravestoneDoji`](documentation/algorithms/cdl-gravestone-doji.zh-CN.md) | 墓碑十字：带长上影线的十字线，表示看跌拒绝。 |
+| [`CDLHammer`](documentation/algorithms/cdl-hammer.zh-CN.md) | 锤头线：下跌趋势中带长下影线的看涨形态。 |
+| [`CDLHangingMan`](documentation/algorithms/cdl-hanging-man.zh-CN.md) | 上吊线：上涨趋势中出现锤头外形的看跌形态。 |
+| [`CDLHaramiCross`](documentation/algorithms/cdl-harami-cross.zh-CN.md) | 十字孕线：前一实体内部出现十字线。 |
+| [`CDLHarami`](documentation/algorithms/cdl-harami.zh-CN.md) | 孕线：小实体位于前一实体内部，表示反转或停顿。 |
+| [`CDLHighWave`](documentation/algorithms/cdl-high-wave.zh-CN.md) | 高浪线：极小实体配合很长的影线。 |
+| [`CDLInvertedHammer`](documentation/algorithms/cdl-inverted-hammer.zh-CN.md) | 倒锤头线：下跌趋势中带长上影线的看涨形态。 |
+| [`CDLLongLeggedDoji`](documentation/algorithms/cdl-long-legged-doji.zh-CN.md) | 长脚十字：上下影线都很长的十字线。 |
+| [`CDLLongLine`](documentation/algorithms/cdl-long-line.zh-CN.md) | 长实体线：真实实体相对近期平均实体较大。 |
+| [`CDLMarubozu`](documentation/algorithms/cdl-marubozu.zh-CN.md) | 光头光脚线：全幅主要由真实实体构成，方向性很强。 |
+| [`CDLMatchingLow`](documentation/algorithms/cdl-matching-low.zh-CN.md) | 相同低价：两根阴线收盘价相近，提示支撑。 |
+| [`CDLMorningDojiStar`](documentation/algorithms/cdl-morning-doji-star.zh-CN.md) | 晨星十字：中间 K 线为十字线的晨星。 |
+| [`CDLMorningStar`](documentation/algorithms/cdl-morning-star.zh-CN.md) | 晨星：三根 K 线组成的看涨反转形态。 |
+| [`CDLPatternPack`](documentation/algorithms/cdl-pattern-pack.zh-CN.md) | 一次 OHLC 更新即可计算多种常见 CDL 形态的多输出组合。 |
+| [`CDLPiercing`](documentation/algorithms/cdl-piercing.zh-CN.md) | 刺透形态：阳线收盘穿过前一根阴线实体中点。 |
+| [`CDLShootingStar`](documentation/algorithms/cdl-shooting-star.zh-CN.md) | 流星线：上涨趋势中带长上影线的看跌形态。 |
+| [`CDLShortLine`](documentation/algorithms/cdl-short-line.zh-CN.md) | 短实体线：真实实体相对近期平均实体较小。 |
+| [`CDLSpinningTop`](documentation/algorithms/cdl-spinning-top.zh-CN.md) | 纺锤线：小实体配合上下影线，表示犹豫。 |
+| [`CDLTriStar`](documentation/algorithms/cdl-tri-star.zh-CN.md) | 三星十字：连续三根十字线构成的反转形态。 |
+| [`ChaikinVolatility`](documentation/algorithms/chaikin-volatility.zh-CN.md) | 最高价—最低价区间 EMA 的百分比变化率。 |
+| [`ChandeForecastOscillator`](documentation/algorithms/chande-forecast-oscillator.zh-CN.md) | Chande 预测振荡器：收盘价距时间序列预测值的百分比。 |
+| [`ChandelierExit`](documentation/algorithms/chandelier-exit.zh-CN.md) | 根据滚动高低极值构建的 ATR 跟踪型多头/空头吊灯止损位。 |
+| [`ComparativeRelativeStrength`](documentation/algorithms/comparative-relative-strength.zh-CN.md) | 两个价格序列的比率，即 A/B 比较相对强弱。 |
+| [`ConformalBands`](documentation/algorithms/conformal-bands.zh-CN.md) | 以 SMA 为中心、滚动绝对残差分位数为半径的流式拆分保形式预测带。 |
+| [`CrossAssetOrderFlowImbalance`](documentation/algorithms/cross-asset-order-flow-imbalance.zh-CN.md) | 本资产收益率对同类资产 OFI 的滚动 beta，以及隐含冲击和残差。 |
+| [`DeMarker`](documentation/algorithms/de-marker.zh-CN.md) | 根据最高价向上延伸和最低价向下延伸压力构造的 DeMarker 振荡器。 |
+| [`DecomposedOrderFlowImbalance`](documentation/algorithms/decomposed-order-flow-imbalance.zh-CN.md) | 将 Cont 风格报价压力分解为新增、撤单和成交通道。 |
+| [`DirectionalChangeDetector`](documentation/algorithms/directional-change-detector.zh-CN.md) | 带超调跟踪的方向变化内在时间事件检测器。 |
+| [`DollarBarGenerator`](documentation/algorithms/dollar-bar-generator.zh-CN.md) | 价格×成交量累计到阈值时结束的信息驱动成交额 K 线。 |
+| [`DollarRunBarGenerator`](documentation/algorithms/dollar-run-bar-generator.zh-CN.md) | 同号的价格绝对值×成交量累计到阈值时结束的成交额游程 K 线。 |
+| [`EfficiencyRatio`](documentation/algorithms/efficiency-ratio.zh-CN.md) | 滚动窗口内净方向移动与路径长度之比，即 Kaufman 效率比率。 |
+| [`EhlersCenterOfGravity`](documentation/algorithms/ehlers-center-of-gravity.zh-CN.md) | 滚动价格窗口的 Ehlers 重心振荡器，带滞后触发线。 |
+| [`EhlersCyberCycle`](documentation/algorithms/ehlers-cyber-cycle.zh-CN.md) | 带触发线的 Ehlers Cyber Cycle 带通式周期振荡器。 |
+| [`EhlersDecycler`](documentation/algorithms/ehlers-decycler.zh-CN.md) | Ehlers 去周期趋势估计及残差振荡器。 |
+| [`EhlersInstantaneousTrendline`](documentation/algorithms/ehlers-instantaneous-trendline.zh-CN.md) | 带两根 K 线外推触发线的 Ehlers 瞬时趋势线。 |
+| [`EhlersRoofingFilter`](documentation/algorithms/ehlers-roofing-filter.zh-CN.md) | Ehlers Roofing 滤波器：高通级加 Super Smoother 低通级。 |
+| [`EhlersSuperSmoother`](documentation/algorithms/ehlers-super-smoother.zh-CN.md) | Ehlers 二极点 Super Smoother 低通滤波器。 |
+| [`ElderThermometer`](documentation/algorithms/elder-thermometer.zh-CN.md) | Elder K 线区间温度计：当前区间相对前一区间的比率与升温标志。 |
+| [`FibonacciPivotPoints`](documentation/algorithms/fibonacci-pivot-points.zh-CN.md) | 根据前一根 K 线 HLC 计算斐波那契支撑位和阻力位。 |
+| [`FlowPressureCapacitySignal`](documentation/algorithms/flow-pressure-capacity-signal.zh-CN.md) | 按事件时间比较主动订单流与对手方 L1 容量，并修正队列补单、撤单脆弱性和瞬时失衡。 |
+| [`FOCuS`](documentation/algorithms/focus.zh-CN.md) | 带候选项修剪的函数式在线 CUSUM 均值变点检测器。 |
+| [`FourierResidueIdentity`](documentation/algorithms/fourier-residue-identity.zh-CN.md) | 傅里叶—剩余类恒等式：把收益率自相关拆成可检验的方向（符号，k=2）与幅度（k=4）通道，并逐通道计算 Fejér 方差比。 |
+| [`GatorOscillator`](documentation/algorithms/gator-oscillator.zh-CN.md) | 根据鳄鱼线颚线—齿线与齿线—唇线距离计算 Bill Williams 鳄鱼振荡器。 |
+| [`GeometricMovingAverage`](documentation/algorithms/geometric-moving-average.zh-CN.md) | 对数价格 SMA 取指数所得几何移动平均。 |
+| [`GuppyMMARibbon`](documentation/algorithms/guppy-mma-ribbon.zh-CN.md) | 完整顾比 MMA 带：六条短期 EMA、六条长期 EMA 及两组平均值。 |
+| [`GuppyMultipleMovingAverage`](documentation/algorithms/guppy-multiple-moving-average.zh-CN.md) | 顾比 MMA 的短期/长期 EMA 组平均值及其价差。 |
+| [`HawkesIntensity`](documentation/algorithms/hawkes-intensity.zh-CN.md) | 用于事件时间的指数型 Hawkes 自激强度过程。 |
+| [`HilbertDominantCyclePeriod`](documentation/algorithms/hilbert-dominant-cycle-period.zh-CN.md) | 与 TA-Lib HT_DCPERIOD 兼容的主导周期长度。 |
+| [`HilbertDominantCyclePhase`](documentation/algorithms/hilbert-dominant-cycle-phase.zh-CN.md) | 与 TA-Lib HT_DCPHASE 兼容、以度表示的主导周期相位。 |
+| [`HilbertPhasor`](documentation/algorithms/hilbert-phasor.zh-CN.md) | 与 TA-Lib HT_PHASOR 兼容的同相分量和正交分量。 |
+| [`HilbertSineWave`](documentation/algorithms/hilbert-sine-wave.zh-CN.md) | 与 TA-Lib HT_SINE 兼容的正弦波和超前正弦波。 |
+| [`HilbertTrendMode`](documentation/algorithms/hilbert-trend-mode.zh-CN.md) | 与 TA-Lib HT_TRENDMODE 兼容的趋势/周期模式标志（1=趋势，0=周期）。 |
+| [`HilbertTrendline`](documentation/algorithms/hilbert-trendline.zh-CN.md) | 与 TA-Lib HT_TRENDLINE 兼容的瞬时趋势线。 |
+| [`HistoricalVolatility`](documentation/algorithms/historical-volatility.zh-CN.md) | 对数收益率滚动标准差的年化值。 |
+| [`ImbalanceBarGenerator`](documentation/algorithms/imbalance-bar-generator.zh-CN.md) | 有符号成交量绝对值达到阈值时结束的成交量失衡 K 线。 |
+| [`Inertia`](documentation/algorithms/inertia.zh-CN.md) | Dorsey 惯性指标：相对波动率指数的线性回归。 |
+| [`IntegratedOrderFlowImbalance`](documentation/algorithms/integrated-order-flow-imbalance.zh-CN.md) | 投影到在线第一主成分上的多档 Cont OFI。 |
+| [`IntradayIntensity`](documentation/algorithms/intraday-intensity.zh-CN.md) | 滚动成交量加权日内强度（2C−H−L）/（H−L）。 |
+| [`IntradayMomentumIndex`](documentation/algorithms/intraday-momentum-index.zh-CN.md) | 按每根 K 线开盘到收盘涨跌构造的 RSI 风格振荡器。 |
+| [`InverseFisherRSI`](documentation/algorithms/inverse-fisher-rsi.zh-CN.md) | 对 RSI 应用反 Fisher 变换，以产生更清晰的转折点。 |
+| [`KagiChart`](documentation/algorithms/kagi-chart.zh-CN.md) | 流式卡吉线、方向与反转事件。 |
+| [`KalmanInnovationResidualBOCPD`](documentation/algorithms/kalman-innovation-residual-bocpd.zh-CN.md) | 把 Kalman 新息 z 分数残差送入 ResidualBOCPD 变点检测。 |
+| [`KalmanInnovationResidualFOCuS`](documentation/algorithms/kalman-innovation-residual-focus.zh-CN.md) | 把 Kalman 新息 z 分数残差送入 FOCuS 变点检测。 |
+| [`MACDExt`](documentation/algorithms/macd-ext.zh-CN.md) | 快线、慢线和信号线均可选择 SMA/EMA 类型的 MACD。 |
+| [`MarketFacilitationIndex`](documentation/algorithms/market-facilitation-index.zh-CN.md) | K 线区间除以成交量，即 Bill Williams 市场促进指数。 |
+| [`McGinleyDynamic`](documentation/algorithms/mc-ginley-dynamic.zh-CN.md) | 趋势中自动加快、震荡中减慢的 McGinley Dynamic 自适应移动平均。 |
+| [`MessageEventOrderFlowImbalance`](documentation/algorithms/message-event-order-flow-imbalance.zh-CN.md) | 根据离散限价订单簿/成交消息事件（新增、撤单、成交）滚动累积 OFI。 |
+| [`MovingAverageEnvelope`](documentation/algorithms/moving-average-envelope.zh-CN.md) | 简单移动平均线上下的百分比包络带。 |
+| [`MovingAverageVariablePeriod`](documentation/algorithms/moving-average-variable-period.zh-CN.md) | 每根 K 线周期可变的 SMA（TA-Lib MAVP 风格）。 |
+| [`MultiLevelOrderFlowImbalance`](documentation/algorithms/multi-level-order-flow-imbalance.zh-CN.md) | 各订单簿档位的 Cont 风格订单流失衡，并提供总和/均值。 |
+| [`MultiPeerOrderFlowImbalance`](documentation/algorithms/multi-peer-order-flow-imbalance.zh-CN.md) | 等权同类资产篮子 OFI，以及其对本资产收益率的滚动 beta 冲击。 |
+| [`ParabolicSARExtended`](documentation/algorithms/parabolic-sar-extended.zh-CN.md) | 多头/空头使用独立 AF 链的扩展抛物线 SAR（SAREXT 风格）。 |
+| [`PivotPoints`](documentation/algorithms/pivot-points.zh-CN.md) | 根据前一根 K 线计算的经典场内枢轴点（PP/R1–R3/S1–S3）。 |
+| [`PointAndFigure`](documentation/algorithms/point-and-figure.zh-CN.md) | 流式点数图格值价格、方向和反转。 |
+| [`PositiveVolumeIndex`](documentation/algorithms/positive-volume-index.zh-CN.md) | 仅在成交量增加期间发生变化的累积指标。 |
+| [`PrettyGoodOscillator`](documentation/algorithms/pretty-good-oscillator.zh-CN.md) | 收盘价减 SMA，再按 ATR 标准化的 PGO。 |
+| [`ProjectionOscillator`](documentation/algorithms/projection-oscillator.zh-CN.md) | 收盘价在最高价和最低价线性回归投影带内的随机指标式振荡器。 |
+| [`PsychologicalLine`](documentation/algorithms/psychological-line.zh-CN.md) | 滚动窗口内上涨收盘 K 线的百分比。 |
+| [`QStick`](documentation/algorithms/q-stick.zh-CN.md) | 收盘价减开盘价的简单移动平均。 |
+| [`RainbowMovingAverage`](documentation/algorithms/rainbow-moving-average.zh-CN.md) | Mel Widner 彩虹线：递归 SMA 层及其外层、最高、最低、中点和宽度。 |
+| [`RainbowOscillator`](documentation/algorithms/rainbow-oscillator.zh-CN.md) | 彩虹振荡器：递归 SMA 各层的百分比宽度和价格位置。 |
+| [`RandomWalkIndex`](documentation/algorithms/random-walk-index.zh-CN.md) | 相对于 ATR 缩放区间的随机游走指数高侧/低侧值。 |
+| [`RangeActionVerificationIndex`](documentation/algorithms/range-action-verification-index.zh-CN.md) | RAVI：短期与长期 SMA 绝对距离占长期 SMA 的百分比。 |
+| [`RelativeVolatilityIndex`](documentation/algorithms/relative-volatility-index.zh-CN.md) | 对收盘价滚动标准差应用 RSI 风格计算的相对波动率指数。 |
+| [`ResidualBOCPD`](documentation/algorithms/residual-bocpd.zh-CN.md) | 应用于残差/新息序列的有界 BOCPD 变点检测器。 |
+| [`ResidualFOCuS`](documentation/algorithms/residual-focus.zh-CN.md) | 应用于残差/新息序列、面向模型变点检测的 FOCuS。 |
+| [`RollingMedian`](documentation/algorithms/rolling-median.zh-CN.md) | 价格窗口的滚动中位数。 |
+| [`RunBarGenerator`](documentation/algorithms/run-bar-generator.zh-CN.md) | 连续同号逐笔达到阈值后结束的逐笔游程 K 线。 |
+| [`SmoothedMovingAverage`](documentation/algorithms/smoothed-moving-average.zh-CN.md) | 以初始 SMA 窗口为种子的 Wilder/SMMA/RMA 平滑移动平均。 |
+| [`SqrtImpactFlowSignal`](documentation/algorithms/sqrt-impact-flow-signal.zh-CN.md) | 平方根冲击残差订单流：未使用冲击预算的延续、超调的回归，以及可选 VWAP 对齐。 |
+| [`SqueezeMomentum`](documentation/algorithms/squeeze-momentum.zh-CN.md) | TTM 风格布林带位于肯特纳通道内的挤压标志及线性回归动量。 |
+| [`StochasticMomentumIndex`](documentation/algorithms/stochastic-momentum-index.zh-CN.md) | 带信号线的双重平滑随机动量指数。 |
+| [`SwingIndex`](documentation/algorithms/swing-index.zh-CN.md) | Wilder 衡量相邻 K 线价格行为的摆动指数。 |
+| [`TrendIntensityIndex`](documentation/algorithms/trend-intensity-index.zh-CN.md) | SMA 正偏差占绝对偏差的百分比。 |
+| [`TwiggsMoneyFlow`](documentation/algorithms/twiggs-money-flow.zh-CN.md) | 使用真实最高价/最低价和 EMA 成交量归一化的 Twiggs 资金流量。 |
+| [`VerticalHorizontalFilter`](documentation/algorithms/vertical-horizontal-filter.zh-CN.md) | 净移动相对路径长度的趋势强度指标（VHF）。 |
+| [`VolumeBarGenerator`](documentation/algorithms/volume-bar-generator.zh-CN.md) | 成交量达到阈值时结束的信息驱动成交量 K 线。 |
+| [`VolumeOscillator`](documentation/algorithms/volume-oscillator.zh-CN.md) | 成交量短期与长期简单移动平均之间的百分比差。 |
+| [`VolumeRunBarGenerator`](documentation/algorithms/volume-run-bar-generator.zh-CN.md) | 同号累计成交量达到阈值时结束的成交量游程 K 线。 |
+| [`WaveTrend`](documentation/algorithms/wave-trend.zh-CN.md) | 基于 HLC3 的 LazyBear WaveTrend 振荡器（wt1/wt2）。 |
+| [`WeightedMultiPeerOrderFlowImbalance`](documentation/algorithms/weighted-multi-peer-order-flow-imbalance.zh-CN.md) | 显式加权同类资产篮子 OFI，以及其对本资产收益率的滚动 beta 冲击。 |
+| [`WilliamsAD`](documentation/algorithms/williams-ad.zh-CN.md) | Williams 累积/派发累计线。 |
+| [`WilliamsFractals`](documentation/algorithms/williams-fractals.zh-CN.md) | 确认滞后两根 K 线的五根 K 线上下分形枢轴。 |
+| [`WoodiePivotPoints`](documentation/algorithms/woodie-pivot-points.zh-CN.md) | 根据前一根 K 线 H + L + 2C 计算的 Woodie 场内枢轴点。 |
+| [`ZeroLagEMA`](documentation/algorithms/zero-lag-ema.zh-CN.md) | 将去滞后价格送入 EMA 的零滞后指数移动平均。 |

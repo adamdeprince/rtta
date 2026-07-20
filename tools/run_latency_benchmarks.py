@@ -80,6 +80,7 @@ MARKET_FIELDS = frozenset(
         "bid_size",
         "ask_price",
         "ask_size",
+        "period",
     }
 )
 

@@ -33,6 +33,10 @@ import numpy as np
 
 
 Number = float | int
+
+# Synthetic LOB depth for multi-level OFI benchmarks/tests.
+DEPTH_LEVELS = 5
+DEPTH_TICK = 0.01
 ExternalRunner = Callable[["MarketData"], Any]
 
 
@@ -47,6 +51,9 @@ class IndicatorSpec:
     ctor_kwargs: dict[str, Any] = field(default_factory=dict)
     batch_inputs: tuple[str, ...] | None = None
     batch_method: str = "batch"
+    # When True, update_inputs name 2D depth-book arrays of shape (n_samples, levels).
+    # Incremental runners pass one row (length levels) per tick; batch passes full matrices.
+    depth_book: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,11 +83,18 @@ class MarketRecord:
     real0: float
     real1: float
     signed_dollar_volume: float
+    signed_volume: float
     trade_price: float
     bid_price: float
     bid_size: float
     ask_price: float
     ask_size: float
+    period: float
+    time: float
+    jump: float
+    event_type: float
+    side: float
+    qty: float
 
     def __getitem__(self, key: str) -> float:
         return getattr(self, key)
@@ -108,87 +122,182 @@ class BenchResult:
     ta_batch_ns: float | None = None
 
 
-INDICATORS: tuple[IndicatorSpec, ...] = (
-    IndicatorSpec("ATR", ("close", "high", "low")),
-    IndicatorSpec("ATRP", ("close", "high", "low")),
-    IndicatorSpec("ATRRegimeDetector", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
-    IndicatorSpec("ADWIN", ("value",), batch_inputs=("value",)),
-    IndicatorSpec("EMA", ("value",), ctor_kwargs={"window": 30.0}, batch_inputs=("input",)),
-    IndicatorSpec("EWMA", ("value",), ctor_kwargs={"span": 30.0}),
-    IndicatorSpec("EWMAZScoreShiftDetector", ("close",), ctor_kwargs={"alpha": 0.05, "threshold": 3.0}, batch_inputs=("close",)),
-    IndicatorSpec("MACD", ("value",), batch_inputs=("input",)),
-    IndicatorSpec("ROC", ("close",), ctor_kwargs={"window": 10}, batch_inputs=("close",)),
-    IndicatorSpec("RSI", ("value",)),
-    IndicatorSpec("SMA", ("value",), ctor_kwargs={"window": 30}, batch_inputs=("input",)),
-    IndicatorSpec("TSI", ("x",)),
-    IndicatorSpec("AbsolutePriceOscillator", ("close",)),
+INDICATORS: tuple[IndicatorSpec, ...] = (    IndicatorSpec("AbsolutePriceOscillator", ("close",)),
+    IndicatorSpec("AccelerationBands", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("AcceleratorOscillator", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("AccumulationDistribution", ("close", "high", "low", "volume")),
+    IndicatorSpec("AccumulativeSwingIndex", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("ADWIN", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("Alligator", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("AlphaBetaGammaTrackingFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("AmihudIlliquidity", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("AnchoredVWAP", ("close", "high", "low", "volume", "anchor"), batch_inputs=("close", "high", "low", "volume", "anchor")),
+    IndicatorSpec("AndrewsPitchfork", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
+    IndicatorSpec("ArnaudLegouxMovingAverage", ("value",), ctor_kwargs={"window": 9}, batch_inputs=("input",)),
     IndicatorSpec("Aroon", ("high", "low")),
     IndicatorSpec("AroonOscillator", ("high", "low")),
+    IndicatorSpec("ATR", ("close", "high", "low")),
+    IndicatorSpec("ATRP", ("close", "high", "low")),
+    IndicatorSpec("ATRRegimeDetector", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("AuctionContinuousMarketTransitionDetector", ("auction_signal",), batch_inputs=("auction_signal",)),
     IndicatorSpec("AverageDirectionalMovementIndex", ("close", "high", "low")),
     IndicatorSpec("AverageDirectionalMovementIndexRating", ("close", "high", "low")),
     IndicatorSpec("AveragePrice", ("open", "high", "low", "close")),
-    IndicatorSpec("AuctionContinuousMarketTransitionDetector", ("auction_signal",), batch_inputs=("auction_signal",)),
     IndicatorSpec("AwesomeOscillator", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("BalanceOfPower", ("open", "high", "low", "close")),
+    IndicatorSpec("BearsPower", ("low", "close"), batch_inputs=("low", "close")),
     IndicatorSpec("Beta", ("real0", "real1")),
     IndicatorSpec("BetaRegimeDetector", ("real0", "real1"), batch_inputs=("real0", "real1")),
+    IndicatorSpec("Bias", ("close",), batch_inputs=("close",)),
     IndicatorSpec("BidAskBounceRegimeDetector", ("trade_price", "bid_price", "ask_price"), batch_inputs=("trade_price", "bid_price", "ask_price")),
     IndicatorSpec("BollingerBands", ("value",)),
+    IndicatorSpec("BollingerBandwidth", ("value",), ctor_kwargs={"window": 20}),
+    IndicatorSpec("BollingerPercentB", ("value",), ctor_kwargs={"window": 20}),
     IndicatorSpec("BoundedBOCPD", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("BullsPower", ("high", "close"), batch_inputs=("high", "close")),
     IndicatorSpec("CalibrationDriftDetector", ("probability", "outcome"), batch_inputs=("probability", "outcome")),
+    IndicatorSpec("CamarillaPivotPoints", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
+    IndicatorSpec("CDL3BlackCrows", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDL3Inside", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDL3Outside", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDL3WhiteSoldiers", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLBeltHold", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLClosingMarubozu", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLCounterAttack", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLDarkCloudCover", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLDoji", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLDojiStar", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLDragonflyDoji", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLEngulfing", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLEveningDojiStar", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLEveningStar", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLGravestoneDoji", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLHammer", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLHangingMan", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLHarami", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLHaramiCross", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLHighWave", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLInvertedHammer", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLLongLeggedDoji", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLLongLine", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLMarubozu", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLMatchingLow", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLMorningDojiStar", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLMorningStar", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLPatternPack", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLPiercing", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLShootingStar", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLShortLine", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLSpinningTop", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("CDLTriStar", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
     IndicatorSpec("ChaikinMoneyFlow", ("close", "high", "low", "volume"), batch_inputs=("close", "high", "low", "volume")),
     IndicatorSpec("ChaikinOscillator", ("close", "high", "low", "volume")),
+    IndicatorSpec("ChaikinVolatility", ("high", "low"), batch_inputs=("high", "low")),
+    IndicatorSpec("ChandeForecastOscillator", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("ChandelierExit", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
     IndicatorSpec("ChandeMomentumOscillator", ("close",)),
     IndicatorSpec("ChoppinessIndex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
     IndicatorSpec("ClosePressureReversalSignal", ("open", "high", "low", "close", "volume"), batch_inputs=("open", "high", "low", "close", "volume")),
     IndicatorSpec("CointegrationBreakdownMonitor", ("real0", "real1"), batch_inputs=("real0", "real1")),
-    IndicatorSpec("ConnorsRSI", ("close",), batch_inputs=("close",)),
     IndicatorSpec("CommodityChannelIndex", ("close", "high", "low")),
+    IndicatorSpec("ComparativeRelativeStrength", ("real0", "real1"), batch_inputs=("real0", "real1")),
+    IndicatorSpec("ConformalBands", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("ConnorsRSI", ("close",), batch_inputs=("close",)),
     IndicatorSpec("CoppockCurve", ("close",), batch_inputs=("close",)),
     IndicatorSpec("Correlation", ("real0", "real1")),
     IndicatorSpec("CorrelationRegimeDetector", ("real0", "real1"), batch_inputs=("real0", "real1")),
     IndicatorSpec("CrossAssetCorrelationBreakDetector", ("real0", "real1"), batch_inputs=("real0", "real1")),
+    IndicatorSpec("CrossAssetOrderFlowImbalance", ("real0", "real1"), batch_inputs=("real0", "real1")),
     IndicatorSpec("CumulativeReturn", ("close",), batch_inputs=("close",)),
     IndicatorSpec("CUSUM", ("close",), ctor_kwargs={"threshold": 1.0, "drift": 0.0}, batch_inputs=("close",)),
-    IndicatorSpec("DDM", ("error",), batch_inputs=("error",)),
     IndicatorSpec("DailyLogReturn", ("close",), batch_inputs=("close",)),
     IndicatorSpec("DailyReturn", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("DDM", ("error",), batch_inputs=("error",)),
+    IndicatorSpec("DecomposedOrderFlowImbalance", ("bid_price", "bid_size", "ask_price", "ask_size"), batch_inputs=("bid_price", "bid_size", "ask_price", "ask_size")),
     IndicatorSpec("Delay", ("value",)),
+    IndicatorSpec("DeMarker", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("DetrendedPriceOscillator", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("DirectionalChangeDetector", ("close",), batch_inputs=("close",)),
     IndicatorSpec("DirectionalMovementIndex", ("close", "high", "low")),
-    IndicatorSpec("DoubleEMA", ("value",)),
+    IndicatorSpec("DollarBarGenerator", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec("DollarRunBarGenerator", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("DonchianChannel", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
-    IndicatorSpec("EDDM", ("error",), batch_inputs=("error",)),
-    IndicatorSpec("EhlersOptimalTrackingFilter", ("high", "low"), batch_inputs=("high", "low")),
-    IndicatorSpec("ElderRayIndex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("DoubleEMA", ("value",)),
     IndicatorSpec("EaseOfMovement", ("high", "low", "volume"), batch_inputs=("high", "low", "volume")),
+    IndicatorSpec("EDDM", ("error",), batch_inputs=("error",)),
+    IndicatorSpec("EfficiencyRatio", ("close",), ctor_kwargs={"window": 10}, batch_inputs=("input",)),
+    IndicatorSpec("EhlersCenterOfGravity", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("EhlersCyberCycle", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("EhlersDecycler", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("EhlersInstantaneousTrendline", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("EhlersOptimalTrackingFilter", ("high", "low"), batch_inputs=("high", "low")),
+    IndicatorSpec("EhlersRoofingFilter", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("EhlersSuperSmoother", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("ElderRayIndex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("ElderThermometer", ("high", "low"), batch_inputs=("high", "low")),
+    IndicatorSpec("EMA", ("value",), ctor_kwargs={"window": 30.0}, batch_inputs=("input",)),
+    IndicatorSpec("EWMA", ("value",), ctor_kwargs={"span": 30.0}),
+    IndicatorSpec("EWMAZScoreShiftDetector", ("close",), ctor_kwargs={"alpha": 0.05, "threshold": 3.0}, batch_inputs=("close",)),
     IndicatorSpec("ExecutionCostSlippageRegimeDetector", ("trade_price", "bid_price", "ask_price"), batch_inputs=("trade_price", "bid_price", "ask_price")),
     IndicatorSpec("FastStochastic", ("close", "high", "low")),
     IndicatorSpec("FeatureDistributionDriftDetector", ("feature",), batch_inputs=("feature",)),
+    IndicatorSpec("FibonacciPivotPoints", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
     IndicatorSpec("FibonacciRetracementLevels", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("FisherTransform", ("high", "low"), batch_inputs=("high", "low")),
+    IndicatorSpec("FlowPressureCapacitySignal", ("bid_price", "bid_size", "ask_price", "ask_size", "signed_volume"), batch_inputs=("bid_price", "bid_size", "ask_price", "ask_size", "signed_volume")),
+    IndicatorSpec("FOCuS", ("value",), batch_inputs=("value",)),
     IndicatorSpec("ForceIndex", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec("FourierResidueIdentity", ("close",), batch_inputs=("close",)),
     IndicatorSpec("FractalAdaptiveMovingAverage", ("value",), ctor_kwargs={"window": 16}, batch_inputs=("input",)),
+    IndicatorSpec("GatorOscillator", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("GaussianProcessRegressionBands", ("close",), ctor_kwargs={"window": 16}, batch_inputs=("close",)),
+    IndicatorSpec("GeometricMovingAverage", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("GuppyMMARibbon", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("GuppyMultipleMovingAverage", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("HawkesIntensity", ("time", "jump"), batch_inputs=("time", "jump")),
+    IndicatorSpec("HDDM", ("error",), batch_inputs=("error",)),
+    IndicatorSpec("HeikinAshiTransform", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("HiddenSemiMarkovRegimeFilter", ("value",), batch_inputs=("value",)),
     IndicatorSpec("High", ("value",), ctor_kwargs={"window": 30}),
     IndicatorSpec("HighIndex", ("value",)),
     IndicatorSpec("HighLow", ("value",)),
     IndicatorSpec("HighLowIndex", ("value",)),
-    IndicatorSpec("HDDM", ("error",), batch_inputs=("error",)),
-    IndicatorSpec("HeikinAshiTransform", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
-    IndicatorSpec("HiddenSemiMarkovRegimeFilter", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("HilbertDominantCyclePeriod", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("HilbertDominantCyclePhase", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("HilbertPhasor", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("HilbertSineWave", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("HilbertTrendline", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("HilbertTrendMode", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("HistoricalVolatility", ("close",), ctor_kwargs={"window": 20}, batch_inputs=("input",)),
     IndicatorSpec("HitRateDriftDetector", ("hit",), batch_inputs=("hit",)),
     IndicatorSpec("HullMovingAverage", ("value",), ctor_kwargs={"window": 30}, batch_inputs=("input",)),
-    IndicatorSpec("Ichimoku", ("high", "low"), batch_inputs=("high", "low")),
-    IndicatorSpec("IntradayClockEchoSignal", ("open", "high", "low", "close", "volume"), ctor_kwargs={"fillna": True}),
+    IndicatorSpec("Ichimoku", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
+    IndicatorSpec("ImbalanceBarGenerator", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec(
+        "IntegratedOrderFlowImbalance",
+        ("bid_prices", "bid_sizes", "ask_prices", "ask_sizes"),
+        ctor_kwargs={"levels": DEPTH_LEVELS},
+        batch_inputs=("bid_prices", "bid_sizes", "ask_prices", "ask_sizes"),
+        depth_book=True,
+    ),
+    IndicatorSpec(
+        "MultiLevelOrderFlowImbalance",
+        ("bid_prices", "bid_sizes", "ask_prices", "ask_sizes"),
+        ctor_kwargs={"levels": DEPTH_LEVELS},
+        batch_inputs=("bid_prices", "bid_sizes", "ask_prices", "ask_sizes"),
+        depth_book=True,
+    ),
+    IndicatorSpec("Inertia", ("close",), batch_inputs=("close",)),
     IndicatorSpec("InteractingMultipleModelFilter", ("close",), batch_inputs=("close",)),
-    IndicatorSpec("KSTOscillator", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("IntradayClockEchoSignal", ("open", "high", "low", "close", "volume"), ctor_kwargs={"fillna": True}),
+    IndicatorSpec("IntradayIntensity", ("high", "low", "close", "volume"), batch_inputs=("high", "low", "close", "volume")),
+    IndicatorSpec("IntradayMomentumIndex", ("open", "close"), batch_inputs=("open", "close")),
+    IndicatorSpec("InverseFisherRSI", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("KagiChart", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KalmanExtremumTrend", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
     IndicatorSpec("KalmanHedgeRatio", ("real0", "real1"), batch_inputs=("real0", "real1")),
+    IndicatorSpec("KalmanInnovationResidualBOCPD", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("KalmanInnovationResidualFOCuS", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KalmanInnovationZScore", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KalmanLocalLinearTrend", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KalmanMovingAverage", ("close",), batch_inputs=("close",)),
@@ -200,23 +309,29 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("KeltnerChannel", ("close", "high", "low")),
     IndicatorSpec("KeltnerChannelOriginal", ("close", "high", "low")),
     IndicatorSpec("KlingerVolumeOscillator", ("close", "high", "low", "volume"), batch_inputs=("close", "high", "low", "volume")),
+    IndicatorSpec("KSTOscillator", ("close",), batch_inputs=("close",)),
     IndicatorSpec("KSWIN", ("value",), batch_inputs=("value",)),
     IndicatorSpec("KyleLambda", ("close", "signed_dollar_volume"), batch_inputs=("close", "signed_dollar_volume")),
     IndicatorSpec("LeadLagRegimeDetector", ("real0", "real1"), batch_inputs=("real0", "real1")),
-    IndicatorSpec("LiquidityDroughtDetector", ("volume", "bid_size", "ask_size"), batch_inputs=("volume", "bid_size", "ask_size")),
-    IndicatorSpec("LiquidityRegimeDetector", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("LinearRegression", ("value",)),
     IndicatorSpec("LinearRegressionAngle", ("value",)),
     IndicatorSpec("LinearRegressionIntercept", ("value",)),
     IndicatorSpec("LinearRegressionSlope", ("value",)),
+    IndicatorSpec("LiquidityDroughtDetector", ("volume", "bid_size", "ask_size"), batch_inputs=("volume", "bid_size", "ask_size")),
+    IndicatorSpec("LiquidityRegimeDetector", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("Low", ("value",), ctor_kwargs={"window": 30}),
     IndicatorSpec("LowIndex", ("value",)),
+    IndicatorSpec("MACD", ("value",), batch_inputs=("value",)),
+    IndicatorSpec("MACDExt", ("value",), batch_inputs=("value",)),
     IndicatorSpec("MACDFix", ("close",)),
-    IndicatorSpec("MassIndex", ("high", "low")),
+    IndicatorSpec("MarketFacilitationIndex", ("high", "low", "volume"), batch_inputs=("high", "low", "volume")),
     IndicatorSpec("MarketOpenCloseTransitionDetector", ("session_progress",), batch_inputs=("session_progress",)),
+    IndicatorSpec("MassIndex", ("high", "low")),
     IndicatorSpec("MatchedFlowConformalSignal", ("open", "high", "low", "close", "volume"), batch_inputs=("open", "high", "low", "close", "volume")),
+    IndicatorSpec("McGinleyDynamic", ("value",), ctor_kwargs={"window": 14}, batch_inputs=("input",)),
     IndicatorSpec("MedianPrice", ("high", "low")),
     IndicatorSpec("MesaAdaptiveMovingAverage", ("value",), batch_inputs=("input",)),
+    IndicatorSpec("MessageEventOrderFlowImbalance", ("event_type", "side", "qty"), batch_inputs=("event_type", "side", "qty")),
     IndicatorSpec("MicrostructureNoiseRegimeDetector", ("trade_price", "bid_price", "ask_price"), batch_inputs=("trade_price", "bid_price", "ask_price")),
     IndicatorSpec("MidPoint", ("value",)),
     IndicatorSpec("MidPrice", ("high", "low")),
@@ -224,6 +339,8 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("MinusDirectionalMovement", ("high", "low")),
     IndicatorSpec("Momentum", ("close",)),
     IndicatorSpec("MoneyFlowIndex", ("close", "high", "low", "volume")),
+    IndicatorSpec("MovingAverageEnvelope", ("value",), ctor_kwargs={"window": 20}),
+    IndicatorSpec("MovingAverageVariablePeriod", ("value", "period"), batch_inputs=("value", "period")),
     IndicatorSpec("NadarayaWatsonEnvelope", ("close",), ctor_kwargs={"window": 32}, batch_inputs=("close",)),
     IndicatorSpec("NegativeVolumeIndex", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("NormalizedATR", ("close", "high", "low")),
@@ -235,67 +352,104 @@ INDICATORS: tuple[IndicatorSpec, ...] = (
     IndicatorSpec("OrderFlowImbalanceRegimeDetector", ("bid_price", "bid_size", "ask_price", "ask_size"), batch_inputs=("bid_price", "bid_size", "ask_price", "ask_size")),
     IndicatorSpec("PageHinkley", ("close",), ctor_kwargs={"threshold": 1.0, "delta": 0.0}, batch_inputs=("close",)),
     IndicatorSpec("PairsSpreadRegimeDetector", ("real0", "real1"), batch_inputs=("real0", "real1")),
-    IndicatorSpec("ParticleFilterTrend", ("close",), ctor_kwargs={"particles": 64}, batch_inputs=("close",)),
     IndicatorSpec("ParabolicSAR", ("high", "low")),
+    IndicatorSpec("ParabolicSARExtended", ("high", "low"), batch_inputs=("high", "low")),
+    IndicatorSpec("ParticleFilterTrend", ("close",), ctor_kwargs={"particles": 64}, batch_inputs=("close",)),
     IndicatorSpec("PercentagePrice", ("close",), batch_inputs=("close",), batch_method="batch_ppo"),
     IndicatorSpec("PercentageVolume", ("volume",), batch_inputs=("volume",)),
+    IndicatorSpec("PivotPoints", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
     IndicatorSpec("PlusDirectionalIndicator", ("close", "high", "low")),
     IndicatorSpec("PlusDirectionalMovement", ("high", "low")),
+    IndicatorSpec("PointAndFigure", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("PositiveVolumeIndex", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("PredictionErrorDriftDetector", ("prediction", "actual"), batch_inputs=("prediction", "actual")),
+    IndicatorSpec("PrettyGoodOscillator", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("ProjectionOscillator", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
+    IndicatorSpec("PsychologicalLine", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("QStick", ("open", "close"), batch_inputs=("open", "close")),
     IndicatorSpec("QuoteMessageRateRegimeDetector", ("quote_messages",), batch_inputs=("quote_messages",)),
     IndicatorSpec("QuoteStuffingDetector", ("quote_messages", "trades"), batch_inputs=("quote_messages", "trades")),
+    IndicatorSpec("RainbowMovingAverage", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("RainbowOscillator", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("RandomWalkIndex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("RangeActionVerificationIndex", ("close",), batch_inputs=("close",)),
     IndicatorSpec("RateOfChangePercentage", ("close",)),
     IndicatorSpec("RateOfChangeRatio", ("close",)),
     IndicatorSpec("RateOfChangeRatio100", ("close",)),
-    IndicatorSpec("RenkoBrickGenerator", ("close",), batch_inputs=("close",)),
-    IndicatorSpec("ResidualDriftDetector", ("residual",), batch_inputs=("residual",)),
-    IndicatorSpec("RelativeVigorIndex", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
     IndicatorSpec("RealizedVarianceRegimeDetector", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("RelativeVigorIndex", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
+    IndicatorSpec("RelativeVolatilityIndex", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("RenkoBrickGenerator", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("ResidualBOCPD", ("residual",), batch_inputs=("residual",)),
+    IndicatorSpec("ResidualDriftDetector", ("residual",), batch_inputs=("residual",)),
+    IndicatorSpec("ResidualFOCuS", ("residual",), batch_inputs=("residual",)),
+    IndicatorSpec("ROC", ("close",), ctor_kwargs={"window": 10}, batch_inputs=("close",)),
     IndicatorSpec("RollingBetaShiftDetector", ("real0", "real1"), ctor_kwargs={"window": 20, "threshold": 0.25}, batch_inputs=("real0", "real1")),
     IndicatorSpec("RollingCorrelationShiftDetector", ("real0", "real1"), ctor_kwargs={"window": 20, "threshold": 0.25}, batch_inputs=("real0", "real1")),
     IndicatorSpec("RollingMeanShiftDetector", ("close",), ctor_kwargs={"window": 20, "threshold": 3.0}, batch_inputs=("close",)),
     IndicatorSpec("RollingMeanVarianceShiftDetector", ("close",), ctor_kwargs={"window": 20, "threshold": 3.0}, batch_inputs=("close",)),
+    IndicatorSpec("RollingMedian", ("value",), batch_inputs=("value",)),
     IndicatorSpec("RollingSpreadLiquidityShiftDetector", ("bid_price", "bid_size", "ask_price", "ask_size"), ctor_kwargs={"window": 20, "threshold": 1.0e-6}, batch_inputs=("bid_price", "bid_size", "ask_price", "ask_size")),
     IndicatorSpec("RollingVarianceShiftDetector", ("close",), ctor_kwargs={"window": 20, "threshold": 1.0}, batch_inputs=("close",)),
+    IndicatorSpec("RSI", ("value",)),
+    IndicatorSpec("RunBarGenerator", ("close",), batch_inputs=("close",)),
     IndicatorSpec("SavitzkyGolayFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("SchaffTrendCycle", ("close",), batch_inputs=("close",)),
-    IndicatorSpec("SpreadFeatures", ("trade_price", "bid_price", "ask_price"), batch_inputs=("trade_price", "bid_price", "ask_price")),
+    IndicatorSpec("SMA", ("value",), ctor_kwargs={"window": 30}, batch_inputs=("input",)),
+    IndicatorSpec("SmoothedMovingAverage", ("value",), ctor_kwargs={"window": 14}, batch_inputs=("input",)),
     IndicatorSpec("SpreadExplosionDetector", ("bid_price", "ask_price"), batch_inputs=("bid_price", "ask_price")),
+    IndicatorSpec("SpreadFeatures", ("trade_price", "bid_price", "ask_price"), batch_inputs=("trade_price", "bid_price", "ask_price")),
     IndicatorSpec("SpreadRegimeDetector", ("bid_price", "ask_price"), batch_inputs=("bid_price", "ask_price")),
+    IndicatorSpec("SqrtImpactFlowSignal", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec("SqueezeMomentum", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
     IndicatorSpec("StdDev", ("value",), ctor_kwargs={"window": 5}),
     IndicatorSpec("StickyHMMRegimeFilter", ("value",), batch_inputs=("value",)),
-    IndicatorSpec("StochRSI", ("value",)),
     IndicatorSpec("Stochastic", ("close", "high", "low")),
-    IndicatorSpec("SuperTrend", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("StochasticMomentumIndex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("StochRSI", ("value",)),
     IndicatorSpec("Summation", ("value",), ctor_kwargs={"window": 30}, batch_inputs=("input",)),
+    IndicatorSpec("SuperTrend", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("SwingIndex", ("open", "high", "low", "close"), batch_inputs=("open", "high", "low", "close")),
     IndicatorSpec("T3MovingAverage", ("value",)),
     IndicatorSpec("ThresholdRegimeDetector", ("value",), batch_inputs=("value",)),
     IndicatorSpec("TimeSeriesForecast", ("value",)),
     IndicatorSpec("TradeIntensityRegimeDetector", ("transactions",), batch_inputs=("transactions",)),
     IndicatorSpec("TrendChopRegimeDetector", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
-    IndicatorSpec("TwoFactorKalmanTrendFilter", ("close",), batch_inputs=("close",)),
-    IndicatorSpec("TrueRange", ("close", "high", "low")),
+    IndicatorSpec("TrendIntensityIndex", ("close",), batch_inputs=("close",)),
     IndicatorSpec("TriangularMovingAverage", ("value",)),
     IndicatorSpec("TripleEMA", ("value",)),
     IndicatorSpec("Trix", ("value",)),
+    IndicatorSpec("TrueRange", ("close", "high", "low")),
+    IndicatorSpec("TSI", ("x",)),
+    IndicatorSpec("TwiggsMoneyFlow", ("high", "low", "close", "volume"), batch_inputs=("high", "low", "close", "volume")),
+    IndicatorSpec("TwoFactorKalmanTrendFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("TypicalPrice", ("close", "high", "low")),
-    IndicatorSpec("UltimateOscillator", ("close", "high", "low")),
     IndicatorSpec("UlcerIndex", ("close",), batch_inputs=("close",)),
-    IndicatorSpec("VPIN", ("close", "volume"), batch_inputs=("close", "volume")),
-    IndicatorSpec("Variance", ("value",)),
+    IndicatorSpec("UltimateOscillator", ("close", "high", "low")),
     IndicatorSpec("VariableIndexDynamicAverage", ("close",), batch_inputs=("close",)),
+    IndicatorSpec("Variance", ("value",)),
+    IndicatorSpec("VerticalHorizontalFilter", ("close",), batch_inputs=("close",)),
     IndicatorSpec("VolatilityBreakoutDetector", ("close",), batch_inputs=("close",)),
     IndicatorSpec("VolatilityCompressionExpansionDetector", ("close",), batch_inputs=("close",)),
     IndicatorSpec("VolatilityRegimeDetector", ("close",), batch_inputs=("close",)),
-    IndicatorSpec("VolumeProfile", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec("VolumeBarGenerator", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec("VolumeOscillator", ("volume",), ctor_kwargs={"short_window": 12, "long_window": 26}, batch_inputs=("volume",)),
     IndicatorSpec("VolumePriceTrend", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec("VolumeProfile", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("VolumeRegimeDetector", ("volume",), batch_inputs=("volume",)),
+    IndicatorSpec("VolumeRunBarGenerator", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("VolumeWeightedAveragePrice", ("close", "high", "low", "volume"), batch_inputs=("close", "high", "low", "volume")),
     IndicatorSpec("VolumeWeightedMovingAverage", ("close", "volume"), batch_inputs=("close", "volume")),
     IndicatorSpec("Vortex", ("close", "high", "low"), batch_inputs=("close", "high", "low")),
+    IndicatorSpec("VPIN", ("close", "volume"), batch_inputs=("close", "volume")),
+    IndicatorSpec("WaveTrend", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
     IndicatorSpec("WeightedClosePrice", ("close", "high", "low")),
     IndicatorSpec("WeightedMovingAverage", ("value",)),
+    IndicatorSpec("WilliamsAD", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
+    IndicatorSpec("WilliamsFractals", ("high", "low"), batch_inputs=("high", "low")),
     IndicatorSpec("WilliamsR", ("close", "high", "low")),
+    IndicatorSpec("WoodiePivotPoints", ("high", "low", "close"), batch_inputs=("high", "low", "close")),
+    IndicatorSpec("ZeroLagEMA", ("value",), ctor_kwargs={"window": 14}, batch_inputs=("input",)),
     IndicatorSpec("ZigZagSwingDetector", ("close",), batch_inputs=("close",)),
 )
 
@@ -308,6 +462,8 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
     high = np.maximum(open_, close) + spread
     low = np.minimum(open_, close) - spread
     volume = rng.integers(1_000, 100_000, samples).astype(np.float64)
+    # Variable MA period for MAVP (clamped later by indicator).
+    period = rng.integers(5, 25, samples).astype(np.float64)
     transactions = rng.integers(1, 2_000, samples).astype(np.float64)
     anchor = np.zeros(samples, dtype=np.float64)
     if samples:
@@ -319,6 +475,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
     random_direction = rng.choice(np.asarray([-1.0, 1.0], dtype=np.float64), size=samples)
     trade_direction = np.where(price_direction == 0.0, random_direction, price_direction)
     signed_dollar_volume = trade_direction * close * volume
+    signed_volume = trade_direction * rng.integers(0, 1_000, samples).astype(np.float64)
     quote_spread = rng.uniform(0.01, 0.05, samples)
     bid_price = close - 0.5 * quote_spread
     ask_price = close + 0.5 * quote_spread
@@ -348,6 +505,7 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
         "low": low.astype(np.float64),
         "close": close.astype(np.float64),
         "volume": volume,
+        "period": period,
         "transactions": transactions,
         "error": error,
         "residual": residual.astype(np.float64),
@@ -368,14 +526,39 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
         "real0": real0.astype(np.float64),
         "real1": real1.astype(np.float64),
         "signed_dollar_volume": signed_dollar_volume.astype(np.float64),
+        "signed_volume": signed_volume,
         "trade_price": trade_price.astype(np.float64),
         "bid_price": bid_price.astype(np.float64),
         "bid_size": bid_size,
         "ask_price": ask_price.astype(np.float64),
         "ask_size": ask_size,
+        # Depth books (n_samples, DEPTH_LEVELS) for MultiLevel / Integrated OFI.
+        "bid_prices": np.ascontiguousarray(
+            np.column_stack([bid_price.astype(np.float64) - i * DEPTH_TICK for i in range(DEPTH_LEVELS)])
+        ),
+        "bid_sizes": np.ascontiguousarray(
+            np.column_stack([np.maximum(bid_size * (1.0 - 0.08 * i), 1.0) for i in range(DEPTH_LEVELS)])
+        ),
+        "ask_prices": np.ascontiguousarray(
+            np.column_stack([ask_price.astype(np.float64) + i * DEPTH_TICK for i in range(DEPTH_LEVELS)])
+        ),
+        "ask_sizes": np.ascontiguousarray(
+            np.column_stack([np.maximum(ask_size * (1.0 - 0.08 * i), 1.0) for i in range(DEPTH_LEVELS)])
+        ),
+        "time": np.arange(samples, dtype=np.float64),
+        "jump": np.ones(samples, dtype=np.float64),
+        "event_type": rng.choice(np.asarray([1.0, 2.0, 3.0], dtype=np.float64), size=samples),
+        "side": rng.choice(np.asarray([-1.0, 1.0], dtype=np.float64), size=samples),
+        "qty": rng.integers(1, 1000, samples).astype(np.float64),
     }
 
-    lists = {name: values.tolist() for name, values in arrays.items()}
+    lists: dict[str, Any] = {}
+    for name, values in arrays.items():
+        if values.ndim == 2:
+            # Row views for depth-book incremental updates: list of (levels,) arrays.
+            lists[name] = [np.ascontiguousarray(values[i]) for i in range(values.shape[0])]
+        else:
+            lists[name] = values.tolist()
     series: dict[str, Any] = {}
     table: Any | None = None
 
@@ -384,8 +567,15 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
     except ImportError:
         pass
     else:
-        series = {name: pandas.Series(values, copy=False) for name, values in arrays.items()}
-        table = pandas.DataFrame(arrays, copy=False)
+        series = {
+            name: pandas.Series(values, copy=False)
+            for name, values in arrays.items()
+            if getattr(values, "ndim", 1) == 1
+        }
+        table = pandas.DataFrame(
+            {name: values for name, values in arrays.items() if getattr(values, "ndim", 1) == 1},
+            copy=False,
+        )
 
     records = [
         MarketRecord(
@@ -414,11 +604,18 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             real0=float(arrays["real0"][i]),
             real1=float(arrays["real1"][i]),
             signed_dollar_volume=float(arrays["signed_dollar_volume"][i]),
+            signed_volume=float(arrays["signed_volume"][i]),
             trade_price=float(arrays["trade_price"][i]),
             bid_price=float(arrays["bid_price"][i]),
             bid_size=float(arrays["bid_size"][i]),
             ask_price=float(arrays["ask_price"][i]),
             ask_size=float(arrays["ask_size"][i]),
+            period=float(arrays["period"][i]),
+            time=float(arrays["time"][i]),
+            jump=float(arrays["jump"][i]),
+            event_type=float(arrays["event_type"][i]),
+            side=float(arrays["side"][i]),
+            qty=float(arrays["qty"][i]),
         )
         for i in range(samples)
     ]
@@ -450,11 +647,18 @@ def generate_market_data(samples: int, seed: int) -> MarketData:
             "real0": record.real0,
             "real1": record.real1,
             "signed_dollar_volume": record.signed_dollar_volume,
+            "signed_volume": record.signed_volume,
             "trade_price": record.trade_price,
             "bid_price": record.bid_price,
             "bid_size": record.bid_size,
             "ask_price": record.ask_price,
             "ask_size": record.ask_size,
+            "period": record.period,
+            "time": record.time,
+            "jump": record.jump,
+            "event_type": record.event_type,
+            "side": record.side,
+            "qty": record.qty,
         }
         for record in records
     ]
@@ -546,6 +750,9 @@ def make_rtta_array_batch_runner(rtta: Any, spec: IndicatorSpec, data: MarketDat
 def make_rtta_table_batch_runner(rtta: Any, spec: IndicatorSpec, data: MarketData) -> Callable[[], Any] | None:
     if data.table is None:
         return None
+    if spec.depth_book:
+        # Depth books are 2D arrays; pandas table batch is not supported.
+        return None
 
     indicator_cls = getattr(rtta, spec.name)
 
@@ -562,6 +769,8 @@ def make_rtta_table_batch_runner(rtta: Any, spec: IndicatorSpec, data: MarketDat
 
 
 def make_rtta_record_batch_runner(rtta: Any, spec: IndicatorSpec, data: MarketData) -> tuple[Callable[[], Any], str] | None:
+    if spec.depth_book:
+        return None
     indicator_cls = getattr(rtta, spec.name)
     batch_inputs = batch_inputs_for(spec)
 

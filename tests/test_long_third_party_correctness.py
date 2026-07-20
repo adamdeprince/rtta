@@ -12,7 +12,11 @@ DATA = generate_market_data(512, 42)
 
 def _series():
     pandas = pytest.importorskip("pandas")
-    return {name: pandas.Series(values, copy=False) for name, values in DATA.arrays.items()}
+    return {
+        name: pandas.Series(values, copy=False)
+        for name, values in DATA.arrays.items()
+        if values.ndim == 1
+    }
 
 
 def _incremental(indicator_cls, input_names, kwargs=None, attr=None):
@@ -64,7 +68,8 @@ def test_talib_equivalent_indicators_match_on_realistic_512_sample_sequence():
     cases = [
         ("SMA", _incremental(rtta.SMA, ("close",), {"window": 30, "fillna": False}), talib.SMA(close, timeperiod=30), 30),
         ("EMA", _incremental(rtta.EMA, ("close",), {"window": 30, "fillna": False}), talib.EMA(close, timeperiod=30), 150),
-        ("MACD", _incremental(rtta.MACD, ("close",), {"fillna": False}), talib.MACD(close)[1], 150),
+        ("MACD", _incremental(rtta.MACD, ("close",), {"fillna": False}, attr="signal"), talib.MACD(close)[1], 150),
+        ("MACD_line", _incremental(rtta.MACD, ("close",), {"fillna": False}, attr="macd"), talib.MACD(close)[0], 150),
         ("ROC", _incremental(rtta.ROC, ("close",), {"window": 10, "fillna": False}), talib.ROC(close, timeperiod=10), 20),
         ("ATR", _incremental(rtta.ATR, ("close", "high", "low")), talib.ATR(high, low, close, timeperiod=14), 200),
         ("ATRP", _incremental(rtta.ATRP, ("close", "high", "low")), talib.NATR(high, low, close, timeperiod=14) / 100.0, 200),
@@ -160,11 +165,12 @@ def test_ta_equivalent_indicators_match_on_realistic_512_sample_sequence():
         ("Vortex.positive", _incremental(rtta.Vortex, ("close", "high", "low"), attr="positive"), vortex.vortex_indicator_pos(), 100, 1e-12, 1e-12),
         ("Vortex.negative", _incremental(rtta.Vortex, ("close", "high", "low"), attr="negative"), vortex.vortex_indicator_neg(), 100, 1e-12, 1e-12),
         ("Vortex.difference", _incremental(rtta.Vortex, ("close", "high", "low"), attr="difference"), vortex.vortex_indicator_diff(), 100, 1e-12, 1e-12),
-        ("Ichimoku.conversion", _incremental(rtta.Ichimoku, ("high", "low"), attr="conversion"), ichimoku.ichimoku_conversion_line(), 100, 1e-12, 1e-12),
-        ("Ichimoku.base", _incremental(rtta.Ichimoku, ("high", "low"), attr="base"), ichimoku.ichimoku_base_line(), 100, 1e-12, 1e-12),
-        ("Ichimoku.span_a", _incremental(rtta.Ichimoku, ("high", "low"), attr="span_a"), ichimoku.ichimoku_a(), 100, 1e-12, 1e-12),
-        ("Ichimoku.span_b", _incremental(rtta.Ichimoku, ("high", "low"), attr="span_b"), ichimoku.ichimoku_b(), 100, 1e-12, 1e-12),
-        ("SchaffTrendCycle", _incremental(rtta.SchaffTrendCycle, ("close",)), trend.STCIndicator(series["close"], fillna=True).stc(), 200, 1e-12, 1e-12),
+        ("Ichimoku.conversion", _incremental(rtta.Ichimoku, ("high", "low", "close"), attr="conversion"), ichimoku.ichimoku_conversion_line(), 100, 1e-12, 1e-12),
+        ("Ichimoku.base", _incremental(rtta.Ichimoku, ("high", "low", "close"), attr="base"), ichimoku.ichimoku_base_line(), 100, 1e-12, 1e-12),
+        ("Ichimoku.span_a", _incremental(rtta.Ichimoku, ("high", "low", "close"), attr="span_a"), ichimoku.ichimoku_a(), 100, 1e-12, 1e-12),
+        ("Ichimoku.span_b", _incremental(rtta.Ichimoku, ("high", "low", "close"), attr="span_b"), ichimoku.ichimoku_b(), 100, 1e-12, 1e-12),
+        # STC accumulates floating-point drift vs ta; allow ~1e-10 abs on the warm tail.
+        ("SchaffTrendCycle", _incremental(rtta.SchaffTrendCycle, ("close",)), trend.STCIndicator(series["close"], fillna=True).stc(), 200, 1e-10, 1e-10),
         ("PercentagePrice", _incremental(rtta.PercentagePrice, ("close",), {"fillna": True}, "ppo"), momentum.ppo(series["close"], fillna=True), 100, 1e-12, 1e-12),
         ("PercentageVolume", _incremental(rtta.PercentageVolume, ("volume",), attr="pvo"), momentum.pvo(series["volume"], fillna=True), 100, 1e-12, 1e-12),
     ]

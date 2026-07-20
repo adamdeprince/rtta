@@ -4,7 +4,6 @@
 #include <kalman/kalman.hpp>
 
 #include <algorithm>
-#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -13,6 +12,8 @@
 #include <limits>
 #include <string>
 #include <utility>
+#include <array>
+#include <deque>
 #include <vector>
 
 namespace nb = nanobind;
@@ -21,6 +22,8 @@ namespace {
 
 using InputArray = nb::ndarray<nb::numpy, const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using FloatInputArray = nb::ndarray<nb::numpy, const float, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using InputArray2D = nb::ndarray<nb::numpy, const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+using FloatInputArray2D = nb::ndarray<nb::numpy, const float, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 using IndexInputArray = nb::ndarray<nb::numpy, const std::int64_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using OutputArray = nb::ndarray<nb::numpy, double, nb::ndim<1>>;
 
@@ -877,6 +880,9 @@ struct IchimokuResult {
     double base;
     double span_a;
     double span_b;
+    double lagging_span;
+    double span_a_displaced;
+    double span_b_displaced;
 };
 
 struct IchimokuBatchResult {
@@ -884,12 +890,27 @@ struct IchimokuBatchResult {
     nb::object base;
     nb::object span_a;
     nb::object span_b;
+    nb::object lagging_span;
+    nb::object span_a_displaced;
+    nb::object span_b_displaced;
 };
 
 struct PercentagePriceResult {
     double ppo;
     double signal;
     double histogram;
+};
+
+struct MACDResult {
+    double macd;
+    double signal;
+    double histogram;
+};
+
+struct MACDBatchResult {
+    nb::object macd;
+    nb::object signal;
+    nb::object histogram;
 };
 
 struct PercentagePriceBatchResult {
@@ -937,6 +958,18 @@ struct BollingerBandsResult {
 };
 
 struct BollingerBandsBatchResult {
+    nb::object middle;
+    nb::object upper;
+    nb::object lower;
+};
+
+struct MovingAverageEnvelopeResult {
+    double middle;
+    double upper;
+    double lower;
+};
+
+struct MovingAverageEnvelopeBatchResult {
     nb::object middle;
     nb::object upper;
     nb::object lower;
@@ -1412,11 +1445,15 @@ inline double result_checksum(const KSTOscillatorResult &value) {
 }
 
 inline double result_checksum(const IchimokuResult &value) {
-    return value.conversion + value.base + value.span_a + value.span_b;
+    return value.conversion + value.base + value.span_a + value.span_b + value.lagging_span + value.span_a_displaced + value.span_b_displaced;
 }
 
 inline double result_checksum(const PercentagePriceResult &value) {
     return value.ppo + value.signal + value.histogram;
+}
+
+inline double result_checksum(const MACDResult &value) {
+    return value.macd + value.signal + value.histogram;
 }
 
 inline double result_checksum(const PercentageVolumeResult &value) {
@@ -1432,6 +1469,10 @@ inline double result_checksum(const StochasticResult &value) {
 }
 
 inline double result_checksum(const BollingerBandsResult &value) {
+    return value.middle + value.upper + value.lower;
+}
+
+inline double result_checksum(const MovingAverageEnvelopeResult &value) {
     return value.middle + value.upper + value.lower;
 }
 
@@ -5182,35 +5223,45 @@ public:
     MACD(int a = 12, int b = 26, int c = 9, bool fillna = false)
         : a_(a, true),
           b_(b, true),
-          c_(c, fillna),
+          c_(c, true),
           counter_(0),
           fillna_(fillna),
-          window_(std::max(a, b) + c) {}
+          window_(std::max(a, b) + c),
+          last_{nan(), nan(), nan()} {}
 
-    double update(double value) {
-        const double retval = c_.update(a_.update(value) - b_.update(value));
-        const bool return_nan = !fillna_ && counter_ < window_;
-        ++counter_;
-        return return_nan ? nan() : retval;
+    MACDResult update(double value) {
+        update_core(value);
+        return last_;
     }
 
-    nb::object batch(const InputArray &input) {
-        const std::size_t size = input.shape(0);
-        std::vector<double> output(size);
-        const double *values = input.data();
-        for (std::size_t i = 0; i < size; ++i) {
-            output[i] = update(values[i]);
-        }
-        return make_array(std::move(output));
+    void advance(double value) {
+        update_core(value);
+    }
+
+    inline const MACDResult &last() const {
+        return last_;
     }
 
 private:
+    inline void update_core(double value) {
+        const double macd = a_.update(value) - b_.update(value);
+        const double signal = c_.update(macd);
+        const bool return_nan = !fillna_ && counter_ < window_;
+        ++counter_;
+        if (return_nan) {
+            last_ = {nan(), nan(), nan()};
+            return;
+        }
+        last_ = {macd, signal, macd - signal};
+    }
+
     EMA a_;
     EMA b_;
     EMA c_;
     long counter_;
     bool fillna_;
     int window_;
+    MACDResult last_;
 };
 
 class MassIndex {
@@ -7804,6 +7855,44 @@ private:
     bool first_;
 };
 
+class PositiveVolumeIndex {
+public:
+    PositiveVolumeIndex()
+        : value_(1000.0),
+          previous_close_(0.0),
+          previous_volume_(0.0),
+          first_(true) {}
+
+    double update(double close, double volume) {
+        if (!first_ && volume > previous_volume_) {
+            value_ *= 1.0 + safe_divide(close - previous_close_, previous_close_);
+        }
+
+        previous_close_ = close;
+        previous_volume_ = volume;
+        first_ = false;
+        return value_;
+    }
+
+    nb::object batch(const InputArray &close, const InputArray &volume) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, volume.shape(0));
+        std::vector<double> output(size);
+        const double *c = close.data();
+        const double *v = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(c[i], v[i]);
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    double value_;
+    double previous_close_;
+    double previous_volume_;
+    bool first_;
+};
+
 class VolumeWeightedAveragePrice {
 public:
     VolumeWeightedAveragePrice(int window = 14, bool fillna = true)
@@ -8380,8 +8469,16 @@ public:
     explicit MACDFix(int signal = 9, bool fillna = false)
         : macd_(12, 26, signal, fillna) {}
 
-    double update(double close) {
+    MACDResult update(double close) {
         return macd_.update(close);
+    }
+
+    void advance(double close) {
+        macd_.advance(close);
+    }
+
+    inline const MACDResult &last() const {
+        return macd_.last();
     }
 
 private:
@@ -10311,16 +10408,19 @@ public:
           lows2_(window2, false),
           highs3_(window3, true),
           lows3_(window3, false),
+          lagging_(std::max(window2, 1), fillna),
+          span_a_delay_(std::max(window2, 1), fillna),
+          span_b_delay_(std::max(window2, 1), fillna),
           fillna_(fillna),
-          last_{nan(), nan(), nan(), nan()} {}
+          last_{nan(), nan(), nan(), nan(), nan(), nan(), nan()} {}
 
-    IchimokuResult update(double high, double low) {
-        update_core(high, low);
+    IchimokuResult update(double high, double low, double close) {
+        update_core(high, low, close);
         return last_;
     }
 
-    void advance(double high, double low) {
-        update_core(high, low);
+    void advance(double high, double low, double close) {
+        update_core(high, low, close);
     }
 
     inline const IchimokuResult &last() const {
@@ -10328,7 +10428,7 @@ public:
     }
 
 private:
-    inline void update_core(double high, double low) {
+    inline void update_core(double high, double low, double close) {
         highs1_.push(high);
         lows1_.push(low);
         highs2_.push(high);
@@ -10340,25 +10440,42 @@ private:
         const double base = (!fillna_ && !highs2_.full()) ? nan() : (highs2_.value() + lows2_.value()) * 0.5;
         const double span_a = (std::isnan(conversion) || std::isnan(base)) ? nan() : (conversion + base) * 0.5;
         const double span_b = (!fillna_ && !highs3_.full()) ? nan() : (highs3_.value() + lows3_.value()) * 0.5;
+        // Chikou / lagging span: close delayed by window2 bars.
+        const double lagging_span = lagging_.update(close);
+        // Cloud displacement: spans computed now plot window2 bars ahead; emit the
+        // span values that "arrive" on the current bar (delayed by window2).
+        const double span_a_in = std::isnan(span_a) ? (fillna_ ? close : nan()) : span_a;
+        const double span_b_in = std::isnan(span_b) ? (fillna_ ? close : nan()) : span_b;
+        const double span_a_displaced = span_a_delay_.update(span_a_in);
+        const double span_b_displaced = span_b_delay_.update(span_b_in);
 
-        last_ = {conversion, base, span_a, span_b};
+        last_ = {conversion, base, span_a, span_b, lagging_span, span_a_displaced, span_b_displaced};
     }
 
 public:
-    IchimokuBatchResult batch(const InputArray &high, const InputArray &low) {
+    IchimokuBatchResult batch(const InputArray &high, const InputArray &low, const InputArray &close) {
         const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
         std::vector<double> conversion(size);
         std::vector<double> base(size);
         std::vector<double> span_a(size);
         std::vector<double> span_b(size);
+        std::vector<double> lagging_span(size);
+        std::vector<double> span_a_displaced(size);
+        std::vector<double> span_b_displaced(size);
         const double *h = high.data();
         const double *l = low.data();
+        const double *c = close.data();
         for (std::size_t i = 0; i < size; ++i) {
-            const IchimokuResult out = update(h[i], l[i]);
+            const IchimokuResult out = update(h[i], l[i], c[i]);
             conversion[i] = out.conversion;
             base[i] = out.base;
             span_a[i] = out.span_a;
             span_b[i] = out.span_b;
+            lagging_span[i] = out.lagging_span;
+            span_a_displaced[i] = out.span_a_displaced;
+            span_b_displaced[i] = out.span_b_displaced;
         }
 
         return {
@@ -10366,6 +10483,9 @@ public:
             make_array(std::move(base)),
             make_array(std::move(span_a)),
             make_array(std::move(span_b)),
+            make_array(std::move(lagging_span)),
+            make_array(std::move(span_a_displaced)),
+            make_array(std::move(span_b_displaced)),
         };
     }
 
@@ -10376,6 +10496,9 @@ private:
     RollingExtreme lows2_;
     RollingExtreme highs3_;
     RollingExtreme lows3_;
+    Delay lagging_;
+    Delay span_a_delay_;
+    Delay span_b_delay_;
     bool fillna_;
     IchimokuResult last_;
 };
@@ -17789,6 +17912,8898 @@ private:
     double last_;
 };
 
+class SmoothedMovingAverage {
+public:
+    // SMMA / RMA / Wilder moving average: seed with SMA over the first `window`
+    // samples, then apply Wilder smoothing.
+    explicit SmoothedMovingAverage(int window = 14, bool fillna = true)
+        : window_(std::max(window, 1)),
+          fillna_(fillna),
+          count_(0),
+          sum_(0.0),
+          value_(0.0) {}
+
+    double update(double value) {
+        ++count_;
+        if (count_ < window_) {
+            sum_ += value;
+            return fillna_ ? sum_ / static_cast<double>(count_) : nan();
+        }
+        if (count_ == window_) {
+            sum_ += value;
+            value_ = sum_ / static_cast<double>(window_);
+            return value_;
+        }
+        value_ = (value_ * static_cast<double>(window_ - 1) + value) / static_cast<double>(window_);
+        return value_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    bool fillna_;
+    long count_;
+    double sum_;
+    double value_;
+};
+
+class ZeroLagEMA {
+public:
+    explicit ZeroLagEMA(int window = 14, bool fillna = true)
+        : window_(std::max(window, 1)),
+          lag_(std::max((window_ - 1) / 2, 0)),
+          fillna_(fillna),
+          count_(0),
+          history_(static_cast<std::size_t>(std::max(lag_, 1)), 0.0),
+          history_index_(0),
+          history_count_(0),
+          ema_(static_cast<double>(window_), true) {}
+
+    double update(double value) {
+        double delayed = value;
+        if (lag_ > 0) {
+            if (history_count_ < static_cast<long>(history_.size())) {
+                history_[static_cast<std::size_t>(history_count_)] = value;
+                ++history_count_;
+                delayed = history_[0];
+            } else {
+                delayed = history_[history_index_];
+                history_[history_index_] = value;
+                ring_advance(history_index_, history_.size());
+            }
+        }
+
+        const double de_lagged = 2.0 * value - delayed;
+        const double output = ema_.update(de_lagged);
+        ++count_;
+        // Match EMA warm-up: require `window` samples before a non-NaN when fillna=false.
+        return (!fillna_ && count_ < window_) ? nan() : output;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    int lag_;
+    bool fillna_;
+    long count_;
+    std::vector<double> history_;
+    std::size_t history_index_;
+    long history_count_;
+    EMA ema_;
+};
+
+class ArnaudLegouxMovingAverage {
+public:
+    ArnaudLegouxMovingAverage(int window = 9, double offset = 0.85, double sigma = 6.0, bool fillna = true)
+        : window_(std::max(window, 1)),
+          fillna_(fillna),
+          values_(window_),
+          weights_(static_cast<std::size_t>(window_), 0.0),
+          weight_sum_(0.0) {
+        const double m = offset * static_cast<double>(window_ - 1);
+        const double s = static_cast<double>(window_) / (sigma > 0.0 ? sigma : 6.0);
+        const double inv_two_s2 = 1.0 / (2.0 * s * s);
+        for (int i = 0; i < window_; ++i) {
+            const double d = static_cast<double>(i) - m;
+            weights_[static_cast<std::size_t>(i)] = std::exp(-d * d * inv_two_s2);
+            weight_sum_ += weights_[static_cast<std::size_t>(i)];
+        }
+        if (weight_sum_ == 0.0) {
+            weight_sum_ = 1.0;
+        }
+    }
+
+    double update(double value) {
+        values_.push(value);
+        if (!fillna_ && !values_.full()) {
+            return nan();
+        }
+
+        double weighted = 0.0;
+        const std::size_t n = values_.size();
+        // Oldest sample maps to weight index 0; newest to weight index n-1.
+        const std::size_t start = window_ - n;
+        for (std::size_t i = 0; i < n; ++i) {
+            weighted += values_.at(i) * weights_[start + i];
+        }
+        if (!values_.full()) {
+            double partial = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                partial += weights_[start + i];
+            }
+            return safe_divide(weighted, partial);
+        }
+        return weighted / weight_sum_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    bool fillna_;
+    RollingBuffer values_;
+    std::vector<double> weights_;
+    double weight_sum_;
+};
+
+class McGinleyDynamic {
+public:
+    explicit McGinleyDynamic(int window = 14, bool fillna = true)
+        : window_(std::max(window, 1)),
+          fillna_(fillna),
+          first_(true),
+          count_(0),
+          value_(0.0) {}
+
+    double update(double price) {
+        ++count_;
+        if (first_) {
+            first_ = false;
+            value_ = price;
+            return (!fillna_ && count_ < window_) ? nan() : value_;
+        }
+
+        if (value_ == 0.0) {
+            value_ = price;
+        } else {
+            const double ratio = safe_divide(price, value_, 1.0);
+            const double denom = static_cast<double>(window_) * std::pow(ratio, 4.0);
+            if (denom != 0.0 && std::isfinite(denom)) {
+                value_ = value_ + (price - value_) / denom;
+            } else {
+                value_ = price;
+            }
+        }
+        return (!fillna_ && count_ < window_) ? nan() : value_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    bool fillna_;
+    bool first_;
+    long count_;
+    double value_;
+};
+
+class BollingerPercentB {
+public:
+    BollingerPercentB(int window = 20, double num_std = 2.0, bool fillna = true)
+        : window_(std::max(window, 1)),
+          num_std_(num_std),
+          fillna_(fillna),
+          count_(0),
+          sum_(0.0),
+          sum2_(0.0),
+          values_(window_) {}
+
+    double update(double value) {
+        const bool return_nan = !fillna_ && count_ < window_;
+        ++count_;
+
+        if (values_.full()) {
+            const double oldest = values_.oldest();
+            sum_ -= oldest;
+            sum2_ -= oldest * oldest;
+        }
+        values_.push(value);
+        sum_ += value;
+        sum2_ += value * value;
+
+        if (return_nan) {
+            return nan();
+        }
+
+        const double n = static_cast<double>(values_.size());
+        const double inv_n = 1.0 / n;
+        const double middle = sum_ * inv_n;
+        const double variance = sum2_ * inv_n - middle * middle;
+        const double stddev = std::sqrt(variance < 0.0 && variance > -1e-12 ? 0.0 : variance);
+        const double band = stddev * num_std_;
+        const double upper = middle + band;
+        const double lower = middle - band;
+        return safe_divide(value - lower, upper - lower);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    double num_std_;
+    bool fillna_;
+    long count_;
+    double sum_;
+    double sum2_;
+    RollingBuffer values_;
+};
+
+class BollingerBandwidth {
+public:
+    BollingerBandwidth(int window = 20, double num_std = 2.0, bool fillna = true)
+        : window_(std::max(window, 1)),
+          num_std_(num_std),
+          fillna_(fillna),
+          count_(0),
+          sum_(0.0),
+          sum2_(0.0),
+          values_(window_) {}
+
+    double update(double value) {
+        const bool return_nan = !fillna_ && count_ < window_;
+        ++count_;
+
+        if (values_.full()) {
+            const double oldest = values_.oldest();
+            sum_ -= oldest;
+            sum2_ -= oldest * oldest;
+        }
+        values_.push(value);
+        sum_ += value;
+        sum2_ += value * value;
+
+        if (return_nan) {
+            return nan();
+        }
+
+        const double n = static_cast<double>(values_.size());
+        const double inv_n = 1.0 / n;
+        const double middle = sum_ * inv_n;
+        const double variance = sum2_ * inv_n - middle * middle;
+        const double stddev = std::sqrt(variance < 0.0 && variance > -1e-12 ? 0.0 : variance);
+        const double width = 2.0 * stddev * num_std_;
+        return safe_divide(width, middle);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    double num_std_;
+    bool fillna_;
+    long count_;
+    double sum_;
+    double sum2_;
+    RollingBuffer values_;
+};
+
+class MovingAverageEnvelope {
+public:
+    // Percent is a fraction (0.025 = 2.5% bands around the SMA).
+    MovingAverageEnvelope(int window = 20, double percent = 0.025, bool fillna = true)
+        : sma_(std::max(window, 1), fillna),
+          percent_(percent),
+          last_{nan(), nan(), nan()} {}
+
+    MovingAverageEnvelopeResult update(double value) {
+        update_core(value);
+        return last_;
+    }
+
+    void advance(double value) {
+        update_core(value);
+    }
+
+    inline const MovingAverageEnvelopeResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double value) {
+        const double middle = sma_.update(value);
+        if (std::isnan(middle)) {
+            last_ = {nan(), nan(), nan()};
+            return;
+        }
+        last_ = {middle, middle * (1.0 + percent_), middle * (1.0 - percent_)};
+    }
+
+    SMA sma_;
+    double percent_;
+    MovingAverageEnvelopeResult last_;
+};
+
+class VolumeOscillator {
+public:
+    // Classic percent volume oscillator from short vs long SMA of volume.
+    VolumeOscillator(int short_window = 12, int long_window = 26, bool fillna = true)
+        : short_(std::max(short_window, 1), true),
+          long_(std::max(long_window, 1), true),
+          fillna_(fillna),
+          warmup_(std::max(short_window, long_window)),
+          count_(0) {}
+
+    double update(double volume) {
+        const double short_ma = short_.update(volume);
+        const double long_ma = long_.update(volume);
+        ++count_;
+        if (!fillna_ && count_ < warmup_) {
+            return nan();
+        }
+        return 100.0 * safe_divide(short_ma - long_ma, long_ma);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &volume) {
+        const std::size_t size = volume.shape(0);
+        std::vector<double> output(size);
+        const auto *values = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    SMA short_;
+    SMA long_;
+    bool fillna_;
+    int warmup_;
+    long count_;
+};
+
+class EfficiencyRatio {
+public:
+    // Kaufman efficiency ratio used inside KAMA: net move over path length.
+    // ER_t = |close_t - close_{t-n}| / sum_{i=0..n-1} |close_{t-i} - close_{t-i-1}|
+    explicit EfficiencyRatio(int window = 10, bool fillna = true)
+        : window_(std::max(window, 1)),
+          fillna_(fillna),
+          previous_close_(0.0),
+          has_previous_(false),
+          window_history_(static_cast<std::size_t>(window_), 0.0),
+          window_index_(0),
+          window_count_(0),
+          den_history_(static_cast<std::size_t>(window_), 0.0),
+          den_index_(0),
+          den_tally_(0.0) {}
+
+    double update(double close) {
+        const double change = has_previous_ ? std::abs(close - previous_close_) : 0.0;
+        previous_close_ = close;
+        has_previous_ = true;
+
+        const double window_ago = window_history_[window_index_];
+        window_history_[window_index_] = close;
+        ring_advance(window_index_, window_history_.size());
+        if (window_count_ < window_) {
+            ++window_count_;
+        }
+
+        den_tally_ -= den_history_[den_index_];
+        den_tally_ += change;
+        den_history_[den_index_] = change;
+        ring_advance(den_index_, den_history_.size());
+
+        if (!fillna_ && window_count_ < window_) {
+            return nan();
+        }
+
+        const double direction = std::abs(close - window_ago);
+        return safe_divide(direction, den_tally_);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    bool fillna_;
+    double previous_close_;
+    bool has_previous_;
+    std::vector<double> window_history_;
+    std::size_t window_index_;
+    int window_count_;
+    std::vector<double> den_history_;
+    std::size_t den_index_;
+    double den_tally_;
+};
+
+class HistoricalVolatility {
+public:
+    // Annualized rolling std of log returns. `periods_per_year` defaults to 252.
+    HistoricalVolatility(int window = 20, double periods_per_year = 252.0, bool fillna = true)
+        : window_(std::max(window, 1)),
+          scale_(std::sqrt(periods_per_year > 0.0 ? periods_per_year : 252.0)),
+          fillna_(fillna),
+          previous_(0.0),
+          has_previous_(false),
+          count_(0),
+          sum_(0.0),
+          sum2_(0.0),
+          returns_(window_) {}
+
+    double update(double close) {
+        if (!has_previous_) {
+            previous_ = close;
+            has_previous_ = true;
+            return fillna_ ? 0.0 : nan();
+        }
+
+        const double ret = std::log(safe_divide(close, previous_, 1.0));
+        previous_ = close;
+
+        const bool return_nan = !fillna_ && count_ < window_;
+        ++count_;
+
+        if (returns_.full()) {
+            const double oldest = returns_.oldest();
+            sum_ -= oldest;
+            sum2_ -= oldest * oldest;
+        }
+        returns_.push(ret);
+        sum_ += ret;
+        sum2_ += ret * ret;
+
+        if (return_nan) {
+            return nan();
+        }
+
+        const double n = static_cast<double>(returns_.size());
+        const double inv_n = 1.0 / n;
+        const double mean = sum_ * inv_n;
+        const double variance = sum2_ * inv_n - mean * mean;
+        const double stddev = std::sqrt(variance < 0.0 && variance > -1e-12 ? 0.0 : variance);
+        return stddev * scale_;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    double scale_;
+    bool fillna_;
+    double previous_;
+    bool has_previous_;
+    long count_;
+    double sum_;
+    double sum2_;
+    RollingBuffer returns_;
+};
+
+class ChaikinVolatility {
+public:
+    // Percent change of an EMA of the high-low range over `roc_window` samples.
+    ChaikinVolatility(int ema_window = 10, int roc_window = 10, bool fillna = true)
+        : ema_(static_cast<double>(std::max(ema_window, 1)), true),
+          history_(static_cast<std::size_t>(std::max(roc_window, 1)), 0.0),
+          history_index_(0),
+          history_count_(0),
+          roc_window_(std::max(roc_window, 1)),
+          fillna_(fillna),
+          count_(0) {}
+
+    double update(double high, double low) {
+        const double range = high - low;
+        const double smoothed = ema_.update(range);
+        double previous = smoothed;
+        if (history_count_ < static_cast<long>(history_.size())) {
+            history_[static_cast<std::size_t>(history_count_)] = smoothed;
+            ++history_count_;
+            previous = history_[0];
+        } else {
+            previous = history_[history_index_];
+            history_[history_index_] = smoothed;
+            ring_advance(history_index_, history_.size());
+        }
+        ++count_;
+        if (!fillna_ && count_ <= roc_window_) {
+            return nan();
+        }
+        return 100.0 * safe_divide(smoothed - previous, previous);
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(h[i]), static_cast<double>(l[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    EMA ema_;
+    std::vector<double> history_;
+    std::size_t history_index_;
+    long history_count_;
+    int roc_window_;
+    bool fillna_;
+    long count_;
+};
+
+struct StochasticMomentumIndexResult {
+    double smi;
+    double signal;
+};
+
+struct StochasticMomentumIndexBatchResult {
+    nb::object smi;
+    nb::object signal;
+};
+
+struct AlligatorResult {
+    double jaw;
+    double teeth;
+    double lips;
+};
+
+struct AlligatorBatchResult {
+    nb::object jaw;
+    nb::object teeth;
+    nb::object lips;
+};
+
+struct GatorOscillatorResult {
+    double upper;
+    double lower;
+};
+
+struct GatorOscillatorBatchResult {
+    nb::object upper;
+    nb::object lower;
+};
+
+struct SqueezeMomentumResult {
+    double on;
+    double momentum;
+};
+
+struct SqueezeMomentumBatchResult {
+    nb::object on;
+    nb::object momentum;
+};
+
+struct WaveTrendResult {
+    double wt1;
+    double wt2;
+};
+
+struct WaveTrendBatchResult {
+    nb::object wt1;
+    nb::object wt2;
+};
+
+struct HilbertPhasorResult {
+    double inphase;
+    double quadrature;
+};
+
+struct HilbertPhasorBatchResult {
+    nb::object inphase;
+    nb::object quadrature;
+};
+
+struct HilbertSineWaveResult {
+    double sine;
+    double lead_sine;
+};
+
+struct HilbertSineWaveBatchResult {
+    nb::object sine;
+    nb::object lead_sine;
+};
+
+struct ChandelierExitResult {
+    double long_exit;
+    double short_exit;
+};
+
+struct ChandelierExitBatchResult {
+    nb::object long_exit;
+    nb::object short_exit;
+};
+
+struct AccelerationBandsResult {
+    double middle;
+    double upper;
+    double lower;
+};
+
+struct AccelerationBandsBatchResult {
+    nb::object middle;
+    nb::object upper;
+    nb::object lower;
+};
+
+inline double result_checksum(const StochasticMomentumIndexResult &value) {
+    return value.smi + value.signal;
+}
+
+inline double result_checksum(const AlligatorResult &value) {
+    return value.jaw + value.teeth + value.lips;
+}
+
+inline double result_checksum(const GatorOscillatorResult &value) {
+    return value.upper + value.lower;
+}
+
+inline double result_checksum(const SqueezeMomentumResult &value) {
+    return value.on + value.momentum;
+}
+
+inline double result_checksum(const WaveTrendResult &value) {
+    return value.wt1 + value.wt2;
+}
+
+inline double result_checksum(const HilbertPhasorResult &value) {
+    return value.inphase + value.quadrature;
+}
+
+inline double result_checksum(const HilbertSineWaveResult &value) {
+    return value.sine + value.lead_sine;
+}
+
+inline double result_checksum(const ChandelierExitResult &value) {
+    return value.long_exit + value.short_exit;
+}
+
+inline double result_checksum(const AccelerationBandsResult &value) {
+    return value.middle + value.upper + value.lower;
+}
+
+class ShiftBuffer {
+public:
+    explicit ShiftBuffer(int shift)
+        : capacity_(static_cast<std::size_t>(std::max(shift, 0))),
+          values_(capacity_ == 0 ? 1 : capacity_, 0.0),
+          index_(0),
+          count_(0),
+          shift_(std::max(shift, 0)) {}
+
+    double update(double value) {
+        if (shift_ == 0) {
+            return value;
+        }
+        if (count_ < capacity_) {
+            values_[count_] = value;
+            ++count_;
+            return nan();
+        }
+        const double out = values_[index_];
+        values_[index_] = value;
+        ring_advance(index_, capacity_);
+        return out;
+    }
+
+private:
+    std::size_t capacity_;
+    std::vector<double> values_;
+    std::size_t index_;
+    std::size_t count_;
+    int shift_;
+};
+
+// TA-Lib-compatible Hilbert cycle engine (HT_DCPERIOD / HT_DCPHASE / HT_PHASOR /
+// HT_SINE / HT_TRENDMODE / HT_TRENDLINE streaming state).
+// Algorithm mirrors TA-Lib's odd/even Hilbert detrender + WMA smooth + period clamp.
+class HilbertCycleEngine {
+public:
+    explicit HilbertCycleEngine(bool fillna = true)
+        : fillna_(fillna),
+          count_(0),
+          parity_(0),
+          hilbert_idx_(0),
+          period_(0.0),
+          smooth_period_(0.0),
+          detrender_(0.0),
+          q1_(0.0),
+          prev_q2_(0.0),
+          prev_i2_(0.0),
+          re_(0.0),
+          im_(0.0),
+          i1_for_odd_prev2_(0.0),
+          i1_for_odd_prev3_(0.0),
+          i1_for_even_prev2_(0.0),
+          i1_for_even_prev3_(0.0),
+          prev_detrender_odd_(0.0),
+          prev_detrender_even_(0.0),
+          prev_detrender_input_odd_(0.0),
+          prev_detrender_input_even_(0.0),
+          prev_q1_odd_(0.0),
+          prev_q1_even_(0.0),
+          prev_q1_input_odd_(0.0),
+          prev_q1_input_even_(0.0),
+          prev_ji_odd_(0.0),
+          prev_ji_even_(0.0),
+          prev_ji_input_odd_(0.0),
+          prev_ji_input_even_(0.0),
+          prev_jq_odd_(0.0),
+          prev_jq_even_(0.0),
+          prev_jq_input_odd_(0.0),
+          prev_jq_input_even_(0.0),
+          smooth_price_idx_(0),
+          dc_phase_(0.0),
+          prev_dc_phase_(0.0),
+          sine_(0.0),
+          lead_sine_(0.0),
+          prev_sine_(0.0),
+          prev_lead_sine_(0.0),
+          inphase_(0.0),
+          quadrature_(0.0),
+          trendmode_(0.0),
+          trendline_(0.0),
+          i_trend1_(0.0),
+          i_trend2_(0.0),
+          i_trend3_(0.0),
+          days_in_trend_(0),
+          prices_() {
+        detrender_odd_.fill(0.0);
+        detrender_even_.fill(0.0);
+        q1_odd_.fill(0.0);
+        q1_even_.fill(0.0);
+        ji_odd_.fill(0.0);
+        ji_even_.fill(0.0);
+        jq_odd_.fill(0.0);
+        jq_even_.fill(0.0);
+        smooth_price_.fill(0.0);
+        wma_prices_.fill(0.0);
+        const double atan1 = std::atan(1.0);
+        rad2deg_ = 45.0 / atan1;
+        deg2rad_ = 1.0 / rad2deg_;
+        const_deg2rad_by_360_ = atan1 * 8.0;
+    }
+
+    void update(double price) {
+        prices_.push_back(price);
+        if (prices_.size() > 64) {
+            prices_.erase(prices_.begin(), prices_.begin() + static_cast<std::ptrdiff_t>(prices_.size() - 64));
+        }
+
+        // TA-Lib / Ehlers 4-bar WMA price smoother: (4*p + 3*p1 + 2*p2 + p3) / 10.
+        wma_prices_[3] = wma_prices_[2];
+        wma_prices_[2] = wma_prices_[1];
+        wma_prices_[1] = wma_prices_[0];
+        wma_prices_[0] = price;
+        const double smoothed_value =
+            (4.0 * wma_prices_[0] + 3.0 * wma_prices_[1] + 2.0 * wma_prices_[2] + wma_prices_[3]) * 0.1;
+
+        smooth_price_[static_cast<std::size_t>(smooth_price_idx_)] = smoothed_value;
+
+        const double adjusted_prev_period = 0.075 * period_ + 0.54;
+        double q1 = 0.0;
+        double i1_out = 0.0;
+
+        if (parity_ == 0) {
+            // Even bar Hilbert transform (TA-Lib streamParity==0).
+            double hilbert_temp = a_ * smoothed_value;
+            detrender_ = -detrender_even_[static_cast<std::size_t>(hilbert_idx_)];
+            detrender_even_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            detrender_ += hilbert_temp;
+            detrender_ -= prev_detrender_even_;
+            prev_detrender_even_ = b_ * prev_detrender_input_even_;
+            detrender_ += prev_detrender_even_;
+            prev_detrender_input_even_ = smoothed_value;
+            detrender_ *= adjusted_prev_period;
+
+            hilbert_temp = a_ * detrender_;
+            q1 = -q1_even_[static_cast<std::size_t>(hilbert_idx_)];
+            q1_even_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            q1 += hilbert_temp;
+            q1 -= prev_q1_even_;
+            prev_q1_even_ = b_ * prev_q1_input_even_;
+            q1 += prev_q1_even_;
+            prev_q1_input_even_ = detrender_;
+            q1 *= adjusted_prev_period;
+            q1_ = q1;
+            i1_out = i1_for_even_prev3_;
+            inphase_ = i1_for_even_prev3_;
+            quadrature_ = q1;
+
+            hilbert_temp = a_ * i1_for_even_prev3_;
+            double ji = -ji_even_[static_cast<std::size_t>(hilbert_idx_)];
+            ji_even_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            ji += hilbert_temp;
+            ji -= prev_ji_even_;
+            prev_ji_even_ = b_ * prev_ji_input_even_;
+            ji += prev_ji_even_;
+            prev_ji_input_even_ = i1_for_even_prev3_;
+            ji *= adjusted_prev_period;
+
+            hilbert_temp = a_ * q1;
+            double jq = -jq_even_[static_cast<std::size_t>(hilbert_idx_)];
+            jq_even_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            jq += hilbert_temp;
+            jq -= prev_jq_even_;
+            prev_jq_even_ = b_ * prev_jq_input_even_;
+            jq += prev_jq_even_;
+            prev_jq_input_even_ = q1;
+            jq *= adjusted_prev_period;
+
+            if (++hilbert_idx_ == 3) {
+                hilbert_idx_ = 0;
+            }
+
+            const double q2 = 0.2 * (q1 + ji) + 0.8 * prev_q2_;
+            const double i2 = 0.2 * (i1_for_even_prev3_ - jq) + 0.8 * prev_i2_;
+            i1_for_odd_prev3_ = i1_for_odd_prev2_;
+            i1_for_odd_prev2_ = detrender_;
+            update_period(i2, q2);
+        } else {
+            // Odd bar Hilbert transform.
+            double hilbert_temp = a_ * smoothed_value;
+            detrender_ = -detrender_odd_[static_cast<std::size_t>(hilbert_idx_)];
+            detrender_odd_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            detrender_ += hilbert_temp;
+            detrender_ -= prev_detrender_odd_;
+            prev_detrender_odd_ = b_ * prev_detrender_input_odd_;
+            detrender_ += prev_detrender_odd_;
+            prev_detrender_input_odd_ = smoothed_value;
+            detrender_ *= adjusted_prev_period;
+
+            hilbert_temp = a_ * detrender_;
+            q1 = -q1_odd_[static_cast<std::size_t>(hilbert_idx_)];
+            q1_odd_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            q1 += hilbert_temp;
+            q1 -= prev_q1_odd_;
+            prev_q1_odd_ = b_ * prev_q1_input_odd_;
+            q1 += prev_q1_odd_;
+            prev_q1_input_odd_ = detrender_;
+            q1 *= adjusted_prev_period;
+            q1_ = q1;
+            i1_out = i1_for_odd_prev3_;
+            inphase_ = i1_for_odd_prev3_;
+            quadrature_ = q1;
+
+            hilbert_temp = a_ * i1_for_odd_prev3_;
+            double ji = -ji_odd_[static_cast<std::size_t>(hilbert_idx_)];
+            ji_odd_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            ji += hilbert_temp;
+            ji -= prev_ji_odd_;
+            prev_ji_odd_ = b_ * prev_ji_input_odd_;
+            ji += prev_ji_odd_;
+            prev_ji_input_odd_ = i1_for_odd_prev3_;
+            ji *= adjusted_prev_period;
+
+            hilbert_temp = a_ * q1;
+            double jq = -jq_odd_[static_cast<std::size_t>(hilbert_idx_)];
+            jq_odd_[static_cast<std::size_t>(hilbert_idx_)] = hilbert_temp;
+            jq += hilbert_temp;
+            jq -= prev_jq_odd_;
+            prev_jq_odd_ = b_ * prev_jq_input_odd_;
+            jq += prev_jq_odd_;
+            prev_jq_input_odd_ = q1;
+            jq *= adjusted_prev_period;
+
+            const double q2 = 0.2 * (q1 + ji) + 0.8 * prev_q2_;
+            const double i2 = 0.2 * (i1_for_odd_prev3_ - jq) + 0.8 * prev_i2_;
+            i1_for_even_prev3_ = i1_for_even_prev2_;
+            i1_for_even_prev2_ = detrender_;
+            update_period(i2, q2);
+        }
+
+        // Dominant cycle phase from the last ~period smooth prices (HT_DCPHASE / HT_SINE).
+        prev_dc_phase_ = dc_phase_;
+        const double dc_period = smooth_period_ + 0.5;
+        int dc_period_int = static_cast<int>(dc_period);
+        if (dc_period_int < 1) {
+            dc_period_int = 1;
+        }
+        if (dc_period_int > 50) {
+            dc_period_int = 50;
+        }
+        double real_part = 0.0;
+        double imag_part = 0.0;
+        int idx = smooth_price_idx_;
+        for (int i = 0; i < dc_period_int; ++i) {
+            const double angle = static_cast<double>(i) * const_deg2rad_by_360_ / static_cast<double>(dc_period_int);
+            const double sp = smooth_price_[static_cast<std::size_t>(idx)];
+            real_part += std::sin(angle) * sp;
+            imag_part += std::cos(angle) * sp;
+            if (idx == 0) {
+                idx = 49;
+            } else {
+                --idx;
+            }
+        }
+        const double abs_imag = std::fabs(imag_part);
+        if (abs_imag > 0.0) {
+            dc_phase_ = std::atan(real_part / imag_part) * rad2deg_;
+        } else if (abs_imag <= 0.01) {
+            if (real_part < 0.0) {
+                dc_phase_ -= 90.0;
+            } else if (real_part > 0.0) {
+                dc_phase_ += 90.0;
+            }
+        }
+        dc_phase_ += 90.0;
+        if (smooth_period_ != 0.0) {
+            dc_phase_ += 360.0 / smooth_period_;
+        }
+        if (imag_part < 0.0) {
+            dc_phase_ += 180.0;
+        }
+        if (dc_phase_ > 315.0) {
+            dc_phase_ -= 360.0;
+        }
+
+        prev_sine_ = sine_;
+        prev_lead_sine_ = lead_sine_;
+        sine_ = std::sin(dc_phase_ * deg2rad_);
+        lead_sine_ = std::sin((dc_phase_ + 45.0) * deg2rad_);
+
+        // Instantaneous trendline: average raw price over DC period, then 4-bar WMA.
+        double avg_price = 0.0;
+        const int n_prices = static_cast<int>(prices_.size());
+        for (int j = 0; j < 50; ++j) {
+            if (j < dc_period_int) {
+                const int pidx = n_prices - 1 - j;
+                if (pidx >= 0) {
+                    avg_price += prices_[static_cast<std::size_t>(pidx)];
+                }
+            }
+        }
+        if (dc_period_int > 0) {
+            avg_price /= static_cast<double>(dc_period_int);
+        }
+        trendline_ = (4.0 * avg_price + 3.0 * i_trend1_ + 2.0 * i_trend2_ + i_trend3_) / 10.0;
+        i_trend3_ = i_trend2_;
+        i_trend2_ = i_trend1_;
+        i_trend1_ = avg_price;
+
+        // Trend mode (HT_TRENDMODE).
+        int trend = 1;
+        if ((sine_ > lead_sine_ && prev_sine_ <= prev_lead_sine_) ||
+            (sine_ < lead_sine_ && prev_sine_ >= prev_lead_sine_)) {
+            days_in_trend_ = 0;
+            trend = 0;
+        }
+        ++days_in_trend_;
+        if (days_in_trend_ < 0.5 * smooth_period_) {
+            trend = 0;
+        }
+        const double phase_delta = dc_phase_ - prev_dc_phase_;
+        if (smooth_period_ != 0.0 &&
+            phase_delta > 0.67 * 360.0 / smooth_period_ &&
+            phase_delta < 1.5 * 360.0 / smooth_period_) {
+            trend = 0;
+        }
+        const double sp_now = smooth_price_[static_cast<std::size_t>(smooth_price_idx_)];
+        if (trendline_ != 0.0 && std::fabs((sp_now - trendline_) / trendline_) >= 0.015) {
+            trend = 1;
+        }
+        trendmode_ = static_cast<double>(trend);
+
+        ++smooth_price_idx_;
+        if (smooth_price_idx_ > 49) {
+            smooth_price_idx_ = 0;
+        }
+        parity_ = 1 - parity_;
+        ++count_;
+        (void)i1_out;
+    }
+
+    double period() const {
+        return ready(lookback_period_) ? smooth_period_ : (fillna_ ? smooth_period_ : nan());
+    }
+    double phase() const {
+        return ready(lookback_phase_) ? dc_phase_ : (fillna_ ? dc_phase_ : nan());
+    }
+    double inphase() const {
+        return ready(lookback_period_) ? inphase_ : (fillna_ ? inphase_ : nan());
+    }
+    double quadrature() const {
+        return ready(lookback_period_) ? quadrature_ : (fillna_ ? quadrature_ : nan());
+    }
+    double sine() const {
+        return ready(lookback_phase_) ? sine_ : (fillna_ ? sine_ : nan());
+    }
+    double lead_sine() const {
+        return ready(lookback_phase_) ? lead_sine_ : (fillna_ ? lead_sine_ : nan());
+    }
+    double trendmode() const {
+        return ready(lookback_phase_) ? trendmode_ : (fillna_ ? trendmode_ : nan());
+    }
+    double trendline() const {
+        return ready(lookback_phase_) ? trendline_ : (fillna_ ? trendline_ : nan());
+    }
+
+private:
+    static constexpr double a_ = 0.0962;
+    static constexpr double b_ = 0.5769;
+    // TA-Lib lookbacks with default unstable period = 0.
+    static constexpr long lookback_period_ = 32;  // HT_DCPERIOD / HT_PHASOR
+    static constexpr long lookback_phase_ = 63;   // HT_DCPHASE / HT_SINE / HT_TREND*
+
+    bool ready(long lookback) const {
+        // After `lookback` updates, count_ == lookback and index lookback is first valid.
+        return count_ > lookback;
+    }
+
+    void update_period(double i2, double q2) {
+        re_ = 0.8 * re_ + 0.2 * (i2 * prev_i2_ + q2 * prev_q2_);
+        im_ = 0.8 * im_ + 0.2 * (i2 * prev_q2_ - q2 * prev_i2_);
+        prev_q2_ = q2;
+        prev_i2_ = i2;
+        const double temp = period_;
+        if (im_ != 0.0 && re_ != 0.0) {
+            period_ = 360.0 / (std::atan(im_ / re_) * rad2deg_);
+        }
+        const double hi = 1.5 * temp;
+        if (period_ > hi) {
+            period_ = hi;
+        }
+        const double lo = 0.67 * temp;
+        if (period_ < lo) {
+            period_ = lo;
+        }
+        if (period_ < 6.0) {
+            period_ = 6.0;
+        } else if (period_ > 50.0) {
+            period_ = 50.0;
+        }
+        period_ = 0.2 * period_ + 0.8 * temp;
+        smooth_period_ = 0.33 * period_ + 0.67 * smooth_period_;
+    }
+
+    bool fillna_;
+    long count_;
+    int parity_;
+    int hilbert_idx_;
+    double period_;
+    double smooth_period_;
+    double detrender_;
+    double q1_;
+    double prev_q2_;
+    double prev_i2_;
+    double re_;
+    double im_;
+    double i1_for_odd_prev2_;
+    double i1_for_odd_prev3_;
+    double i1_for_even_prev2_;
+    double i1_for_even_prev3_;
+    double prev_detrender_odd_;
+    double prev_detrender_even_;
+    double prev_detrender_input_odd_;
+    double prev_detrender_input_even_;
+    double prev_q1_odd_;
+    double prev_q1_even_;
+    double prev_q1_input_odd_;
+    double prev_q1_input_even_;
+    double prev_ji_odd_;
+    double prev_ji_even_;
+    double prev_ji_input_odd_;
+    double prev_ji_input_even_;
+    double prev_jq_odd_;
+    double prev_jq_even_;
+    double prev_jq_input_odd_;
+    double prev_jq_input_even_;
+    int smooth_price_idx_;
+    double dc_phase_;
+    double prev_dc_phase_;
+    double sine_;
+    double lead_sine_;
+    double prev_sine_;
+    double prev_lead_sine_;
+    double inphase_;
+    double quadrature_;
+    double trendmode_;
+    double trendline_;
+    double i_trend1_;
+    double i_trend2_;
+    double i_trend3_;
+    int days_in_trend_;
+    double rad2deg_;
+    double deg2rad_;
+    double const_deg2rad_by_360_;
+    std::array<double, 3> detrender_odd_;
+    std::array<double, 3> detrender_even_;
+    std::array<double, 3> q1_odd_;
+    std::array<double, 3> q1_even_;
+    std::array<double, 3> ji_odd_;
+    std::array<double, 3> ji_even_;
+    std::array<double, 3> jq_odd_;
+    std::array<double, 3> jq_even_;
+    std::array<double, 50> smooth_price_;
+    std::array<double, 4> wma_prices_;
+    std::vector<double> prices_;
+};
+
+class StochasticMomentumIndex {
+public:
+    StochasticMomentumIndex(int window = 14, int smooth1 = 3, int smooth2 = 3, int signal = 3, bool fillna = true)
+        : highs_(std::max(window, 1), true),
+          lows_(std::max(window, 1), false),
+          d1_(static_cast<double>(std::max(smooth1, 1)), true),
+          d2_(static_cast<double>(std::max(smooth2, 1)), true),
+          hl1_(static_cast<double>(std::max(smooth1, 1)), true),
+          hl2_(static_cast<double>(std::max(smooth2, 1)), true),
+          signal_(static_cast<double>(std::max(signal, 1)), true),
+          window_(std::max(window, 1)),
+          fillna_(fillna),
+          count_(0),
+          last_{nan(), nan()} {}
+
+    StochasticMomentumIndexResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const StochasticMomentumIndexResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
+        highs_.push(high);
+        lows_.push(low);
+        ++count_;
+
+        if (!fillna_ && count_ < window_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+
+        const double hh = highs_.value();
+        const double ll = lows_.value();
+        const double mid = 0.5 * (hh + ll);
+        const double diff = close - mid;
+        const double range = hh - ll;
+
+        const double sm = d2_.update(d1_.update(diff));
+        const double sr = hl2_.update(hl1_.update(range));
+        const double smi = safe_divide(100.0 * sm, 0.5 * sr);
+        const double sig = signal_.update(smi);
+        last_ = {smi, sig};
+    }
+
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    EMA d1_;
+    EMA d2_;
+    EMA hl1_;
+    EMA hl2_;
+    EMA signal_;
+    int window_;
+    bool fillna_;
+    long count_;
+    StochasticMomentumIndexResult last_;
+};
+
+class DeMarker {
+public:
+    explicit DeMarker(int window = 14, bool fillna = true)
+        : demax_(std::max(window, 1)),
+          demin_(std::max(window, 1)),
+          demax_sum_(0.0),
+          demin_sum_(0.0),
+          previous_high_(0.0),
+          previous_low_(0.0),
+          first_(true),
+          fillna_(fillna) {}
+
+    double update(double high, double low) {
+        double demax = 0.0;
+        double demin = 0.0;
+        if (!first_) {
+            demax = std::max(high - previous_high_, 0.0);
+            demin = std::max(previous_low_ - low, 0.0);
+        }
+        previous_high_ = high;
+        previous_low_ = low;
+        first_ = false;
+
+        rolling_sum_push(demax_, demax_sum_, demax);
+        rolling_sum_push(demin_, demin_sum_, demin);
+
+        if (!fillna_ && !demax_.full()) {
+            return nan();
+        }
+        return safe_divide(demax_sum_, demax_sum_ + demin_sum_);
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(h[i]), static_cast<double>(l[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingBuffer demax_;
+    RollingBuffer demin_;
+    double demax_sum_;
+    double demin_sum_;
+    double previous_high_;
+    double previous_low_;
+    bool first_;
+    bool fillna_;
+};
+
+class IntradayMomentumIndex {
+public:
+    explicit IntradayMomentumIndex(int window = 14, bool fillna = true)
+        : gains_(std::max(window, 1)),
+          losses_(std::max(window, 1)),
+          gain_sum_(0.0),
+          loss_sum_(0.0),
+          fillna_(fillna) {}
+
+    double update(double open, double close) {
+        double gain = 0.0;
+        double loss = 0.0;
+        if (close > open) {
+            gain = close - open;
+        } else if (close < open) {
+            loss = open - close;
+        }
+        rolling_sum_push(gains_, gain_sum_, gain);
+        rolling_sum_push(losses_, loss_sum_, loss);
+        if (!fillna_ && !gains_.full()) {
+            return nan();
+        }
+        return safe_divide(100.0 * gain_sum_, gain_sum_ + loss_sum_);
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &open, const Array1 &close) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, close.shape(0));
+        std::vector<double> output(size);
+        const auto *o = open.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(o[i]), static_cast<double>(c[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingBuffer gains_;
+    RollingBuffer losses_;
+    double gain_sum_;
+    double loss_sum_;
+    bool fillna_;
+};
+
+class AccelerationBands {
+public:
+    AccelerationBands(int window = 20, double factor = 4.0, bool fillna = true)
+        : upper_sma_(std::max(window, 1), true),
+          lower_sma_(std::max(window, 1), true),
+          middle_sma_(std::max(window, 1), fillna),
+          factor_(factor),
+          window_(std::max(window, 1)),
+          fillna_(fillna),
+          count_(0),
+          last_{nan(), nan(), nan()} {}
+
+    AccelerationBandsResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const AccelerationBandsResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
+        ++count_;
+        const double hl = high + low;
+        const double range = high - low;
+        const double scale = safe_divide(factor_ * range, hl);
+        const double upper_src = high * (1.0 + scale);
+        const double lower_src = low * (1.0 - scale);
+        const double upper = upper_sma_.update(upper_src);
+        const double lower = lower_sma_.update(lower_src);
+        const double middle = middle_sma_.update(close);
+        if (!fillna_ && count_ < window_) {
+            last_ = {nan(), nan(), nan()};
+            return;
+        }
+        last_ = {middle, upper, lower};
+    }
+
+    SMA upper_sma_;
+    SMA lower_sma_;
+    SMA middle_sma_;
+    double factor_;
+    int window_;
+    bool fillna_;
+    long count_;
+    AccelerationBandsResult last_;
+};
+
+class ChandelierExit {
+public:
+    ChandelierExit(int window = 22, double multiplier = 3.0, bool fillna = true)
+        : highs_(std::max(window, 1), true),
+          lows_(std::max(window, 1), false),
+          atr_(static_cast<double>(std::max(window, 1)), fillna),
+          multiplier_(multiplier),
+          window_(std::max(window, 1)),
+          fillna_(fillna),
+          count_(0),
+          last_{nan(), nan()} {}
+
+    ChandelierExitResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const ChandelierExitResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
+        highs_.push(high);
+        lows_.push(low);
+        const double atr = atr_.update(close, high, low);
+        ++count_;
+        if (!fillna_ && (count_ < window_ || std::isnan(atr))) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {
+            highs_.value() - multiplier_ * atr,
+            lows_.value() + multiplier_ * atr,
+        };
+    }
+
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    ATR atr_;
+    double multiplier_;
+    int window_;
+    bool fillna_;
+    long count_;
+    ChandelierExitResult last_;
+};
+
+class Alligator {
+public:
+    Alligator(int jaw_window = 13,
+              int teeth_window = 8,
+              int lips_window = 5,
+              int jaw_shift = 8,
+              int teeth_shift = 5,
+              int lips_shift = 3,
+              bool fillna = true)
+        : jaw_ma_(std::max(jaw_window, 1), true),
+          teeth_ma_(std::max(teeth_window, 1), true),
+          lips_ma_(std::max(lips_window, 1), true),
+          jaw_shift_(jaw_shift),
+          teeth_shift_(teeth_shift),
+          lips_shift_(lips_shift),
+          fillna_(fillna),
+          count_(0),
+          last_{nan(), nan(), nan()} {}
+
+    AlligatorResult update(double high, double low) {
+        update_core(high, low);
+        return last_;
+    }
+
+    void advance(double high, double low) {
+        update_core(high, low);
+    }
+
+    inline const AlligatorResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low) {
+        const double median = 0.5 * (high + low);
+        const double jaw = jaw_shift_.update(jaw_ma_.update(median));
+        const double teeth = teeth_shift_.update(teeth_ma_.update(median));
+        const double lips = lips_shift_.update(lips_ma_.update(median));
+        ++count_;
+        if (!fillna_ && (std::isnan(jaw) || std::isnan(teeth) || std::isnan(lips))) {
+            last_ = {nan(), nan(), nan()};
+            return;
+        }
+        last_ = {jaw, teeth, lips};
+    }
+
+    SmoothedMovingAverage jaw_ma_;
+    SmoothedMovingAverage teeth_ma_;
+    SmoothedMovingAverage lips_ma_;
+    ShiftBuffer jaw_shift_;
+    ShiftBuffer teeth_shift_;
+    ShiftBuffer lips_shift_;
+    bool fillna_;
+    long count_;
+    AlligatorResult last_;
+};
+
+class GatorOscillator {
+public:
+    GatorOscillator(int jaw_window = 13,
+                    int teeth_window = 8,
+                    int lips_window = 5,
+                    int jaw_shift = 8,
+                    int teeth_shift = 5,
+                    int lips_shift = 3,
+                    bool fillna = true)
+        : alligator_(jaw_window, teeth_window, lips_window, jaw_shift, teeth_shift, lips_shift, fillna),
+          last_{nan(), nan()} {}
+
+    GatorOscillatorResult update(double high, double low) {
+        update_core(high, low);
+        return last_;
+    }
+
+    void advance(double high, double low) {
+        update_core(high, low);
+    }
+
+    inline const GatorOscillatorResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low) {
+        const AlligatorResult a = alligator_.update(high, low);
+        if (std::isnan(a.jaw) || std::isnan(a.teeth) || std::isnan(a.lips)) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {std::abs(a.jaw - a.teeth), -std::abs(a.teeth - a.lips)};
+    }
+
+    Alligator alligator_;
+    GatorOscillatorResult last_;
+};
+
+class AcceleratorOscillator {
+public:
+    AcceleratorOscillator(int ao_slow = 34, int ao_fast = 5, int smooth = 5, bool fillna = true)
+        : ao_(ao_slow, ao_fast, true),
+          ao_sma_(std::max(smooth, 1), true),
+          fillna_(fillna),
+          warm_(std::max(ao_slow, ao_fast) + std::max(smooth, 1)),
+          count_(0) {}
+
+    double update(double high, double low) {
+        const double ao = ao_.update(high, low);
+        const double avg = ao_sma_.update(std::isnan(ao) ? 0.0 : ao);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            return nan();
+        }
+        if (std::isnan(ao)) {
+            return fillna_ ? 0.0 : nan();
+        }
+        return ao - avg;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(h[i]), static_cast<double>(l[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    AwesomeOscillator ao_;
+    SMA ao_sma_;
+    bool fillna_;
+    int warm_;
+    long count_;
+};
+
+class SqueezeMomentum {
+public:
+    SqueezeMomentum(int window = 20, double bb_mult = 2.0, double kc_mult = 1.5, bool fillna = true)
+        : window_(std::max(window, 1)),
+          bb_mult_(bb_mult),
+          kc_mult_(kc_mult),
+          fillna_(fillna),
+          values_(window_),
+          highs_(window_, true),
+          lows_(window_, false),
+          atr_(static_cast<double>(window_), true),
+          sum_(0.0),
+          sum2_(0.0),
+          count_(0),
+          linreg_(window_, true),
+          last_{nan(), nan()} {}
+
+    SqueezeMomentumResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const SqueezeMomentumResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
+        if (values_.full()) {
+            const double oldest = values_.oldest();
+            sum_ -= oldest;
+            sum2_ -= oldest * oldest;
+        }
+        values_.push(close);
+        sum_ += close;
+        sum2_ += close * close;
+        highs_.push(high);
+        lows_.push(low);
+        const double atr = atr_.update(close, high, low);
+        ++count_;
+
+        if (!fillna_ && count_ < window_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+
+        const double n = static_cast<double>(values_.size());
+        const double mean = sum_ / n;
+        const double variance = sum2_ / n - mean * mean;
+        const double stddev = std::sqrt(variance < 0.0 && variance > -1e-12 ? 0.0 : variance);
+        const double bb_upper = mean + bb_mult_ * stddev;
+        const double bb_lower = mean - bb_mult_ * stddev;
+        const double kc_upper = mean + kc_mult_ * atr;
+        const double kc_lower = mean - kc_mult_ * atr;
+        const double on = (bb_lower > kc_lower && bb_upper < kc_upper) ? 1.0 : 0.0;
+
+        const double donchian_mid = 0.5 * (highs_.value() + lows_.value());
+        const double basis = 0.5 * (donchian_mid + mean);
+        const double delta = close - basis;
+        const double momentum = linreg_.update(delta).value;
+        last_ = {on, momentum};
+    }
+
+    int window_;
+    double bb_mult_;
+    double kc_mult_;
+    bool fillna_;
+    RollingBuffer values_;
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    ATR atr_;
+    double sum_;
+    double sum2_;
+    long count_;
+    LinearRegressionCore linreg_;
+    SqueezeMomentumResult last_;
+};
+
+class WaveTrend {
+public:
+    WaveTrend(int channel_length = 10, int average_length = 21, int signal_length = 4, bool fillna = true)
+        : esa_(static_cast<double>(std::max(channel_length, 1)), true),
+          d_(static_cast<double>(std::max(channel_length, 1)), true),
+          wt1_(static_cast<double>(std::max(average_length, 1)), true),
+          wt2_(std::max(signal_length, 1), true),
+          fillna_(fillna),
+          warm_(std::max(channel_length, 1) + std::max(average_length, 1) + std::max(signal_length, 1)),
+          count_(0),
+          last_{nan(), nan()} {}
+
+    WaveTrendResult update(double high, double low, double close) {
+        update_core(high, low, close);
+        return last_;
+    }
+
+    void advance(double high, double low, double close) {
+        update_core(high, low, close);
+    }
+
+    inline const WaveTrendResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low, double close) {
+        const double ap = (high + low + close) / 3.0;
+        const double esa = esa_.update(ap);
+        const double d = d_.update(std::abs(ap - esa));
+        const double ci = safe_divide(ap - esa, 0.015 * d);
+        const double wt1 = wt1_.update(ci);
+        const double wt2 = wt2_.update(wt1);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {wt1, wt2};
+    }
+
+    EMA esa_;
+    EMA d_;
+    EMA wt1_;
+    SMA wt2_;
+    bool fillna_;
+    int warm_;
+    long count_;
+    WaveTrendResult last_;
+};
+
+class HilbertDominantCyclePeriod {
+public:
+    explicit HilbertDominantCyclePeriod(bool fillna = true) : engine_(fillna) {}
+
+    double update(double value) {
+        engine_.update(value);
+        return engine_.period();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    HilbertCycleEngine engine_;
+};
+
+class HilbertDominantCyclePhase {
+public:
+    explicit HilbertDominantCyclePhase(bool fillna = true) : engine_(fillna) {}
+
+    double update(double value) {
+        engine_.update(value);
+        return engine_.phase();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    HilbertCycleEngine engine_;
+};
+
+class HilbertPhasor {
+public:
+    explicit HilbertPhasor(bool fillna = true) : engine_(fillna), last_{nan(), nan()} {}
+
+    HilbertPhasorResult update(double value) {
+        engine_.update(value);
+        last_ = {engine_.inphase(), engine_.quadrature()};
+        return last_;
+    }
+
+    void advance(double value) {
+        (void) update(value);
+    }
+
+    inline const HilbertPhasorResult &last() const {
+        return last_;
+    }
+
+private:
+    HilbertCycleEngine engine_;
+    HilbertPhasorResult last_;
+};
+
+class HilbertSineWave {
+public:
+    explicit HilbertSineWave(bool fillna = true) : engine_(fillna), last_{nan(), nan()} {}
+
+    HilbertSineWaveResult update(double value) {
+        engine_.update(value);
+        last_ = {engine_.sine(), engine_.lead_sine()};
+        return last_;
+    }
+
+    void advance(double value) {
+        (void) update(value);
+    }
+
+    inline const HilbertSineWaveResult &last() const {
+        return last_;
+    }
+
+private:
+    HilbertCycleEngine engine_;
+    HilbertSineWaveResult last_;
+};
+
+class HilbertTrendMode {
+public:
+    explicit HilbertTrendMode(bool fillna = true) : engine_(fillna) {}
+
+    double update(double value) {
+        engine_.update(value);
+        return engine_.trendmode();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    HilbertCycleEngine engine_;
+};
+
+class HilbertTrendline {
+public:
+    explicit HilbertTrendline(bool fillna = true) : engine_(fillna) {}
+
+    double update(double value) {
+        engine_.update(value);
+        return engine_.trendline();
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    HilbertCycleEngine engine_;
+};
+
+struct RelativeVolatilityIndexResult {
+    double rvi;
+    double signal;
+};
+
+struct RelativeVolatilityIndexBatchResult {
+    nb::object rvi;
+    nb::object signal;
+};
+
+struct PivotPointsResult {
+    double pp;
+    double r1;
+    double r2;
+    double r3;
+    double s1;
+    double s2;
+    double s3;
+};
+
+struct PivotPointsBatchResult {
+    nb::object pp;
+    nb::object r1;
+    nb::object r2;
+    nb::object r3;
+    nb::object s1;
+    nb::object s2;
+    nb::object s3;
+};
+
+struct WilliamsFractalsResult {
+    double up;
+    double down;
+};
+
+struct WilliamsFractalsBatchResult {
+    nb::object up;
+    nb::object down;
+};
+
+struct RandomWalkIndexResult {
+    double high;
+    double low;
+};
+
+struct RandomWalkIndexBatchResult {
+    nb::object high;
+    nb::object low;
+};
+
+inline double result_checksum(const RelativeVolatilityIndexResult &value) {
+    return value.rvi + value.signal;
+}
+
+inline double result_checksum(const PivotPointsResult &value) {
+    return value.pp + value.r1 + value.r2 + value.r3 + value.s1 + value.s2 + value.s3;
+}
+
+inline double result_checksum(const WilliamsFractalsResult &value) {
+    return value.up + value.down;
+}
+
+inline double result_checksum(const RandomWalkIndexResult &value) {
+    return value.high + value.low;
+}
+
+struct EhlersCenterOfGravityResult {
+    double cg;
+    double lag;
+};
+
+struct EhlersCenterOfGravityBatchResult {
+    nb::object cg;
+    nb::object lag;
+};
+
+struct EhlersInstantaneousTrendlineResult {
+    double trendline;
+    double trigger;
+};
+
+struct EhlersInstantaneousTrendlineBatchResult {
+    nb::object trendline;
+    nb::object trigger;
+};
+
+struct EhlersCyberCycleResult {
+    double cycle;
+    double trigger;
+};
+
+struct EhlersCyberCycleBatchResult {
+    nb::object cycle;
+    nb::object trigger;
+};
+
+struct EhlersDecyclerResult {
+    double decycle;
+    double oscillator;
+};
+
+struct EhlersDecyclerBatchResult {
+    nb::object decycle;
+    nb::object oscillator;
+};
+
+struct EhlersRoofingFilterResult {
+    double roof;
+    double highpass;
+};
+
+struct EhlersRoofingFilterBatchResult {
+    nb::object roof;
+    nb::object highpass;
+};
+
+struct GuppyMultipleMovingAverageResult {
+    double short_average;
+    double long_average;
+    double spread;
+};
+
+struct GuppyMultipleMovingAverageBatchResult {
+    nb::object short_average;
+    nb::object long_average;
+    nb::object spread;
+};
+
+struct KagiChartResult {
+    double line;
+    double direction;
+    double reversal;
+};
+
+struct KagiChartBatchResult {
+    nb::object line;
+    nb::object direction;
+    nb::object reversal;
+};
+
+struct PointAndFigureResult {
+    double box_price;
+    double direction;
+    double boxes;
+    double reversal;
+};
+
+struct PointAndFigureBatchResult {
+    nb::object box_price;
+    nb::object direction;
+    nb::object boxes;
+    nb::object reversal;
+};
+
+inline double result_checksum(const EhlersCenterOfGravityResult &value) {
+    return value.cg + value.lag;
+}
+inline double result_checksum(const EhlersInstantaneousTrendlineResult &value) {
+    return value.trendline + value.trigger;
+}
+inline double result_checksum(const EhlersCyberCycleResult &value) {
+    return value.cycle + value.trigger;
+}
+inline double result_checksum(const EhlersDecyclerResult &value) {
+    return value.decycle + value.oscillator;
+}
+inline double result_checksum(const EhlersRoofingFilterResult &value) {
+    return value.roof + value.highpass;
+}
+inline double result_checksum(const GuppyMultipleMovingAverageResult &value) {
+    return value.short_average + value.long_average + value.spread;
+}
+inline double result_checksum(const KagiChartResult &value) {
+    return value.line + value.direction + value.reversal;
+}
+inline double result_checksum(const PointAndFigureResult &value) {
+    return value.box_price + value.direction + value.boxes + value.reversal;
+}
+
+
+struct MultiLevelOrderFlowImbalanceResult {
+    double total;
+    double mean;
+    double l1;
+    double l2;
+    double l3;
+    double l4;
+    double l5;
+};
+
+struct MultiLevelOrderFlowImbalanceBatchResult {
+    nb::object total;
+    nb::object mean;
+    nb::object l1;
+    nb::object l2;
+    nb::object l3;
+    nb::object l4;
+    nb::object l5;
+};
+
+struct IntegratedOrderFlowImbalanceResult {
+    double ofi;
+    double weight_l1;
+};
+
+struct IntegratedOrderFlowImbalanceBatchResult {
+    nb::object ofi;
+    nb::object weight_l1;
+};
+
+struct DecomposedOrderFlowImbalanceResult {
+    double add;
+    double cancel;
+    double trade;
+    double total;
+};
+
+struct DecomposedOrderFlowImbalanceBatchResult {
+    nb::object add;
+    nb::object cancel;
+    nb::object trade;
+    nb::object total;
+};
+
+struct InformationBarResult {
+    double bar_open;
+    double bar_close;
+    double bar_high;
+    double bar_low;
+    double bar_volume;
+    double direction;
+    double complete;
+    double bars;
+};
+
+struct InformationBarBatchResult {
+    nb::object bar_open;
+    nb::object bar_close;
+    nb::object bar_high;
+    nb::object bar_low;
+    nb::object bar_volume;
+    nb::object direction;
+    nb::object complete;
+    nb::object bars;
+};
+
+struct FOCuSResult {
+    double signal;
+    double statistic;
+};
+
+struct FOCuSBatchResult {
+    nb::object signal;
+    nb::object statistic;
+};
+
+struct DirectionalChangeResult {
+    double event;
+    double overshoot;
+    double extremum;
+    double direction;
+};
+
+struct DirectionalChangeBatchResult {
+    nb::object event;
+    nb::object overshoot;
+    nb::object extremum;
+    nb::object direction;
+};
+
+inline double result_checksum(const MultiLevelOrderFlowImbalanceResult &value) {
+    return value.total + value.mean + value.l1 + value.l2 + value.l3 + value.l4 + value.l5;
+}
+inline double result_checksum(const IntegratedOrderFlowImbalanceResult &value) {
+    return value.ofi + value.weight_l1;
+}
+inline double result_checksum(const DecomposedOrderFlowImbalanceResult &value) {
+    return value.add + value.cancel + value.trade + value.total;
+}
+inline double result_checksum(const InformationBarResult &value) {
+    return value.bar_open + value.bar_close + value.bar_high + value.bar_low + value.bar_volume
+        + value.direction + value.complete + value.bars;
+}
+inline double result_checksum(const FOCuSResult &value) {
+    return value.signal + value.statistic;
+}
+inline double result_checksum(const DirectionalChangeResult &value) {
+    return value.event + value.overshoot + value.extremum + value.direction;
+}
+
+struct CrossAssetOrderFlowImbalanceResult {
+    double beta;
+    double impact;
+    double residual;
+    double peer_ofi;
+};
+
+struct CrossAssetOrderFlowImbalanceBatchResult {
+    nb::object beta;
+    nb::object impact;
+    nb::object residual;
+    nb::object peer_ofi;
+};
+
+struct ResidualBOCPDResult {
+    double signal;
+    double probability;
+};
+
+struct ResidualBOCPDBatchResult {
+    nb::object signal;
+    nb::object probability;
+};
+
+struct InnovationChangepointResult {
+    double signal;
+    double score;
+    double residual;
+};
+
+struct InnovationChangepointBatchResult {
+    nb::object signal;
+    nb::object score;
+    nb::object residual;
+};
+
+struct MultiPeerOrderFlowImbalanceResult {
+    double beta;
+    double impact;
+    double residual;
+    double peer_mean;
+};
+
+struct MultiPeerOrderFlowImbalanceBatchResult {
+    nb::object beta;
+    nb::object impact;
+    nb::object residual;
+    nb::object peer_mean;
+};
+
+inline double result_checksum(const InnovationChangepointResult &value) {
+    return value.signal + value.score + value.residual;
+}
+inline double result_checksum(const MultiPeerOrderFlowImbalanceResult &value) {
+    return value.beta + value.impact + value.residual + value.peer_mean;
+}
+
+
+struct GuppyMMARibbonResult {
+    double s3, s5, s8, s10, s12, s15;
+    double l30, l35, l40, l45, l50, l60;
+    double short_average;
+    double long_average;
+    double spread;
+};
+
+struct GuppyMMARibbonBatchResult {
+    nb::object s3, s5, s8, s10, s12, s15;
+    nb::object l30, l35, l40, l45, l50, l60;
+    nb::object short_average;
+    nb::object long_average;
+    nb::object spread;
+};
+
+struct AndrewsPitchforkResult {
+    double median;
+    double upper;
+    double lower;
+    double pivot;       // 1 if a pivot confirmed this bar else 0
+    double direction;   // current swing direction
+};
+
+struct AndrewsPitchforkBatchResult {
+    nb::object median;
+    nb::object upper;
+    nb::object lower;
+    nb::object pivot;
+    nb::object direction;
+};
+
+struct ElderThermometerResult {
+    double ratio;
+    double hot;
+    double range;
+};
+
+struct ElderThermometerBatchResult {
+    nb::object ratio;
+    nb::object hot;
+    nb::object range;
+};
+
+inline double result_checksum(const GuppyMMARibbonResult &value) {
+    return value.s3 + value.s5 + value.s8 + value.s10 + value.s12 + value.s15
+        + value.l30 + value.l35 + value.l40 + value.l45 + value.l50 + value.l60
+        + value.short_average + value.long_average + value.spread;
+}
+inline double result_checksum(const AndrewsPitchforkResult &value) {
+    return value.median + value.upper + value.lower + value.pivot + value.direction;
+}
+inline double result_checksum(const ElderThermometerResult &value) {
+    return value.ratio + value.hot + value.range;
+}
+
+// --- Retail one-offs + research depth (misc #2 / #3) ---
+
+struct RainbowMovingAverageResult {
+    double outer;     // deepest recursive SMA layer
+    double highest;   // max across layers
+    double lowest;    // min across layers
+    double mid;       // (highest + lowest) / 2
+    double width;     // highest - lowest
+};
+
+struct RainbowMovingAverageBatchResult {
+    nb::object outer;
+    nb::object highest;
+    nb::object lowest;
+    nb::object mid;
+    nb::object width;
+};
+
+struct RainbowOscillatorResult {
+    double value;     // 100 * width / price
+    double position;  // 100 * (price - mid) / width  (0 if width~0)
+    double width;
+};
+
+struct RainbowOscillatorBatchResult {
+    nb::object value;
+    nb::object position;
+    nb::object width;
+};
+
+struct ProjectionOscillatorResult {
+    double value;
+    double signal;
+    double upper;
+    double lower;
+};
+
+struct ProjectionOscillatorBatchResult {
+    nb::object value;
+    nb::object signal;
+    nb::object upper;
+    nb::object lower;
+};
+
+struct MessageEventOrderFlowImbalanceResult {
+    double ofi;
+    double event;
+    double signed_size;
+};
+
+struct MessageEventOrderFlowImbalanceBatchResult {
+    nb::object ofi;
+    nb::object event;
+    nb::object signed_size;
+};
+
+struct HawkesIntensityResult {
+    double intensity;
+    double excitation;  // residual self-excitation state A
+    double baseline;
+};
+
+struct HawkesIntensityBatchResult {
+    nb::object intensity;
+    nb::object excitation;
+    nb::object baseline;
+};
+
+struct WeightedMultiPeerOrderFlowImbalanceResult {
+    double beta;
+    double impact;
+    double residual;
+    double peer_mean;
+};
+
+struct WeightedMultiPeerOrderFlowImbalanceBatchResult {
+    nb::object beta;
+    nb::object impact;
+    nb::object residual;
+    nb::object peer_mean;
+};
+
+struct ConformalBandsResult {
+    double middle;
+    double upper;
+    double lower;
+    double radius;
+};
+
+struct ConformalBandsBatchResult {
+    nb::object middle;
+    nb::object upper;
+    nb::object lower;
+    nb::object radius;
+};
+
+inline double result_checksum(const RainbowMovingAverageResult &value) {
+    return value.outer + value.highest + value.lowest + value.mid + value.width;
+}
+inline double result_checksum(const RainbowOscillatorResult &value) {
+    return value.value + value.position + value.width;
+}
+inline double result_checksum(const ProjectionOscillatorResult &value) {
+    return value.value + value.signal + value.upper + value.lower;
+}
+inline double result_checksum(const MessageEventOrderFlowImbalanceResult &value) {
+    return value.ofi + value.event + value.signed_size;
+}
+inline double result_checksum(const HawkesIntensityResult &value) {
+    return value.intensity + value.excitation + value.baseline;
+}
+inline double result_checksum(const WeightedMultiPeerOrderFlowImbalanceResult &value) {
+    return value.beta + value.impact + value.residual + value.peer_mean;
+}
+inline double result_checksum(const ConformalBandsResult &value) {
+    return value.middle + value.upper + value.lower + value.radius;
+}
+
+inline double result_checksum(const CrossAssetOrderFlowImbalanceResult &value) {
+    return value.beta + value.impact + value.residual + value.peer_ofi;
+}
+inline double result_checksum(const ResidualBOCPDResult &value) {
+    return value.signal + value.probability;
+}
+
+
+
+
+// Simple MA helper used by MACDExt (0=SMA, 1=EMA).
+class SelectableMA {
+public:
+    SelectableMA(int window, int ma_type, bool fillna)
+        : ma_type_(ma_type == 0 ? 0 : 1),
+          sma_(std::max(window, 1), fillna),
+          ema_(static_cast<double>(std::max(window, 1)), fillna) {}
+
+    double update(double value) {
+        return ma_type_ == 0 ? sma_.update(value) : ema_.update(value);
+    }
+
+private:
+    int ma_type_;
+    SMA sma_;
+    EMA ema_;
+};
+
+class MACDExt {
+public:
+    // ma_type: 0 = SMA, 1 = EMA (default), for fast/slow/signal independently.
+    MACDExt(int fast = 12,
+            int slow = 26,
+            int signal = 9,
+            int fast_ma_type = 1,
+            int slow_ma_type = 1,
+            int signal_ma_type = 1,
+            bool fillna = true)
+        : fast_(std::max(fast, 1), fast_ma_type, true),
+          slow_(std::max(slow, 1), slow_ma_type, true),
+          signal_(std::max(signal, 1), signal_ma_type, true),
+          fillna_(fillna),
+          warm_(std::max(fast, slow) + signal),
+          count_(0),
+          last_{nan(), nan(), nan()} {}
+
+    MACDResult update(double value) {
+        update_core(value);
+        return last_;
+    }
+
+    void advance(double value) {
+        update_core(value);
+    }
+
+    inline const MACDResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double value) {
+        const double macd = fast_.update(value) - slow_.update(value);
+        const double sig = signal_.update(macd);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            last_ = {nan(), nan(), nan()};
+            return;
+        }
+        last_ = {macd, sig, macd - sig};
+    }
+
+    SelectableMA fast_;
+    SelectableMA slow_;
+    SelectableMA signal_;
+    bool fillna_;
+    int warm_;
+    long count_;
+    MACDResult last_;
+};
+
+class PivotPoints {
+public:
+    // Classic floor pivots from the *previous* bar's HLC.
+    explicit PivotPoints(bool fillna = true)
+        : fillna_(fillna),
+          has_prev_(false),
+          prev_high_(0.0),
+          prev_low_(0.0),
+          prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    PivotPointsResult update(double high, double low, double close) {
+        update_core(high, low, close);
+        return last_;
+    }
+
+    void advance(double high, double low, double close) {
+        update_core(high, low, close);
+    }
+
+    inline const PivotPointsResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low, double close) {
+        if (!has_prev_) {
+            prev_high_ = high;
+            prev_low_ = low;
+            prev_close_ = close;
+            has_prev_ = true;
+            last_ = fillna_ ? PivotPointsResult{close, close, close, close, close, close, close}
+                            : PivotPointsResult{nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+            return;
+        }
+        const double pp = (prev_high_ + prev_low_ + prev_close_) / 3.0;
+        const double r1 = 2.0 * pp - prev_low_;
+        const double s1 = 2.0 * pp - prev_high_;
+        const double r2 = pp + (prev_high_ - prev_low_);
+        const double s2 = pp - (prev_high_ - prev_low_);
+        const double r3 = prev_high_ + 2.0 * (pp - prev_low_);
+        const double s3 = prev_low_ - 2.0 * (prev_high_ - pp);
+        last_ = {pp, r1, r2, r3, s1, s2, s3};
+        prev_high_ = high;
+        prev_low_ = low;
+        prev_close_ = close;
+    }
+
+    bool fillna_;
+    bool has_prev_;
+    double prev_high_;
+    double prev_low_;
+    double prev_close_;
+    PivotPointsResult last_;
+};
+
+class QStick {
+public:
+    explicit QStick(int window = 14, bool fillna = true)
+        : sma_(std::max(window, 1), fillna) {}
+
+    double update(double open, double close) {
+        return sma_.update(close - open);
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &open, const Array1 &close) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, close.shape(0));
+        std::vector<double> output(size);
+        const auto *o = open.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(o[i]), static_cast<double>(c[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    SMA sma_;
+};
+
+class PsychologicalLine {
+public:
+    explicit PsychologicalLine(int window = 12, bool fillna = true)
+        : ups_(std::max(window, 1)),
+          up_sum_(0.0),
+          previous_(0.0),
+          first_(true),
+          fillna_(fillna),
+          window_(std::max(window, 1)) {}
+
+    double update(double close) {
+        double up = 0.0;
+        if (!first_ && close > previous_) {
+            up = 1.0;
+        }
+        previous_ = close;
+        first_ = false;
+        rolling_sum_push(ups_, up_sum_, up);
+        if (!fillna_ && !ups_.full()) {
+            return nan();
+        }
+        return 100.0 * up_sum_ / static_cast<double>(ups_.size() == 0 ? 1 : ups_.size());
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingBuffer ups_;
+    double up_sum_;
+    double previous_;
+    bool first_;
+    bool fillna_;
+    int window_;
+};
+
+class Bias {
+public:
+    explicit Bias(int window = 20, bool fillna = true)
+        : sma_(std::max(window, 1), fillna) {}
+
+    double update(double close) {
+        const double avg = sma_.update(close);
+        return 100.0 * safe_divide(close - avg, avg);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    SMA sma_;
+};
+
+class WilliamsFractals {
+public:
+    // 5-bar Williams fractal; confirmed with 2-bar lag.
+    explicit WilliamsFractals(bool fillna = true)
+        : fillna_(fillna),
+          count_(0),
+          last_{nan(), nan()} {
+        highs_.fill(0.0);
+        lows_.fill(0.0);
+    }
+
+    WilliamsFractalsResult update(double high, double low) {
+        update_core(high, low);
+        return last_;
+    }
+
+    void advance(double high, double low) {
+        update_core(high, low);
+    }
+
+    inline const WilliamsFractalsResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double high, double low) {
+        // Shift register: index 0 = oldest, 4 = newest.
+        for (int i = 0; i < 4; ++i) {
+            highs_[static_cast<std::size_t>(i)] = highs_[static_cast<std::size_t>(i + 1)];
+            lows_[static_cast<std::size_t>(i)] = lows_[static_cast<std::size_t>(i + 1)];
+        }
+        highs_[4] = high;
+        lows_[4] = low;
+        ++count_;
+        if (count_ < 5) {
+            last_ = fillna_ ? WilliamsFractalsResult{0.0, 0.0} : WilliamsFractalsResult{nan(), nan()};
+            return;
+        }
+        const double mid_h = highs_[2];
+        const double mid_l = lows_[2];
+        const bool up = mid_h > highs_[0] && mid_h > highs_[1] && mid_h > highs_[3] && mid_h > highs_[4];
+        const bool down = mid_l < lows_[0] && mid_l < lows_[1] && mid_l < lows_[3] && mid_l < lows_[4];
+        last_ = {up ? mid_h : 0.0, down ? mid_l : 0.0};
+    }
+
+    bool fillna_;
+    long count_;
+    std::array<double, 5> highs_;
+    std::array<double, 5> lows_;
+    WilliamsFractalsResult last_;
+};
+
+class MarketFacilitationIndex {
+public:
+    MarketFacilitationIndex() = default;
+
+    double update(double high, double low, double volume) {
+        return safe_divide(high - low, volume);
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &high, const Array1 &low, const Array2 &volume) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        require_same_size(size, volume.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *v = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(v[i]));
+        }
+        return make_array(std::move(output));
+    }
+};
+
+class SwingIndex {
+public:
+    // Wilder's Swing Index (limit is typically the maximum price change expected).
+    explicit SwingIndex(double limit = 0.5)
+        : limit_(limit > 0.0 ? limit : 0.5),
+          previous_open_(0.0),
+          previous_high_(0.0),
+          previous_low_(0.0),
+          previous_close_(0.0),
+          first_(true) {}
+
+    double update(double open, double high, double low, double close) {
+        if (first_) {
+            previous_open_ = open;
+            previous_high_ = high;
+            previous_low_ = low;
+            previous_close_ = close;
+            first_ = false;
+            return 0.0;
+        }
+        const double abs_hc = std::abs(high - previous_close_);
+        const double abs_lc = std::abs(low - previous_close_);
+        const double abs_hl = std::abs(high - previous_low_);
+        const double abs_oc = std::abs(previous_close_ - previous_open_);
+
+        double r = 0.0;
+        if (abs_hc >= abs_lc && abs_hc >= abs_hl) {
+            r = abs_hc - 0.5 * abs_lc + 0.25 * abs_oc;
+        } else if (abs_lc >= abs_hc && abs_lc >= abs_hl) {
+            r = abs_lc - 0.5 * abs_hc + 0.25 * abs_oc;
+        } else {
+            r = abs_hl + 0.25 * abs_oc;
+        }
+
+        const double k = std::max(abs_hc, abs_lc);
+        const double num = (close - previous_close_) + 0.5 * (close - open) + 0.25 * (previous_close_ - previous_open_);
+        const double si = safe_divide(50.0 * num * k, limit_ * r);
+
+        previous_open_ = open;
+        previous_high_ = high;
+        previous_low_ = low;
+        previous_close_ = close;
+        return si;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    nb::object batch_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        std::vector<double> output(size);
+        const auto *o = open.data();
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(
+                static_cast<double>(o[i]),
+                static_cast<double>(h[i]),
+                static_cast<double>(l[i]),
+                static_cast<double>(c[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    double limit_;
+    double previous_open_;
+    double previous_high_;
+    double previous_low_;
+    double previous_close_;
+    bool first_;
+};
+
+class AccumulativeSwingIndex {
+public:
+    explicit AccumulativeSwingIndex(double limit = 0.5)
+        : si_(limit),
+          value_(0.0) {}
+
+    double update(double open, double high, double low, double close) {
+        value_ += si_.update(open, high, low, close);
+        return value_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    nb::object batch_array(const Array0 &open, const Array1 &high, const Array2 &low, const Array3 &close) {
+        const std::size_t size = open.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        std::vector<double> output(size);
+        const auto *o = open.data();
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(
+                static_cast<double>(o[i]),
+                static_cast<double>(h[i]),
+                static_cast<double>(l[i]),
+                static_cast<double>(c[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    SwingIndex si_;
+    double value_;
+};
+
+class VerticalHorizontalFilter {
+public:
+    // VHF = (highest close - lowest close) / sum(|Δclose|) over the window.
+    explicit VerticalHorizontalFilter(int window = 28, bool fillna = true)
+        : window_(std::max(window, 2)),
+          fillna_(fillna),
+          closes_(window_) {}
+
+    double update(double close) {
+        closes_.push(close);
+        if (!fillna_ && !closes_.full()) {
+            return nan();
+        }
+        const std::size_t n = closes_.size();
+        if (n < 2) {
+            return fillna_ ? 0.0 : nan();
+        }
+        double hi = closes_.at(0);
+        double lo = closes_.at(0);
+        double path = 0.0;
+        for (std::size_t i = 1; i < n; ++i) {
+            const double c = closes_.at(i);
+            const double prev = closes_.at(i - 1);
+            path += std::abs(c - prev);
+            if (c > hi) {
+                hi = c;
+            }
+            if (c < lo) {
+                lo = c;
+            }
+        }
+        return safe_divide(hi - lo, path);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    bool fillna_;
+    RollingBuffer closes_;
+};
+
+class RandomWalkIndex {
+public:
+    explicit RandomWalkIndex(int window = 14, bool fillna = true)
+        : window_(std::max(window, 2)),
+          fillna_(fillna),
+          atr_(static_cast<double>(window_), true),
+          highs_(window_, true),
+          lows_(window_, false),
+          count_(0),
+          last_{nan(), nan()} {}
+
+    RandomWalkIndexResult update(double close, double high, double low) {
+        update_core(close, high, low);
+        return last_;
+    }
+
+    void advance(double close, double high, double low) {
+        update_core(close, high, low);
+    }
+
+    inline const RandomWalkIndexResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close, double high, double low) {
+        highs_.push(high);
+        lows_.push(low);
+        const double atr = atr_.update(close, high, low);
+        ++count_;
+        if (!fillna_ && count_ < window_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        const double scale = atr * std::sqrt(static_cast<double>(window_));
+        const double rwi_high = safe_divide(high - lows_.value(), scale);
+        const double rwi_low = safe_divide(highs_.value() - low, scale);
+        last_ = {rwi_high, rwi_low};
+    }
+
+    int window_;
+    bool fillna_;
+    ATR atr_;
+    RollingExtreme highs_;
+    RollingExtreme lows_;
+    long count_;
+    RandomWalkIndexResult last_;
+};
+
+class PrettyGoodOscillator {
+public:
+    explicit PrettyGoodOscillator(int window = 14, bool fillna = true)
+        : sma_(std::max(window, 1), true),
+          atr_(static_cast<double>(std::max(window, 1)), fillna),
+          fillna_(fillna),
+          warm_(std::max(window, 1)),
+          count_(0) {}
+
+    double update(double close, double high, double low) {
+        const double avg = sma_.update(close);
+        const double atr = atr_.update(close, high, low);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            return nan();
+        }
+        return safe_divide(close - avg, atr);
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &close, const Array1 &high, const Array2 &low) {
+        const std::size_t size = close.shape(0);
+        require_same_size(size, high.shape(0));
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *c = close.data();
+        const auto *h = high.data();
+        const auto *l = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(c[i]), static_cast<double>(h[i]), static_cast<double>(l[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    SMA sma_;
+    ATR atr_;
+    bool fillna_;
+    int warm_;
+    long count_;
+};
+
+class TrendIntensityIndex {
+public:
+    explicit TrendIntensityIndex(int window = 30, bool fillna = true)
+        : sma_(std::max(window, 1), true),
+          pos_(std::max(window, 1)),
+          abs_(std::max(window, 1)),
+          pos_sum_(0.0),
+          abs_sum_(0.0),
+          fillna_(fillna),
+          warm_(std::max(window, 1)),
+          count_(0) {}
+
+    double update(double close) {
+        const double avg = sma_.update(close);
+        const double diff = close - avg;
+        const double pos = diff > 0.0 ? diff : 0.0;
+        const double ad = std::abs(diff);
+        rolling_sum_push(pos_, pos_sum_, pos);
+        rolling_sum_push(abs_, abs_sum_, ad);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            return nan();
+        }
+        return safe_divide(100.0 * pos_sum_, abs_sum_);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    SMA sma_;
+    RollingBuffer pos_;
+    RollingBuffer abs_;
+    double pos_sum_;
+    double abs_sum_;
+    bool fillna_;
+    int warm_;
+    long count_;
+};
+
+class WilliamsAD {
+public:
+    WilliamsAD()
+        : value_(0.0),
+          previous_close_(0.0),
+          first_(true) {}
+
+    double update(double high, double low, double close) {
+        if (first_) {
+            previous_close_ = close;
+            first_ = false;
+            return value_;
+        }
+        if (close > previous_close_) {
+            value_ += close - std::min(low, previous_close_);
+        } else if (close < previous_close_) {
+            value_ += close - std::max(high, previous_close_);
+        }
+        previous_close_ = close;
+        return value_;
+    }
+
+    template <typename Array0, typename Array1, typename Array2>
+    nb::object batch_array(const Array0 &high, const Array1 &low, const Array2 &close) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    double value_;
+    double previous_close_;
+    bool first_;
+};
+
+class IntradayIntensity {
+public:
+    // Cumulative money-flow form: sum(II*volume) / sum(volume) over a window.
+    explicit IntradayIntensity(int window = 21, bool fillna = true)
+        : flow_(std::max(window, 1)),
+          vol_(std::max(window, 1)),
+          flow_sum_(0.0),
+          vol_sum_(0.0),
+          fillna_(fillna) {}
+
+    double update(double high, double low, double close, double volume) {
+        const double range = high - low;
+        const double ii = range == 0.0 ? 0.0 : ((2.0 * close - high - low) / range) * volume;
+        rolling_sum_push(flow_, flow_sum_, ii);
+        rolling_sum_push(vol_, vol_sum_, volume);
+        if (!fillna_ && !flow_.full()) {
+            return nan();
+        }
+        return safe_divide(flow_sum_, vol_sum_);
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    nb::object batch_array(const Array0 &high, const Array1 &low, const Array2 &close, const Array3 &volume) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        const auto *v = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(
+                static_cast<double>(h[i]),
+                static_cast<double>(l[i]),
+                static_cast<double>(c[i]),
+                static_cast<double>(v[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RollingBuffer flow_;
+    RollingBuffer vol_;
+    double flow_sum_;
+    double vol_sum_;
+    bool fillna_;
+};
+
+class TwiggsMoneyFlow {
+public:
+    explicit TwiggsMoneyFlow(int window = 21, bool fillna = true)
+        : ad_(static_cast<double>(std::max(window, 1)), true),
+          vol_(static_cast<double>(std::max(window, 1)), true),
+          previous_close_(0.0),
+          first_(true),
+          fillna_(fillna),
+          warm_(std::max(window, 1)),
+          count_(0) {}
+
+    double update(double high, double low, double close, double volume) {
+        double true_high = high;
+        double true_low = low;
+        if (!first_) {
+            true_high = std::max(high, previous_close_);
+            true_low = std::min(low, previous_close_);
+        }
+        previous_close_ = close;
+        first_ = false;
+        const double tr = true_high - true_low;
+        const double ad = tr == 0.0 ? 0.0 : ((close - true_low) - (true_high - close)) / tr * volume;
+        const double ad_ema = ad_.update(ad);
+        const double vol_ema = vol_.update(volume);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            return nan();
+        }
+        return safe_divide(ad_ema, vol_ema);
+    }
+
+    template <typename Array0, typename Array1, typename Array2, typename Array3>
+    nb::object batch_array(const Array0 &high, const Array1 &low, const Array2 &close, const Array3 &volume) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        require_same_size(size, close.shape(0));
+        require_same_size(size, volume.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        const auto *v = volume.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(
+                static_cast<double>(h[i]),
+                static_cast<double>(l[i]),
+                static_cast<double>(c[i]),
+                static_cast<double>(v[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    EMA ad_;
+    EMA vol_;
+    double previous_close_;
+    bool first_;
+    bool fillna_;
+    int warm_;
+    long count_;
+};
+
+class ComparativeRelativeStrength {
+public:
+    ComparativeRelativeStrength() = default;
+
+    double update(double price_a, double price_b) {
+        return safe_divide(price_a, price_b);
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &price_a, const Array1 &price_b) {
+        const std::size_t size = price_a.shape(0);
+        require_same_size(size, price_b.shape(0));
+        std::vector<double> output(size);
+        const auto *a = price_a.data();
+        const auto *b = price_b.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(a[i]), static_cast<double>(b[i]));
+        }
+        return make_array(std::move(output));
+    }
+};
+
+class InverseFisherRSI {
+public:
+    explicit InverseFisherRSI(int rsi_window = 5, int wma_window = 9, bool fillna = true)
+        : rsi_(rsi_window, true),
+          wma_(std::max(wma_window, 1), true),
+          fillna_(fillna),
+          warm_(rsi_window + wma_window),
+          count_(0) {}
+
+    double update(double close) {
+        const double rsi = rsi_.update(close);
+        // Map RSI from 0..100 to roughly -5..5 then WMA, then inverse Fisher.
+        const double x = 0.1 * (rsi - 50.0);
+        const double smoothed = wma_.update(x);
+        const double e2 = std::exp(2.0 * smoothed);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            return nan();
+        }
+        return safe_divide(e2 - 1.0, e2 + 1.0);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &close) {
+        const std::size_t size = close.shape(0);
+        std::vector<double> output(size);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    RSI rsi_;
+    WeightedMovingAverage wma_;
+    bool fillna_;
+    int warm_;
+    long count_;
+};
+
+
+
+// ---------- Tier C: Ehlers filters ----------
+
+class EhlersSuperSmoother {
+public:
+    explicit EhlersSuperSmoother(int period = 10, bool fillna = true)
+        : period_(std::max(period, 2)),
+          fillna_(fillna),
+          count_(0),
+          price1_(0.0),
+          filt1_(0.0),
+          filt2_(0.0) {
+        const double angle = 1.4142135623730951 * 3.14159265358979323846 / static_cast<double>(period_);
+        const double a1 = std::exp(-angle);
+        const double b1 = 2.0 * a1 * std::cos(angle);
+        c2_ = b1;
+        c3_ = -a1 * a1;
+        c1_ = 1.0 - c2_ - c3_;
+    }
+
+    double update(double price) {
+        double filt;
+        if (count_ < 2) {
+            filt = price;
+        } else {
+            filt = c1_ * 0.5 * (price + price1_) + c2_ * filt1_ + c3_ * filt2_;
+        }
+        price1_ = price;
+        filt2_ = filt1_;
+        filt1_ = filt;
+        ++count_;
+        if (!fillna_ && count_ < period_) {
+            return nan();
+        }
+        return filt;
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int period_;
+    bool fillna_;
+    long count_;
+    double c1_, c2_, c3_;
+    double price1_;
+    double filt1_;
+    double filt2_;
+};
+
+class EhlersRoofingFilter {
+public:
+    EhlersRoofingFilter(int hp_period = 48, int lp_period = 10, bool fillna = true)
+        : hp_period_(std::max(hp_period, 2)),
+          fillna_(fillna),
+          count_(0),
+          price1_(0.0),
+          price2_(0.0),
+          hp1_(0.0),
+          hp2_(0.0),
+          roof1_(0.0),
+          roof2_(0.0),
+          last_{nan(), nan()} {
+        const double ang = 0.707 * 2.0 * 3.14159265358979323846 / static_cast<double>(hp_period_);
+        alpha_hp_ = (std::cos(ang) + std::sin(ang) - 1.0) / std::cos(ang);
+        const double ss_ang = 1.4142135623730951 * 3.14159265358979323846 / static_cast<double>(std::max(lp_period, 2));
+        const double a1 = std::exp(-ss_ang);
+        const double b1 = 2.0 * a1 * std::cos(ss_ang);
+        c2_ = b1;
+        c3_ = -a1 * a1;
+        c1_ = 1.0 - c2_ - c3_;
+    }
+
+    EhlersRoofingFilterResult update(double price) {
+        update_core(price);
+        return last_;
+    }
+    void advance(double price) { update_core(price); }
+    inline const EhlersRoofingFilterResult &last() const { return last_; }
+
+private:
+    inline void update_core(double price) {
+        double hp = 0.0;
+        if (count_ < 2) {
+            hp = 0.0;
+        } else {
+            const double k = 1.0 - alpha_hp_ * 0.5;
+            hp = k * k * (price - 2.0 * price1_ + price2_)
+                 + 2.0 * (1.0 - alpha_hp_) * hp1_
+                 - (1.0 - alpha_hp_) * (1.0 - alpha_hp_) * hp2_;
+        }
+        double roof;
+        if (count_ < 2) {
+            roof = hp;
+        } else {
+            roof = c1_ * 0.5 * (hp + hp1_) + c2_ * roof1_ + c3_ * roof2_;
+        }
+        price2_ = price1_;
+        price1_ = price;
+        hp2_ = hp1_;
+        hp1_ = hp;
+        roof2_ = roof1_;
+        roof1_ = roof;
+        ++count_;
+        if (!fillna_ && count_ < hp_period_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {roof, hp};
+    }
+
+    int hp_period_;
+    bool fillna_;
+    long count_;
+    double alpha_hp_;
+    double c1_, c2_, c3_;
+    double price1_, price2_;
+    double hp1_, hp2_;
+    double roof1_, roof2_;
+    EhlersRoofingFilterResult last_;
+};
+
+class EhlersCyberCycle {
+public:
+    explicit EhlersCyberCycle(int period = 20, bool fillna = true)
+        : period_(std::max(period, 2)),
+          fillna_(fillna),
+          count_(0),
+          p1_(0.0), p2_(0.0), p3_(0.0),
+          s1_(0.0), s2_(0.0),
+          c1_(0.0), c2_(0.0),
+          last_{nan(), nan()} {
+        const double ang = 0.707 * 2.0 * 3.14159265358979323846 / static_cast<double>(period_);
+        alpha_ = (std::cos(ang) + std::sin(ang) - 1.0) / std::cos(ang);
+    }
+
+    EhlersCyberCycleResult update(double price) {
+        update_core(price);
+        return last_;
+    }
+    void advance(double price) { update_core(price); }
+    inline const EhlersCyberCycleResult &last() const { return last_; }
+
+private:
+    inline void update_core(double price) {
+        const double smooth = (count_ >= 3)
+            ? (price + 2.0 * p1_ + 2.0 * p2_ + p3_) / 6.0
+            : price;
+        double cycle;
+        if (count_ < 7) {
+            cycle = (price - 2.0 * p1_ + p2_) / 4.0;
+        } else {
+            const double a = 1.0 - 0.5 * alpha_;
+            cycle = a * a * (smooth - 2.0 * s1_ + s2_)
+                    + 2.0 * (1.0 - alpha_) * c1_
+                    - (1.0 - alpha_) * (1.0 - alpha_) * c2_;
+        }
+        const double trigger = c1_;
+        p3_ = p2_;
+        p2_ = p1_;
+        p1_ = price;
+        s2_ = s1_;
+        s1_ = smooth;
+        c2_ = c1_;
+        c1_ = cycle;
+        ++count_;
+        if (!fillna_ && count_ < period_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {cycle, trigger};
+    }
+
+    int period_;
+    bool fillna_;
+    long count_;
+    double alpha_;
+    double p1_, p2_, p3_;
+    double s1_, s2_;
+    double c1_, c2_;
+    EhlersCyberCycleResult last_;
+};
+
+class EhlersCenterOfGravity {
+public:
+    explicit EhlersCenterOfGravity(int window = 10, bool fillna = true)
+        : window_(std::max(window, 2)),
+          fillna_(fillna),
+          prices_(window_),
+          prev_cg_(0.0),
+          last_{nan(), nan()} {}
+
+    EhlersCenterOfGravityResult update(double price) {
+        update_core(price);
+        return last_;
+    }
+    void advance(double price) { update_core(price); }
+    inline const EhlersCenterOfGravityResult &last() const { return last_; }
+
+private:
+    inline void update_core(double price) {
+        prices_.push(price);
+        if (!fillna_ && !prices_.full()) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        const std::size_t n = prices_.size();
+        double num = 0.0;
+        double den = 0.0;
+        // Newest has weight 1; oldest has weight n (Ehlers CG convention).
+        for (std::size_t i = 0; i < n; ++i) {
+            const double p = prices_.at(n - 1 - i);  // i=0 newest
+            const double w = static_cast<double>(i + 1);
+            num += w * p;
+            den += p;
+        }
+        const double cg = (den == 0.0) ? 0.0 : (-num / den + (static_cast<double>(n) + 1.0) * 0.5);
+        last_ = {cg, prev_cg_};
+        prev_cg_ = cg;
+    }
+
+    int window_;
+    bool fillna_;
+    RollingBuffer prices_;
+    double prev_cg_;
+    EhlersCenterOfGravityResult last_;
+};
+
+class EhlersInstantaneousTrendline {
+public:
+    explicit EhlersInstantaneousTrendline(int period = 20, bool fillna = true)
+        : period_(std::max(period, 2)),
+          fillna_(fillna),
+          count_(0),
+          p1_(0.0), p2_(0.0),
+          t1_(0.0), t2_(0.0),
+          last_{nan(), nan()} {
+        const double angle = 1.4142135623730951 * 3.14159265358979323846 / static_cast<double>(period_);
+        const double a1 = std::exp(-angle);
+        const double b1 = 2.0 * a1 * std::cos(angle);
+        c2_ = b1;
+        c3_ = -a1 * a1;
+        c1_ = (1.0 - c2_ - c3_) / 4.0;
+    }
+
+    EhlersInstantaneousTrendlineResult update(double price) {
+        update_core(price);
+        return last_;
+    }
+    void advance(double price) { update_core(price); }
+    inline const EhlersInstantaneousTrendlineResult &last() const { return last_; }
+
+private:
+    inline void update_core(double price) {
+        double trend;
+        if (count_ < 2) {
+            trend = price;
+        } else {
+            trend = c1_ * (price + 2.0 * p1_ + p2_) + c2_ * t1_ + c3_ * t2_;
+        }
+        const double trigger = 2.0 * trend - t2_;
+        p2_ = p1_;
+        p1_ = price;
+        t2_ = t1_;
+        t1_ = trend;
+        ++count_;
+        if (!fillna_ && count_ < period_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {trend, trigger};
+    }
+
+    int period_;
+    bool fillna_;
+    long count_;
+    double c1_, c2_, c3_;
+    double p1_, p2_;
+    double t1_, t2_;
+    EhlersInstantaneousTrendlineResult last_;
+};
+
+class EhlersDecycler {
+public:
+    explicit EhlersDecycler(int hp_period = 60, bool fillna = true)
+        : hp_period_(std::max(hp_period, 2)),
+          fillna_(fillna),
+          count_(0),
+          price1_(0.0),
+          decycle1_(0.0),
+          last_{nan(), nan()} {
+        const double ang = 2.0 * 3.14159265358979323846 / static_cast<double>(hp_period_);
+        alpha_ = (std::cos(ang) + std::sin(ang) - 1.0) / std::cos(ang);
+    }
+
+    EhlersDecyclerResult update(double price) {
+        update_core(price);
+        return last_;
+    }
+    void advance(double price) { update_core(price); }
+    inline const EhlersDecyclerResult &last() const { return last_; }
+
+private:
+    inline void update_core(double price) {
+        double decycle;
+        if (count_ == 0) {
+            decycle = price;
+        } else {
+            decycle = (alpha_ * 0.5) * (price + price1_) + (1.0 - alpha_) * decycle1_;
+        }
+        const double oscillator = price - decycle;
+        price1_ = price;
+        decycle1_ = decycle;
+        ++count_;
+        if (!fillna_ && count_ < hp_period_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {decycle, oscillator};
+    }
+
+    int hp_period_;
+    bool fillna_;
+    long count_;
+    double alpha_;
+    double price1_;
+    double decycle1_;
+    EhlersDecyclerResult last_;
+};
+
+// ---------- Tier D: structure / charting ----------
+
+class ParabolicSARExtended {
+public:
+    // TA-Lib SAREXT-style parameters (long/short AF chains + start + reverse offset).
+    ParabolicSARExtended(
+        double start = 0.0,
+        double offset_on_reverse = 0.0,
+        double af_init_long = 0.02,
+        double af_long = 0.02,
+        double af_max_long = 0.2,
+        double af_init_short = 0.02,
+        double af_short = 0.02,
+        double af_max_short = 0.2)
+        : start_(start),
+          offset_on_reverse_(offset_on_reverse),
+          af_init_long_(af_init_long),
+          af_long_(af_long),
+          af_max_long_(af_max_long),
+          af_init_short_(af_init_short),
+          af_short_(af_short),
+          af_max_short_(af_max_short),
+          af_(af_init_long),
+          extreme_(0.0),
+          sar_(0.0),
+          prev_high_(0.0),
+          prev_low_(0.0),
+          rising_(true),
+          count_(0) {}
+
+    double update(double high, double low) {
+        if (count_ == 0) {
+            prev_high_ = high;
+            prev_low_ = low;
+            sar_ = (start_ != 0.0) ? start_ : low;
+            extreme_ = high;
+            af_ = af_init_long_;
+            rising_ = true;
+            ++count_;
+            return sar_;
+        }
+        if (count_ == 1) {
+            rising_ = high >= prev_high_;
+            if (start_ != 0.0) {
+                sar_ = start_;
+            } else {
+                sar_ = rising_ ? std::min(prev_low_, low) : std::max(prev_high_, high);
+            }
+            extreme_ = rising_ ? std::max(prev_high_, high) : std::min(prev_low_, low);
+            af_ = rising_ ? af_init_long_ : af_init_short_;
+            prev_high_ = high;
+            prev_low_ = low;
+            ++count_;
+            return sar_;
+        }
+
+        double next_sar = sar_ + af_ * (extreme_ - sar_);
+        if (rising_) {
+            next_sar = std::min(next_sar, std::min(prev_low_, low));
+            if (low < next_sar) {
+                rising_ = false;
+                next_sar = extreme_ + offset_on_reverse_;
+                extreme_ = low;
+                af_ = af_init_short_;
+            } else if (high > extreme_) {
+                extreme_ = high;
+                af_ = std::min(af_ + af_long_, af_max_long_);
+            }
+        } else {
+            next_sar = std::max(next_sar, std::max(prev_high_, high));
+            if (high > next_sar) {
+                rising_ = true;
+                next_sar = extreme_ - offset_on_reverse_;
+                extreme_ = high;
+                af_ = af_init_long_;
+            } else if (low < extreme_) {
+                extreme_ = low;
+                af_ = std::min(af_ + af_short_, af_max_short_);
+            }
+        }
+        prev_high_ = high;
+        prev_low_ = low;
+        sar_ = next_sar;
+        ++count_;
+        return sar_;
+    }
+
+    template <typename Array0, typename Array1>
+    nb::object batch_array(const Array0 &high, const Array1 &low) {
+        const std::size_t size = high.shape(0);
+        require_same_size(size, low.shape(0));
+        std::vector<double> output(size);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(h[i]), static_cast<double>(l[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    double start_;
+    double offset_on_reverse_;
+    double af_init_long_, af_long_, af_max_long_;
+    double af_init_short_, af_short_, af_max_short_;
+    double af_;
+    double extreme_;
+    double sar_;
+    double prev_high_, prev_low_;
+    bool rising_;
+    long count_;
+};
+
+class KagiChart {
+public:
+    // Absolute reversal amount (price units). direction: +1 yang (up), -1 yin (down).
+    explicit KagiChart(double reversal = 1.0)
+        : reversal_(std::max(reversal, 1e-12)),
+          initialized_(false),
+          line_(0.0),
+          direction_(0.0),
+          last_{nan(), 0.0, 0.0} {}
+
+    KagiChartResult update(double price) {
+        if (!initialized_) {
+            initialized_ = true;
+            line_ = price;
+            direction_ = 0.0;
+            last_ = {price, 0.0, 0.0};
+            return last_;
+        }
+        double rev = 0.0;
+        if (direction_ >= 0.0) {
+            if (price > line_) {
+                line_ = price;
+                if (direction_ == 0.0) {
+                    direction_ = 1.0;
+                }
+            } else if (price <= line_ - reversal_) {
+                direction_ = -1.0;
+                line_ = price;
+                rev = 1.0;
+            }
+        } else {
+            if (price < line_) {
+                line_ = price;
+            } else if (price >= line_ + reversal_) {
+                direction_ = 1.0;
+                line_ = price;
+                rev = 1.0;
+            }
+        }
+        last_ = {line_, direction_, rev};
+        return last_;
+    }
+
+    void advance(double price) { (void) update(price); }
+    inline const KagiChartResult &last() const { return last_; }
+
+    template <typename Array>
+    KagiChartBatchResult batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> line(size), direction(size), reversal(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const auto out = update(static_cast<double>(values[i]));
+            line[i] = out.line;
+            direction[i] = out.direction;
+            reversal[i] = out.reversal;
+        }
+        return {make_array(std::move(line)), make_array(std::move(direction)), make_array(std::move(reversal))};
+    }
+
+private:
+    double reversal_;
+    bool initialized_;
+    double line_;
+    double direction_;
+    KagiChartResult last_;
+};
+
+class PointAndFigure {
+public:
+    PointAndFigure(double box_size = 1.0, int reversal_boxes = 3)
+        : box_size_((std::isfinite(box_size) && box_size > 0.0) ? box_size : 1.0),
+          reversal_boxes_(std::max(reversal_boxes, 1)),
+          initialized_(false),
+          box_price_(0.0),
+          direction_(0.0),
+          last_{nan(), 0.0, 0.0, 0.0} {}
+
+    PointAndFigureResult update(double price) {
+        if (!initialized_) {
+            initialized_ = true;
+            box_price_ = std::floor(price / box_size_) * box_size_;
+            direction_ = 0.0;
+            last_ = {box_price_, 0.0, 0.0, 0.0};
+            return last_;
+        }
+        double boxes = 0.0;
+        double rev = 0.0;
+        if (direction_ >= 0.0) {
+            while (price >= box_price_ + box_size_) {
+                box_price_ += box_size_;
+                boxes += 1.0;
+                if (direction_ == 0.0) {
+                    direction_ = 1.0;
+                }
+            }
+            if (boxes == 0.0 && price <= box_price_ - static_cast<double>(reversal_boxes_) * box_size_) {
+                const double target = std::floor(price / box_size_) * box_size_;
+                boxes = -std::max(1.0, (box_price_ - target) / box_size_);
+                box_price_ = target;
+                direction_ = -1.0;
+                rev = 1.0;
+            }
+        } else {
+            while (price <= box_price_ - box_size_) {
+                box_price_ -= box_size_;
+                boxes -= 1.0;
+            }
+            if (boxes == 0.0 && price >= box_price_ + static_cast<double>(reversal_boxes_) * box_size_) {
+                const double target = std::floor(price / box_size_) * box_size_;
+                boxes = std::max(1.0, (target - box_price_) / box_size_);
+                box_price_ = target;
+                direction_ = 1.0;
+                rev = 1.0;
+            }
+        }
+        last_ = {box_price_, direction_, boxes, rev};
+        return last_;
+    }
+
+    void advance(double price) { (void) update(price); }
+    inline const PointAndFigureResult &last() const { return last_; }
+
+    template <typename Array>
+    PointAndFigureBatchResult batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> box_price(size), direction(size), boxes(size), reversal(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            const auto out = update(static_cast<double>(values[i]));
+            box_price[i] = out.box_price;
+            direction[i] = out.direction;
+            boxes[i] = out.boxes;
+            reversal[i] = out.reversal;
+        }
+        return {
+            make_array(std::move(box_price)),
+            make_array(std::move(direction)),
+            make_array(std::move(boxes)),
+            make_array(std::move(reversal)),
+        };
+    }
+
+private:
+    double box_size_;
+    int reversal_boxes_;
+    bool initialized_;
+    double box_price_;
+    double direction_;
+    PointAndFigureResult last_;
+};
+
+class GuppyMultipleMovingAverage {
+public:
+    explicit GuppyMultipleMovingAverage(bool fillna = true)
+        : short_{
+              EMA(3, true), EMA(5, true), EMA(8, true),
+              EMA(10, true), EMA(12, true), EMA(15, true)},
+          long_{
+              EMA(30, true), EMA(35, true), EMA(40, true),
+              EMA(45, true), EMA(50, true), EMA(60, true)},
+          fillna_(fillna),
+          count_(0),
+          last_{nan(), nan(), nan()} {}
+
+    GuppyMultipleMovingAverageResult update(double price) {
+        update_core(price);
+        return last_;
+    }
+    void advance(double price) { update_core(price); }
+    inline const GuppyMultipleMovingAverageResult &last() const { return last_; }
+
+private:
+    inline void update_core(double price) {
+        double short_sum = 0.0;
+        double long_sum = 0.0;
+        for (auto &ema : short_) {
+            short_sum += ema.update(price);
+        }
+        for (auto &ema : long_) {
+            long_sum += ema.update(price);
+        }
+        const double short_avg = short_sum / 6.0;
+        const double long_avg = long_sum / 6.0;
+        ++count_;
+        if (!fillna_ && count_ < 60) {
+            last_ = {nan(), nan(), nan()};
+            return;
+        }
+        last_ = {short_avg, long_avg, short_avg - long_avg};
+    }
+
+    std::array<EMA, 6> short_;
+    std::array<EMA, 6> long_;
+    bool fillna_;
+    long count_;
+    GuppyMultipleMovingAverageResult last_;
+};
+
+class RollingMedian {
+public:
+    explicit RollingMedian(int window = 14, bool fillna = true)
+        : window_(std::max(window, 1)),
+          fillna_(fillna),
+          values_(window_) {}
+
+    double update(double value) {
+        values_.push(value);
+        if (!fillna_ && !values_.full()) {
+            return nan();
+        }
+        const std::size_t n = values_.size();
+        scratch_.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            scratch_[i] = values_.at(i);
+        }
+        const std::size_t mid = n / 2;
+        std::nth_element(scratch_.begin(), scratch_.begin() + static_cast<std::ptrdiff_t>(mid), scratch_.end());
+        if ((n % 2) == 1) {
+            return scratch_[mid];
+        }
+        const double upper = scratch_[mid];
+        std::nth_element(scratch_.begin(), scratch_.begin() + static_cast<std::ptrdiff_t>(mid - 1), scratch_.end());
+        return 0.5 * (scratch_[mid - 1] + upper);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int window_;
+    bool fillna_;
+    RollingBuffer values_;
+    std::vector<double> scratch_;
+};
+
+class GeometricMovingAverage {
+public:
+    // exp(SMA(log(price))) — requires strictly positive prices.
+    explicit GeometricMovingAverage(int window = 14, bool fillna = true)
+        : logs_(std::max(window, 1), fillna) {}
+
+    double update(double price) {
+        if (!(price > 0.0) || !std::isfinite(price)) {
+            return nan();
+        }
+        const double avg_log = logs_.update(std::log(price));
+        return std::isnan(avg_log) ? nan() : std::exp(avg_log);
+    }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        const std::size_t size = input.shape(0);
+        std::vector<double> output(size);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < size; ++i) {
+            output[i] = update(static_cast<double>(values[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    SMA logs_;
+};
+
+
+
+// ===================== Wave 4: research / microstructure =====================
+
+inline double cont_ofi_event(
+    double bid_price,
+    double bid_size,
+    double ask_price,
+    double ask_size,
+    double prev_bid_price,
+    double prev_bid_size,
+    double prev_ask_price,
+    double prev_ask_size) {
+    double event = 0.0;
+    if (bid_price >= prev_bid_price) {
+        event += bid_size;
+    }
+    if (bid_price <= prev_bid_price) {
+        event -= prev_bid_size;
+    }
+    if (ask_price <= prev_ask_price) {
+        event -= ask_size;
+    }
+    if (ask_price >= prev_ask_price) {
+        event += prev_ask_size;
+    }
+    return event;
+}
+
+class MultiLevelOrderFlowImbalance {
+public:
+    // Cont-style OFI at each book level; returns sum/mean and first five level contributions.
+    // update(...) takes depth vectors of length `levels`.
+    // batch(...) takes time x depth matrices of shape (n_samples, levels).
+    explicit MultiLevelOrderFlowImbalance(int levels = 5, int window = 1, bool fillna = true)
+        : levels_(std::max(levels, 1)),
+          window_(std::max(window, 1)),
+          fillna_(fillna),
+          has_previous_(false),
+          prev_bid_price_(static_cast<std::size_t>(levels_), 0.0),
+          prev_bid_size_(static_cast<std::size_t>(levels_), 0.0),
+          prev_ask_price_(static_cast<std::size_t>(levels_), 0.0),
+          prev_ask_size_(static_cast<std::size_t>(levels_), 0.0),
+          last_{fillna ? 0.0 : nan(), fillna ? 0.0 : nan(), 0.0, 0.0, 0.0, 0.0, 0.0} {
+        events_.reserve(static_cast<std::size_t>(levels_));
+        for (int i = 0; i < levels_; ++i) {
+            events_.emplace_back(window_);
+        }
+    }
+
+    MultiLevelOrderFlowImbalanceResult update(
+        const InputArray &bid_price,
+        const InputArray &bid_size,
+        const InputArray &ask_price,
+        const InputArray &ask_size) {
+        require_same_size(static_cast<std::size_t>(levels_), bid_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), bid_size.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_size.shape(0));
+        return update_core(bid_price.data(), bid_size.data(), ask_price.data(), ask_size.data(), 1);
+    }
+
+    MultiLevelOrderFlowImbalanceResult update(
+        const FloatInputArray &bid_price,
+        const FloatInputArray &bid_size,
+        const FloatInputArray &ask_price,
+        const FloatInputArray &ask_size) {
+        require_same_size(static_cast<std::size_t>(levels_), bid_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), bid_size.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_size.shape(0));
+        scratch_resize();
+        const float *bp = bid_price.data();
+        const float *bs = bid_size.data();
+        const float *ap = ask_price.data();
+        const float *as = ask_size.data();
+        for (int i = 0; i < levels_; ++i) {
+            scratch_bp_[static_cast<std::size_t>(i)] = static_cast<double>(bp[i]);
+            scratch_bs_[static_cast<std::size_t>(i)] = static_cast<double>(bs[i]);
+            scratch_ap_[static_cast<std::size_t>(i)] = static_cast<double>(ap[i]);
+            scratch_as_[static_cast<std::size_t>(i)] = static_cast<double>(as[i]);
+        }
+        return update_core(scratch_bp_.data(), scratch_bs_.data(), scratch_ap_.data(), scratch_as_.data(), 1);
+    }
+
+    void advance(
+        const InputArray &bid_price,
+        const InputArray &bid_size,
+        const InputArray &ask_price,
+        const InputArray &ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    void advance(
+        const FloatInputArray &bid_price,
+        const FloatInputArray &bid_size,
+        const FloatInputArray &ask_price,
+        const FloatInputArray &ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    inline const MultiLevelOrderFlowImbalanceResult &last() const { return last_; }
+
+    MultiLevelOrderFlowImbalanceBatchResult batch(
+        const InputArray2D &bid_price,
+        const InputArray2D &bid_size,
+        const InputArray2D &ask_price,
+        const InputArray2D &ask_size) {
+        return batch_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    MultiLevelOrderFlowImbalanceBatchResult batch(
+        const FloatInputArray2D &bid_price,
+        const FloatInputArray2D &bid_size,
+        const FloatInputArray2D &ask_price,
+        const FloatInputArray2D &ask_size) {
+        return batch_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_update(
+        const InputArray2D &bid_price,
+        const InputArray2D &bid_size,
+        const InputArray2D &ask_price,
+        const InputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_update(
+        const FloatInputArray2D &bid_price,
+        const FloatInputArray2D &bid_size,
+        const FloatInputArray2D &ask_price,
+        const FloatInputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_advance(
+        const InputArray2D &bid_price,
+        const InputArray2D &bid_size,
+        const InputArray2D &ask_price,
+        const InputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_advance(
+        const FloatInputArray2D &bid_price,
+        const FloatInputArray2D &bid_size,
+        const FloatInputArray2D &ask_price,
+        const FloatInputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+private:
+    template <typename Array2>
+    double replay_matrix(
+        const Array2 &bid_price,
+        const Array2 &bid_size,
+        const Array2 &ask_price,
+        const Array2 &ask_size) {
+        const std::size_t n = bid_price.shape(0);
+        const std::size_t depth = bid_price.shape(1);
+        require_same_size(n, bid_size.shape(0));
+        require_same_size(n, ask_price.shape(0));
+        require_same_size(n, ask_size.shape(0));
+        if (depth != static_cast<std::size_t>(levels_)
+            || bid_size.shape(1) != depth
+            || ask_price.shape(1) != depth
+            || ask_size.shape(1) != depth) {
+            throw nb::value_error("depth book replay arrays must have shape (n_samples, levels)");
+        }
+        const auto *bp = bid_price.data();
+        const auto *bs = bid_size.data();
+        const auto *ap = ask_price.data();
+        const auto *as = ask_size.data();
+        scratch_resize();
+        double checksum = 0.0;
+        for (std::size_t t = 0; t < n; ++t) {
+            const std::size_t row = t * depth;
+            for (std::size_t i = 0; i < depth; ++i) {
+                scratch_bp_[i] = static_cast<double>(bp[row + i]);
+                scratch_bs_[i] = static_cast<double>(bs[row + i]);
+                scratch_ap_[i] = static_cast<double>(ap[row + i]);
+                scratch_as_[i] = static_cast<double>(as[row + i]);
+            }
+            checksum += result_checksum(update_core(
+                scratch_bp_.data(), scratch_bs_.data(), scratch_ap_.data(), scratch_as_.data(), 1));
+        }
+        return checksum;
+    }
+
+    template <typename Array2>
+    MultiLevelOrderFlowImbalanceBatchResult batch_matrix(
+        const Array2 &bid_price,
+        const Array2 &bid_size,
+        const Array2 &ask_price,
+        const Array2 &ask_size) {
+        const std::size_t n = bid_price.shape(0);
+        const std::size_t depth = bid_price.shape(1);
+        require_same_size(n, bid_size.shape(0));
+        require_same_size(n, ask_price.shape(0));
+        require_same_size(n, ask_size.shape(0));
+        if (depth != static_cast<std::size_t>(levels_)
+            || bid_size.shape(1) != depth
+            || ask_price.shape(1) != depth
+            || ask_size.shape(1) != depth) {
+            throw nb::value_error("depth book batch arrays must have shape (n_samples, levels)");
+        }
+        std::vector<double> total(n), mean(n), l1(n), l2(n), l3(n), l4(n), l5(n);
+        const auto *bp = bid_price.data();
+        const auto *bs = bid_size.data();
+        const auto *ap = ask_price.data();
+        const auto *as = ask_size.data();
+        // Row-major (n, levels): row i starts at i * levels
+        scratch_resize();
+        for (std::size_t t = 0; t < n; ++t) {
+            const std::size_t row = t * depth;
+            for (std::size_t i = 0; i < depth; ++i) {
+                scratch_bp_[i] = static_cast<double>(bp[row + i]);
+                scratch_bs_[i] = static_cast<double>(bs[row + i]);
+                scratch_ap_[i] = static_cast<double>(ap[row + i]);
+                scratch_as_[i] = static_cast<double>(as[row + i]);
+            }
+            const auto out = update_core(
+                scratch_bp_.data(), scratch_bs_.data(), scratch_ap_.data(), scratch_as_.data(), 1);
+            total[t] = out.total;
+            mean[t] = out.mean;
+            l1[t] = out.l1;
+            l2[t] = out.l2;
+            l3[t] = out.l3;
+            l4[t] = out.l4;
+            l5[t] = out.l5;
+        }
+        return {
+            make_array(std::move(total)),
+            make_array(std::move(mean)),
+            make_array(std::move(l1)),
+            make_array(std::move(l2)),
+            make_array(std::move(l3)),
+            make_array(std::move(l4)),
+            make_array(std::move(l5)),
+        };
+    }
+
+    inline void scratch_resize() {
+        const std::size_t L = static_cast<std::size_t>(levels_);
+        if (scratch_bp_.size() != L) {
+            scratch_bp_.assign(L, 0.0);
+            scratch_bs_.assign(L, 0.0);
+            scratch_ap_.assign(L, 0.0);
+            scratch_as_.assign(L, 0.0);
+        }
+    }
+
+    // stride=1 for contiguous depth vectors
+    MultiLevelOrderFlowImbalanceResult update_core(
+        const double *bp,
+        const double *bs,
+        const double *ap,
+        const double *as,
+        std::size_t stride) {
+        double total = 0.0;
+        double level_vals[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+        for (int i = 0; i < levels_; ++i) {
+            const std::size_t li = static_cast<std::size_t>(i);
+            const std::size_t idx = li * stride;
+            double event = 0.0;
+            if (has_previous_) {
+                event = cont_ofi_event(
+                    bp[idx], bs[idx], ap[idx], as[idx],
+                    prev_bid_price_[li], prev_bid_size_[li],
+                    prev_ask_price_[li], prev_ask_size_[li]);
+            }
+            events_[li].push(event);
+            const double rolled = (!fillna_ && !events_[li].full()) ? nan() : events_[li].sum();
+            if (!std::isnan(rolled)) {
+                total += rolled;
+            }
+            if (i < 5) {
+                level_vals[i] = rolled;
+            }
+            prev_bid_price_[li] = bp[idx];
+            prev_bid_size_[li] = bs[idx];
+            prev_ask_price_[li] = ap[idx];
+            prev_ask_size_[li] = as[idx];
+        }
+        has_previous_ = true;
+        const double mean = total / static_cast<double>(levels_);
+        last_ = {
+            total,
+            mean,
+            level_vals[0],
+            level_vals[1],
+            level_vals[2],
+            level_vals[3],
+            level_vals[4],
+        };
+        return last_;
+    }
+
+    int levels_;
+    int window_;
+    bool fillna_;
+    bool has_previous_;
+    std::vector<double> prev_bid_price_;
+    std::vector<double> prev_bid_size_;
+    std::vector<double> prev_ask_price_;
+    std::vector<double> prev_ask_size_;
+    std::vector<RollingSumWindow> events_;
+    std::vector<double> scratch_bp_;
+    std::vector<double> scratch_bs_;
+    std::vector<double> scratch_ap_;
+    std::vector<double> scratch_as_;
+    MultiLevelOrderFlowImbalanceResult last_;
+};
+
+class IntegratedOrderFlowImbalance {
+public:
+    // Multi-level Cont OFI projected onto an online first principal component.
+    explicit IntegratedOrderFlowImbalance(int levels = 5, int window = 1, double ema_alpha = 0.05, bool fillna = true)
+        : levels_(std::max(levels, 1)),
+          window_(std::max(window, 1)),
+          alpha_(std::clamp(ema_alpha, 1e-6, 1.0)),
+          fillna_(fillna),
+          has_previous_(false),
+          count_(0),
+          prev_bid_price_(static_cast<std::size_t>(levels_), 0.0),
+          prev_bid_size_(static_cast<std::size_t>(levels_), 0.0),
+          prev_ask_price_(static_cast<std::size_t>(levels_), 0.0),
+          prev_ask_size_(static_cast<std::size_t>(levels_), 0.0),
+          weights_(static_cast<std::size_t>(levels_), 0.0),
+          cov_(static_cast<std::size_t>(levels_ * levels_), 0.0),
+          last_{fillna ? 0.0 : nan(), fillna ? 1.0 : nan()} {
+        events_.reserve(static_cast<std::size_t>(levels_));
+        for (int i = 0; i < levels_; ++i) {
+            events_.emplace_back(window_);
+            weights_[static_cast<std::size_t>(i)] = (i == 0) ? 1.0 : 0.0;
+        }
+    }
+
+    IntegratedOrderFlowImbalanceResult update(
+        const InputArray &bid_price,
+        const InputArray &bid_size,
+        const InputArray &ask_price,
+        const InputArray &ask_size) {
+        require_same_size(static_cast<std::size_t>(levels_), bid_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), bid_size.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_size.shape(0));
+        return update_core(bid_price.data(), bid_size.data(), ask_price.data(), ask_size.data());
+    }
+
+    IntegratedOrderFlowImbalanceResult update(
+        const FloatInputArray &bid_price,
+        const FloatInputArray &bid_size,
+        const FloatInputArray &ask_price,
+        const FloatInputArray &ask_size) {
+        require_same_size(static_cast<std::size_t>(levels_), bid_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), bid_size.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_price.shape(0));
+        require_same_size(static_cast<std::size_t>(levels_), ask_size.shape(0));
+        scratch_resize();
+        const float *bp = bid_price.data();
+        const float *bs = bid_size.data();
+        const float *ap = ask_price.data();
+        const float *as = ask_size.data();
+        for (int i = 0; i < levels_; ++i) {
+            scratch_bp_[static_cast<std::size_t>(i)] = static_cast<double>(bp[i]);
+            scratch_bs_[static_cast<std::size_t>(i)] = static_cast<double>(bs[i]);
+            scratch_ap_[static_cast<std::size_t>(i)] = static_cast<double>(ap[i]);
+            scratch_as_[static_cast<std::size_t>(i)] = static_cast<double>(as[i]);
+        }
+        return update_core(scratch_bp_.data(), scratch_bs_.data(), scratch_ap_.data(), scratch_as_.data());
+    }
+
+    void advance(
+        const InputArray &bid_price,
+        const InputArray &bid_size,
+        const InputArray &ask_price,
+        const InputArray &ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    void advance(
+        const FloatInputArray &bid_price,
+        const FloatInputArray &bid_size,
+        const FloatInputArray &ask_price,
+        const FloatInputArray &ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    inline const IntegratedOrderFlowImbalanceResult &last() const { return last_; }
+
+    IntegratedOrderFlowImbalanceBatchResult batch(
+        const InputArray2D &bid_price,
+        const InputArray2D &bid_size,
+        const InputArray2D &ask_price,
+        const InputArray2D &ask_size) {
+        return batch_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    IntegratedOrderFlowImbalanceBatchResult batch(
+        const FloatInputArray2D &bid_price,
+        const FloatInputArray2D &bid_size,
+        const FloatInputArray2D &ask_price,
+        const FloatInputArray2D &ask_size) {
+        return batch_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_update(
+        const InputArray2D &bid_price,
+        const InputArray2D &bid_size,
+        const InputArray2D &ask_price,
+        const InputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_update(
+        const FloatInputArray2D &bid_price,
+        const FloatInputArray2D &bid_size,
+        const FloatInputArray2D &ask_price,
+        const FloatInputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_advance(
+        const InputArray2D &bid_price,
+        const InputArray2D &bid_size,
+        const InputArray2D &ask_price,
+        const InputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    double replay_advance(
+        const FloatInputArray2D &bid_price,
+        const FloatInputArray2D &bid_size,
+        const FloatInputArray2D &ask_price,
+        const FloatInputArray2D &ask_size) {
+        return replay_matrix(bid_price, bid_size, ask_price, ask_size);
+    }
+
+private:
+    template <typename Array2>
+    double replay_matrix(
+        const Array2 &bid_price,
+        const Array2 &bid_size,
+        const Array2 &ask_price,
+        const Array2 &ask_size) {
+        const std::size_t n = bid_price.shape(0);
+        const std::size_t depth = bid_price.shape(1);
+        require_same_size(n, bid_size.shape(0));
+        require_same_size(n, ask_price.shape(0));
+        require_same_size(n, ask_size.shape(0));
+        if (depth != static_cast<std::size_t>(levels_)
+            || bid_size.shape(1) != depth
+            || ask_price.shape(1) != depth
+            || ask_size.shape(1) != depth) {
+            throw nb::value_error("depth book replay arrays must have shape (n_samples, levels)");
+        }
+        const auto *bp = bid_price.data();
+        const auto *bs = bid_size.data();
+        const auto *ap = ask_price.data();
+        const auto *as = ask_size.data();
+        scratch_resize();
+        double checksum = 0.0;
+        for (std::size_t t = 0; t < n; ++t) {
+            const std::size_t row = t * depth;
+            for (std::size_t i = 0; i < depth; ++i) {
+                scratch_bp_[i] = static_cast<double>(bp[row + i]);
+                scratch_bs_[i] = static_cast<double>(bs[row + i]);
+                scratch_ap_[i] = static_cast<double>(ap[row + i]);
+                scratch_as_[i] = static_cast<double>(as[row + i]);
+            }
+            checksum += result_checksum(update_core(
+                scratch_bp_.data(), scratch_bs_.data(), scratch_ap_.data(), scratch_as_.data()));
+        }
+        return checksum;
+    }
+
+    template <typename Array2>
+    IntegratedOrderFlowImbalanceBatchResult batch_matrix(
+        const Array2 &bid_price,
+        const Array2 &bid_size,
+        const Array2 &ask_price,
+        const Array2 &ask_size) {
+        const std::size_t n = bid_price.shape(0);
+        const std::size_t depth = bid_price.shape(1);
+        require_same_size(n, bid_size.shape(0));
+        require_same_size(n, ask_price.shape(0));
+        require_same_size(n, ask_size.shape(0));
+        if (depth != static_cast<std::size_t>(levels_)
+            || bid_size.shape(1) != depth
+            || ask_price.shape(1) != depth
+            || ask_size.shape(1) != depth) {
+            throw nb::value_error("depth book batch arrays must have shape (n_samples, levels)");
+        }
+        std::vector<double> ofi(n), weight_l1(n);
+        const auto *bp = bid_price.data();
+        const auto *bs = bid_size.data();
+        const auto *ap = ask_price.data();
+        const auto *as = ask_size.data();
+        scratch_resize();
+        for (std::size_t t = 0; t < n; ++t) {
+            const std::size_t row = t * depth;
+            for (std::size_t i = 0; i < depth; ++i) {
+                scratch_bp_[i] = static_cast<double>(bp[row + i]);
+                scratch_bs_[i] = static_cast<double>(bs[row + i]);
+                scratch_ap_[i] = static_cast<double>(ap[row + i]);
+                scratch_as_[i] = static_cast<double>(as[row + i]);
+            }
+            const auto out = update_core(
+                scratch_bp_.data(), scratch_bs_.data(), scratch_ap_.data(), scratch_as_.data());
+            ofi[t] = out.ofi;
+            weight_l1[t] = out.weight_l1;
+        }
+        return {make_array(std::move(ofi)), make_array(std::move(weight_l1))};
+    }
+
+    inline void scratch_resize() {
+        const std::size_t L = static_cast<std::size_t>(levels_);
+        if (scratch_bp_.size() != L) {
+            scratch_bp_.assign(L, 0.0);
+            scratch_bs_.assign(L, 0.0);
+            scratch_ap_.assign(L, 0.0);
+            scratch_as_.assign(L, 0.0);
+        }
+    }
+
+    IntegratedOrderFlowImbalanceResult update_core(
+        const double *bp,
+        const double *bs,
+        const double *ap,
+        const double *as) {
+        std::vector<double> v(static_cast<std::size_t>(levels_), 0.0);
+        for (int i = 0; i < levels_; ++i) {
+            const std::size_t li = static_cast<std::size_t>(i);
+            double event = 0.0;
+            if (has_previous_) {
+                event = cont_ofi_event(
+                    bp[i], bs[i], ap[i], as[i],
+                    prev_bid_price_[li], prev_bid_size_[li],
+                    prev_ask_price_[li], prev_ask_size_[li]);
+            }
+            events_[li].push(event);
+            v[li] = (!fillna_ && !events_[li].full()) ? 0.0 : events_[li].sum();
+            prev_bid_price_[li] = bp[i];
+            prev_bid_size_[li] = bs[i];
+            prev_ask_price_[li] = ap[i];
+            prev_ask_size_[li] = as[i];
+        }
+        has_previous_ = true;
+        ++count_;
+
+        const double keep = 1.0 - alpha_;
+        for (int i = 0; i < levels_; ++i) {
+            for (int j = 0; j < levels_; ++j) {
+                const std::size_t idx = static_cast<std::size_t>(i * levels_ + j);
+                cov_[idx] = keep * cov_[idx] + alpha_ * v[static_cast<std::size_t>(i)] * v[static_cast<std::size_t>(j)];
+            }
+        }
+
+        std::vector<double> w = weights_;
+        for (int iter = 0; iter < 4; ++iter) {
+            std::vector<double> cw(static_cast<std::size_t>(levels_), 0.0);
+            for (int i = 0; i < levels_; ++i) {
+                double s = 0.0;
+                for (int j = 0; j < levels_; ++j) {
+                    s += cov_[static_cast<std::size_t>(i * levels_ + j)] * w[static_cast<std::size_t>(j)];
+                }
+                cw[static_cast<std::size_t>(i)] = s;
+            }
+            double norm = 0.0;
+            for (double x : cw) {
+                norm += x * x;
+            }
+            norm = std::sqrt(std::max(norm, 1e-18));
+            for (int i = 0; i < levels_; ++i) {
+                w[static_cast<std::size_t>(i)] = cw[static_cast<std::size_t>(i)] / norm;
+            }
+        }
+        if (w[0] < 0.0) {
+            for (double &x : w) {
+                x = -x;
+            }
+        }
+        weights_ = w;
+
+        double ofi = 0.0;
+        for (int i = 0; i < levels_; ++i) {
+            ofi += w[static_cast<std::size_t>(i)] * v[static_cast<std::size_t>(i)];
+        }
+        if (!fillna_ && count_ < window_) {
+            last_ = {nan(), nan()};
+        } else {
+            last_ = {ofi, w[0]};
+        }
+        return last_;
+    }
+
+    int levels_;
+    int window_;
+    double alpha_;
+    bool fillna_;
+    bool has_previous_;
+    long count_;
+    std::vector<double> prev_bid_price_;
+    std::vector<double> prev_bid_size_;
+    std::vector<double> prev_ask_price_;
+    std::vector<double> prev_ask_size_;
+    std::vector<RollingSumWindow> events_;
+    std::vector<double> weights_;
+    std::vector<double> cov_;
+    std::vector<double> scratch_bp_;
+    std::vector<double> scratch_bs_;
+    std::vector<double> scratch_ap_;
+    std::vector<double> scratch_as_;
+    IntegratedOrderFlowImbalanceResult last_;
+};
+
+class DecomposedOrderFlowImbalance {
+public:
+    // Quote-driven add / cancel / trade decomposition of Cont-style pressure.
+    explicit DecomposedOrderFlowImbalance(int window = 1, bool fillna = true)
+        : add_(window),
+          cancel_(window),
+          trade_(window),
+          has_previous_(false),
+          prev_bid_price_(0.0),
+          prev_bid_size_(0.0),
+          prev_ask_price_(0.0),
+          prev_ask_size_(0.0),
+          prev_mid_(0.0),
+          fillna_(fillna),
+          last_{fillna ? 0.0 : nan(), fillna ? 0.0 : nan(), fillna ? 0.0 : nan(), fillna ? 0.0 : nan()} {}
+
+    DecomposedOrderFlowImbalanceResult update(double bid_price, double bid_size, double ask_price, double ask_size) {
+        double e_add = 0.0;
+        double e_cancel = 0.0;
+        double e_trade = 0.0;
+        const double mid = 0.5 * (bid_price + ask_price);
+        if (has_previous_) {
+            // Bid side
+            if (bid_price > prev_bid_price_) {
+                e_add += bid_size;
+            } else if (bid_price < prev_bid_price_) {
+                e_cancel -= prev_bid_size_;
+            } else if (bid_size > prev_bid_size_) {
+                e_add += bid_size - prev_bid_size_;
+            } else if (bid_size < prev_bid_size_) {
+                e_cancel -= prev_bid_size_ - bid_size;
+            }
+            // Ask side (signs opposite for Cont pressure)
+            if (ask_price < prev_ask_price_) {
+                e_add -= ask_size;
+            } else if (ask_price > prev_ask_price_) {
+                e_cancel += prev_ask_size_;
+            } else if (ask_size > prev_ask_size_) {
+                e_add -= ask_size - prev_ask_size_;
+            } else if (ask_size < prev_ask_size_) {
+                e_cancel += prev_ask_size_ - ask_size;
+            }
+            // Trade proxy: mid move coinciding with opposite-side size decrease.
+            if (mid > prev_mid_ && ask_size < prev_ask_size_ && ask_price <= prev_ask_price_) {
+                e_trade += prev_ask_size_ - ask_size;
+            } else if (mid < prev_mid_ && bid_size < prev_bid_size_ && bid_price >= prev_bid_price_) {
+                e_trade -= prev_bid_size_ - bid_size;
+            }
+        }
+        add_.push(e_add);
+        cancel_.push(e_cancel);
+        trade_.push(e_trade);
+        prev_bid_price_ = bid_price;
+        prev_bid_size_ = bid_size;
+        prev_ask_price_ = ask_price;
+        prev_ask_size_ = ask_size;
+        prev_mid_ = mid;
+        has_previous_ = true;
+
+        const bool ready = fillna_ || (add_.full() && cancel_.full() && trade_.full());
+        if (!ready) {
+            last_ = {nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        const double a = add_.sum();
+        const double c = cancel_.sum();
+        const double t = trade_.sum();
+        last_ = {a, c, t, a + c + t};
+        return last_;
+    }
+
+    void advance(double bid_price, double bid_size, double ask_price, double ask_size) {
+        (void) update(bid_price, bid_size, ask_price, ask_size);
+    }
+
+    inline const DecomposedOrderFlowImbalanceResult &last() const { return last_; }
+
+    template <typename A0, typename A1, typename A2, typename A3>
+    DecomposedOrderFlowImbalanceBatchResult batch_array(const A0 &bp, const A1 &bs, const A2 &ap, const A3 &as) {
+        const std::size_t n = bp.shape(0);
+        require_same_size(n, bs.shape(0));
+        require_same_size(n, ap.shape(0));
+        require_same_size(n, as.shape(0));
+        std::vector<double> add(n), cancel(n), trade(n), total(n);
+        const auto *p0 = bp.data();
+        const auto *p1 = bs.data();
+        const auto *p2 = ap.data();
+        const auto *p3 = as.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(
+                static_cast<double>(p0[i]),
+                static_cast<double>(p1[i]),
+                static_cast<double>(p2[i]),
+                static_cast<double>(p3[i]));
+            add[i] = out.add;
+            cancel[i] = out.cancel;
+            trade[i] = out.trade;
+            total[i] = out.total;
+        }
+        return {
+            make_array(std::move(add)),
+            make_array(std::move(cancel)),
+            make_array(std::move(trade)),
+            make_array(std::move(total)),
+        };
+    }
+
+private:
+    RollingSumWindow add_;
+    RollingSumWindow cancel_;
+    RollingSumWindow trade_;
+    bool has_previous_;
+    double prev_bid_price_;
+    double prev_bid_size_;
+    double prev_ask_price_;
+    double prev_ask_size_;
+    double prev_mid_;
+    bool fillna_;
+    DecomposedOrderFlowImbalanceResult last_;
+};
+
+class VolumeBarGenerator {
+public:
+    explicit VolumeBarGenerator(double threshold = 10000.0)
+        : threshold_(threshold > 0.0 ? threshold : 10000.0),
+          initialized_(false),
+          accum_(0.0),
+          bar_open_(0.0),
+          bar_high_(0.0),
+          bar_low_(0.0),
+          last_{nan(), nan(), nan(), nan(), 0.0, 0.0, 0.0, 0.0} {}
+
+    InformationBarResult update(double close, double volume) {
+        const double v = std::max(volume, 0.0);
+        if (!initialized_) {
+            initialized_ = true;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+            accum_ = v;
+            last_ = {close, close, close, close, accum_, 0.0, 0.0, 0.0};
+            if (accum_ >= threshold_) {
+                last_.complete = 1.0;
+                last_.bars = 1.0;
+                last_.direction = 0.0;
+                accum_ = 0.0;
+                bar_open_ = close;
+                bar_high_ = close;
+                bar_low_ = close;
+            }
+            return last_;
+        }
+        bar_high_ = std::max(bar_high_, close);
+        bar_low_ = std::min(bar_low_, close);
+        accum_ += v;
+        double complete = 0.0;
+        double bars = 0.0;
+        double direction = 0.0;
+        double out_open = bar_open_;
+        double out_close = close;
+        double out_high = bar_high_;
+        double out_low = bar_low_;
+        double out_vol = accum_;
+        while (accum_ >= threshold_) {
+            complete = 1.0;
+            bars += 1.0;
+            direction = close >= bar_open_ ? 1.0 : -1.0;
+            out_open = bar_open_;
+            out_close = close;
+            out_high = bar_high_;
+            out_low = bar_low_;
+            out_vol = threshold_;
+            accum_ -= threshold_;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+        last_ = {out_open, out_close, out_high, out_low, complete ? out_vol : accum_, direction, complete, bars};
+        return last_;
+    }
+
+    void advance(double close, double volume) { (void) update(close, volume); }
+    inline const InformationBarResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    InformationBarBatchResult batch_array(const A0 &close, const A1 &volume) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        std::vector<double> o(n), c(n), h(n), l(n), v(n), d(n), comp(n), b(n);
+        const auto *pc = close.data();
+        const auto *pv = volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(pc[i]), static_cast<double>(pv[i]));
+            o[i] = out.bar_open; c[i] = out.bar_close; h[i] = out.bar_high; l[i] = out.bar_low;
+            v[i] = out.bar_volume; d[i] = out.direction; comp[i] = out.complete; b[i] = out.bars;
+        }
+        return {
+            make_array(std::move(o)), make_array(std::move(c)), make_array(std::move(h)), make_array(std::move(l)),
+            make_array(std::move(v)), make_array(std::move(d)), make_array(std::move(comp)), make_array(std::move(b)),
+        };
+    }
+
+private:
+    double threshold_;
+    bool initialized_;
+    double accum_;
+    double bar_open_, bar_high_, bar_low_;
+    InformationBarResult last_;
+};
+
+class DollarBarGenerator {
+public:
+    explicit DollarBarGenerator(double threshold = 1.0e6)
+        : threshold_(threshold > 0.0 ? threshold : 1.0e6),
+          initialized_(false),
+          accum_(0.0),
+          bar_open_(0.0),
+          bar_high_(0.0),
+          bar_low_(0.0),
+          last_{nan(), nan(), nan(), nan(), 0.0, 0.0, 0.0, 0.0} {}
+
+    InformationBarResult update(double close, double volume) {
+        const double dollar = std::abs(close) * std::max(volume, 0.0);
+        if (!initialized_) {
+            initialized_ = true;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+            accum_ = dollar;
+            last_ = {close, close, close, close, accum_, 0.0, 0.0, 0.0};
+            if (accum_ >= threshold_) {
+                last_.complete = 1.0;
+                last_.bars = 1.0;
+                accum_ = 0.0;
+            }
+            return last_;
+        }
+        bar_high_ = std::max(bar_high_, close);
+        bar_low_ = std::min(bar_low_, close);
+        accum_ += dollar;
+        double complete = 0.0;
+        double bars = 0.0;
+        double direction = 0.0;
+        double out_open = bar_open_, out_close = close, out_high = bar_high_, out_low = bar_low_, out_vol = accum_;
+        while (accum_ >= threshold_) {
+            complete = 1.0;
+            bars += 1.0;
+            direction = close >= bar_open_ ? 1.0 : -1.0;
+            out_open = bar_open_;
+            out_close = close;
+            out_high = bar_high_;
+            out_low = bar_low_;
+            out_vol = threshold_;
+            accum_ -= threshold_;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+        last_ = {out_open, out_close, out_high, out_low, complete ? out_vol : accum_, direction, complete, bars};
+        return last_;
+    }
+
+    void advance(double close, double volume) { (void) update(close, volume); }
+    inline const InformationBarResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    InformationBarBatchResult batch_array(const A0 &close, const A1 &volume) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        std::vector<double> o(n), c(n), h(n), l(n), v(n), d(n), comp(n), b(n);
+        const auto *pc = close.data();
+        const auto *pv = volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(pc[i]), static_cast<double>(pv[i]));
+            o[i] = out.bar_open; c[i] = out.bar_close; h[i] = out.bar_high; l[i] = out.bar_low;
+            v[i] = out.bar_volume; d[i] = out.direction; comp[i] = out.complete; b[i] = out.bars;
+        }
+        return {
+            make_array(std::move(o)), make_array(std::move(c)), make_array(std::move(h)), make_array(std::move(l)),
+            make_array(std::move(v)), make_array(std::move(d)), make_array(std::move(comp)), make_array(std::move(b)),
+        };
+    }
+
+private:
+    double threshold_;
+    bool initialized_;
+    double accum_;
+    double bar_open_, bar_high_, bar_low_;
+    InformationBarResult last_;
+};
+
+class ImbalanceBarGenerator {
+public:
+    // Volume-imbalance bar (Lopez de Prado style): accumulate signed volume until |imb| hits threshold.
+    // Sign from tick rule on close (uptick = buy).
+    explicit ImbalanceBarGenerator(double threshold = 10000.0)
+        : threshold_(threshold > 0.0 ? threshold : 10000.0),
+          initialized_(false),
+          imbalance_(0.0),
+          bar_open_(0.0),
+          bar_high_(0.0),
+          bar_low_(0.0),
+          prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), 0.0, 0.0, 0.0, 0.0} {}
+
+    InformationBarResult update(double close, double volume) {
+        const double v = std::max(volume, 0.0);
+        if (!initialized_) {
+            initialized_ = true;
+            prev_close_ = close;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+            imbalance_ = 0.0;
+            last_ = {close, close, close, close, 0.0, 0.0, 0.0, 0.0};
+            return last_;
+        }
+        const double sign = close > prev_close_ ? 1.0 : (close < prev_close_ ? -1.0 : 0.0);
+        prev_close_ = close;
+        bar_high_ = std::max(bar_high_, close);
+        bar_low_ = std::min(bar_low_, close);
+        imbalance_ += sign * v;
+        double complete = 0.0;
+        double bars = 0.0;
+        double direction = 0.0;
+        double out_open = bar_open_, out_close = close, out_high = bar_high_, out_low = bar_low_;
+        double out_vol = std::abs(imbalance_);
+        if (std::abs(imbalance_) >= threshold_) {
+            complete = 1.0;
+            bars = 1.0;
+            direction = imbalance_ >= 0.0 ? 1.0 : -1.0;
+            out_open = bar_open_;
+            out_close = close;
+            out_high = bar_high_;
+            out_low = bar_low_;
+            out_vol = std::abs(imbalance_);
+            imbalance_ = 0.0;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+        last_ = {out_open, out_close, out_high, out_low, out_vol, direction, complete, bars};
+        return last_;
+    }
+
+    void advance(double close, double volume) { (void) update(close, volume); }
+    inline const InformationBarResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    InformationBarBatchResult batch_array(const A0 &close, const A1 &volume) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        std::vector<double> o(n), c(n), h(n), l(n), v(n), d(n), comp(n), b(n);
+        const auto *pc = close.data();
+        const auto *pv = volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(pc[i]), static_cast<double>(pv[i]));
+            o[i] = out.bar_open; c[i] = out.bar_close; h[i] = out.bar_high; l[i] = out.bar_low;
+            v[i] = out.bar_volume; d[i] = out.direction; comp[i] = out.complete; b[i] = out.bars;
+        }
+        return {
+            make_array(std::move(o)), make_array(std::move(c)), make_array(std::move(h)), make_array(std::move(l)),
+            make_array(std::move(v)), make_array(std::move(d)), make_array(std::move(comp)), make_array(std::move(b)),
+        };
+    }
+
+private:
+    double threshold_;
+    bool initialized_;
+    double imbalance_;
+    double bar_open_, bar_high_, bar_low_;
+    double prev_close_;
+    InformationBarResult last_;
+};
+
+
+class RunBarGenerator {
+public:
+    // Tick run bars (Lopez de Prado): close a bar when consecutive same-sign ticks
+    // (tick rule on close) reach `threshold` count.
+    explicit RunBarGenerator(int threshold = 10)
+        : threshold_(std::max(threshold, 1)),
+          initialized_(false),
+          run_sign_(0.0),
+          run_count_(0),
+          bar_open_(0.0),
+          bar_high_(0.0),
+          bar_low_(0.0),
+          prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), 0.0, 0.0, 0.0, 0.0} {}
+
+    InformationBarResult update(double close) {
+        if (!initialized_) {
+            initialized_ = true;
+            prev_close_ = close;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+            run_sign_ = 0.0;
+            run_count_ = 0;
+            last_ = {close, close, close, close, 0.0, 0.0, 0.0, 0.0};
+            return last_;
+        }
+        const double sign = close > prev_close_ ? 1.0 : (close < prev_close_ ? -1.0 : 0.0);
+        prev_close_ = close;
+        bar_high_ = std::max(bar_high_, close);
+        bar_low_ = std::min(bar_low_, close);
+
+        if (sign == 0.0) {
+            // Flat tick: do not break the run; volume/count unchanged.
+            last_ = {bar_open_, close, bar_high_, bar_low_, static_cast<double>(run_count_), run_sign_, 0.0, 0.0};
+            return last_;
+        }
+        if (run_sign_ == 0.0 || sign == run_sign_) {
+            run_sign_ = sign;
+            ++run_count_;
+        } else {
+            run_sign_ = sign;
+            run_count_ = 1;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+
+        double complete = 0.0;
+        double bars = 0.0;
+        double direction = 0.0;
+        double out_open = bar_open_, out_close = close, out_high = bar_high_, out_low = bar_low_;
+        double out_vol = static_cast<double>(run_count_);
+        if (run_count_ >= threshold_) {
+            complete = 1.0;
+            bars = 1.0;
+            direction = run_sign_;
+            out_open = bar_open_;
+            out_close = close;
+            out_high = bar_high_;
+            out_low = bar_low_;
+            out_vol = static_cast<double>(run_count_);
+            run_count_ = 0;
+            run_sign_ = 0.0;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+        last_ = {out_open, out_close, out_high, out_low, out_vol, direction, complete, bars};
+        return last_;
+    }
+
+    // Optional volume-weighted run: same sign rule, accumulate volume until threshold.
+    InformationBarResult update(double close, double volume) {
+        // Volume-run variant: treat volume as weight of the tick's sign.
+        const double v = std::max(volume, 0.0);
+        if (!initialized_) {
+            initialized_ = true;
+            prev_close_ = close;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+            run_sign_ = 0.0;
+            run_count_ = 0;
+            run_volume_ = 0.0;
+            last_ = {close, close, close, close, 0.0, 0.0, 0.0, 0.0};
+            return last_;
+        }
+        const double sign = close > prev_close_ ? 1.0 : (close < prev_close_ ? -1.0 : 0.0);
+        prev_close_ = close;
+        bar_high_ = std::max(bar_high_, close);
+        bar_low_ = std::min(bar_low_, close);
+        if (sign != 0.0) {
+            if (run_sign_ == 0.0 || sign == run_sign_) {
+                run_sign_ = sign;
+                ++run_count_;
+                run_volume_ += v;
+            } else {
+                run_sign_ = sign;
+                run_count_ = 1;
+                run_volume_ = v;
+                bar_open_ = close;
+                bar_high_ = close;
+                bar_low_ = close;
+            }
+        }
+        double complete = 0.0;
+        double bars = 0.0;
+        double direction = 0.0;
+        double out_open = bar_open_, out_close = close, out_high = bar_high_, out_low = bar_low_;
+        double out_vol = run_volume_;
+        // Complete on tick-count threshold (primary definition).
+        if (run_count_ >= threshold_) {
+            complete = 1.0;
+            bars = 1.0;
+            direction = run_sign_;
+            out_open = bar_open_;
+            out_close = close;
+            out_high = bar_high_;
+            out_low = bar_low_;
+            out_vol = run_volume_;
+            run_count_ = 0;
+            run_volume_ = 0.0;
+            run_sign_ = 0.0;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+        last_ = {out_open, out_close, out_high, out_low, out_vol, direction, complete, bars};
+        return last_;
+    }
+
+    void advance(double close) { (void) update(close); }
+    void advance(double close, double volume) { (void) update(close, volume); }
+    inline const InformationBarResult &last() const { return last_; }
+
+    template <typename Array>
+    InformationBarBatchResult batch_array(const Array &close) {
+        const std::size_t n = close.shape(0);
+        std::vector<double> o(n), c(n), h(n), l(n), v(n), d(n), comp(n), b(n);
+        const auto *pc = close.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(pc[i]));
+            o[i] = out.bar_open; c[i] = out.bar_close; h[i] = out.bar_high; l[i] = out.bar_low;
+            v[i] = out.bar_volume; d[i] = out.direction; comp[i] = out.complete; b[i] = out.bars;
+        }
+        return {
+            make_array(std::move(o)), make_array(std::move(c)), make_array(std::move(h)), make_array(std::move(l)),
+            make_array(std::move(v)), make_array(std::move(d)), make_array(std::move(comp)), make_array(std::move(b)),
+        };
+    }
+
+    template <typename A0, typename A1>
+    InformationBarBatchResult batch_array(const A0 &close, const A1 &volume) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        std::vector<double> o(n), c(n), h(n), l(n), v(n), d(n), comp(n), b(n);
+        const auto *pc = close.data();
+        const auto *pv = volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(pc[i]), static_cast<double>(pv[i]));
+            o[i] = out.bar_open; c[i] = out.bar_close; h[i] = out.bar_high; l[i] = out.bar_low;
+            v[i] = out.bar_volume; d[i] = out.direction; comp[i] = out.complete; b[i] = out.bars;
+        }
+        return {
+            make_array(std::move(o)), make_array(std::move(c)), make_array(std::move(h)), make_array(std::move(l)),
+            make_array(std::move(v)), make_array(std::move(d)), make_array(std::move(comp)), make_array(std::move(b)),
+        };
+    }
+
+private:
+    int threshold_;
+    bool initialized_;
+    double run_sign_;
+    int run_count_;
+    double run_volume_ = 0.0;
+    double bar_open_, bar_high_, bar_low_;
+    double prev_close_;
+    InformationBarResult last_;
+};
+
+class FOCuS {
+public:
+    // Two-sided FOCuS mean changepoint detector (Romano et al. style functional pruning).
+    // Returns signal in {-1,0,+1} and the max likelihood-ratio statistic.
+    FOCuS(double threshold = 10.0, double mu0 = 0.0, double sigma = 1.0, int max_candidates = 200)
+        : threshold_(threshold > 0.0 ? threshold : 10.0),
+          mu0_(mu0),
+          inv_two_sigma2_(1.0 / (2.0 * std::max(sigma * sigma, 1e-18))),
+          max_candidates_(std::max(max_candidates, 8)),
+          last_{0.0, 0.0} {}
+
+    FOCuSResult update(double value) {
+        const double y = value - mu0_;
+        std::vector<std::pair<double, int>> next;
+        next.reserve(candidates_.size() + 1);
+        next.emplace_back(y, 1);
+        for (const auto &c : candidates_) {
+            next.emplace_back(c.first + y, c.second + 1);
+        }
+        candidates_ = prune_candidates(std::move(next));
+
+        double best = 0.0;
+        double best_sign = 0.0;
+        for (const auto &c : candidates_) {
+            if (c.second <= 0) {
+                continue;
+            }
+            const double stat = (c.first * c.first) * inv_two_sigma2_ / static_cast<double>(c.second);
+            if (stat > best) {
+                best = stat;
+                best_sign = c.first >= 0.0 ? 1.0 : -1.0;
+            }
+        }
+        double signal = 0.0;
+        if (best >= threshold_) {
+            signal = best_sign;
+            candidates_.clear();
+        }
+        last_ = {signal, best};
+        return last_;
+    }
+
+    void advance(double value) { (void) update(value); }
+    inline const FOCuSResult &last() const { return last_; }
+
+    template <typename Array>
+    FOCuSBatchResult batch_array(const Array &input) {
+        const std::size_t n = input.shape(0);
+        std::vector<double> signal(n), statistic(n);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(values[i]));
+            signal[i] = out.signal;
+            statistic[i] = out.statistic;
+        }
+        return {make_array(std::move(signal)), make_array(std::move(statistic))};
+    }
+
+private:
+    std::vector<std::pair<double, int>> prune_candidates(std::vector<std::pair<double, int>> cands) const {
+        if (cands.size() <= 1) {
+            return cands;
+        }
+        // Separate one-sided positive / negative candidate pools and prune by mean dominance.
+        std::vector<std::pair<double, int>> pos, neg;
+        for (const auto &c : cands) {
+            if (c.first >= 0.0) {
+                pos.push_back(c);
+            } else {
+                neg.push_back(c);
+            }
+        }
+        auto prune_side = [this](std::vector<std::pair<double, int>> side, bool positive) {
+            if (side.empty()) {
+                return side;
+            }
+            std::sort(side.begin(), side.end(), [positive](const auto &a, const auto &b) {
+                const double ma = a.first / static_cast<double>(std::max(a.second, 1));
+                const double mb = b.first / static_cast<double>(std::max(b.second, 1));
+                if (ma == mb) {
+                    return a.second < b.second;
+                }
+                return positive ? (ma < mb) : (ma > mb);
+            });
+            std::vector<std::pair<double, int>> kept;
+            int min_n = std::numeric_limits<int>::max();
+            for (const auto &c : side) {
+                if (c.second < min_n) {
+                    kept.push_back(c);
+                    min_n = c.second;
+                }
+            }
+            if (static_cast<int>(kept.size()) > max_candidates_) {
+                kept.erase(kept.begin(), kept.end() - max_candidates_);
+            }
+            return kept;
+        };
+        auto kept_pos = prune_side(std::move(pos), true);
+        auto kept_neg = prune_side(std::move(neg), false);
+        kept_pos.insert(kept_pos.end(), kept_neg.begin(), kept_neg.end());
+        return kept_pos;
+    }
+
+    double threshold_;
+    double mu0_;
+    double inv_two_sigma2_;
+    int max_candidates_;
+    std::vector<std::pair<double, int>> candidates_;
+    FOCuSResult last_;
+};
+
+class ResidualFOCuS {
+public:
+    // FOCuS on a residual / innovation series (same engine; name documents intended use).
+    ResidualFOCuS(double threshold = 10.0, double mu0 = 0.0, double sigma = 1.0, int max_candidates = 200)
+        : focus_(threshold, mu0, sigma, max_candidates) {}
+
+    FOCuSResult update(double residual) { return focus_.update(residual); }
+    void advance(double residual) { focus_.advance(residual); }
+    inline const FOCuSResult &last() const { return focus_.last(); }
+
+    template <typename Array>
+    FOCuSBatchResult batch_array(const Array &input) { return focus_.batch_array(input); }
+
+private:
+    FOCuS focus_;
+};
+
+class DirectionalChangeDetector {
+public:
+    // Directional-change events with overshoot (intrinsic-time sampling).
+    // threshold is a relative fraction (0.01 = 1%).
+    explicit DirectionalChangeDetector(double threshold = 0.01)
+        : threshold_(threshold > 0.0 ? threshold : 0.01),
+          initialized_(false),
+          mode_(0),  // 0 unknown, 1 uptrend (seek downturn), -1 downtrend (seek upturn)
+          extremum_(0.0),
+          last_dc_price_(0.0),
+          last_{0.0, 0.0, nan(), 0.0} {}
+
+    DirectionalChangeResult update(double price) {
+        if (!initialized_) {
+            initialized_ = true;
+            extremum_ = price;
+            last_dc_price_ = price;
+            last_ = {0.0, 0.0, price, 0.0};
+            return last_;
+        }
+        double event = 0.0;
+        if (mode_ == 0) {
+            // Bootstrap: first move of size theta sets initial mode.
+            if (price >= extremum_ * (1.0 + threshold_)) {
+                mode_ = 1;
+                event = 1.0;
+                last_dc_price_ = price;
+                extremum_ = price;
+            } else if (price <= extremum_ * (1.0 - threshold_)) {
+                mode_ = -1;
+                event = -1.0;
+                last_dc_price_ = price;
+                extremum_ = price;
+            } else {
+                if (price > extremum_) {
+                    extremum_ = price;
+                } else if (price < extremum_) {
+                    extremum_ = price;
+                }
+            }
+        } else if (mode_ == 1) {
+            if (price > extremum_) {
+                extremum_ = price;
+            }
+            if (price <= extremum_ * (1.0 - threshold_)) {
+                mode_ = -1;
+                event = -1.0;
+                last_dc_price_ = price;
+                extremum_ = price;
+            }
+        } else {  // mode_ == -1
+            if (price < extremum_) {
+                extremum_ = price;
+            }
+            if (price >= extremum_ * (1.0 + threshold_)) {
+                mode_ = 1;
+                event = 1.0;
+                last_dc_price_ = price;
+                extremum_ = price;
+            }
+        }
+        double overshoot = 0.0;
+        if (mode_ == 1 && last_dc_price_ > 0.0) {
+            overshoot = safe_divide(price - last_dc_price_, last_dc_price_);
+        } else if (mode_ == -1 && last_dc_price_ > 0.0) {
+            overshoot = safe_divide(last_dc_price_ - price, last_dc_price_);
+        }
+        last_ = {event, overshoot, extremum_, static_cast<double>(mode_)};
+        return last_;
+    }
+
+    void advance(double price) { (void) update(price); }
+    inline const DirectionalChangeResult &last() const { return last_; }
+
+    template <typename Array>
+    DirectionalChangeBatchResult batch_array(const Array &input) {
+        const std::size_t n = input.shape(0);
+        std::vector<double> event(n), overshoot(n), extremum(n), direction(n);
+        const auto *values = input.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(values[i]));
+            event[i] = out.event;
+            overshoot[i] = out.overshoot;
+            extremum[i] = out.extremum;
+            direction[i] = out.direction;
+        }
+        return {
+            make_array(std::move(event)),
+            make_array(std::move(overshoot)),
+            make_array(std::move(extremum)),
+            make_array(std::move(direction)),
+        };
+    }
+
+private:
+    double threshold_;
+    bool initialized_;
+    int mode_;
+    double extremum_;
+    double last_dc_price_;
+    DirectionalChangeResult last_;
+};
+
+class CrossAssetOrderFlowImbalance {
+public:
+    // Rolling beta of own return on peer OFI; impact = beta * peer_ofi.
+    // Cont-style cross-impact feature for multi-name flow.
+    explicit CrossAssetOrderFlowImbalance(int window = 50, bool fillna = true)
+        : stats_(std::max(window, 2)),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    CrossAssetOrderFlowImbalanceResult update(double own_return, double peer_ofi) {
+        // beta of own_return (x) on peer_ofi (y): Cov(x,y)/Var(y)
+        stats_.push(own_return, peer_ofi);
+        if (!fillna_ && !stats_.full()) {
+            last_ = {nan(), nan(), nan(), peer_ofi};
+            return last_;
+        }
+        const double beta = stats_.beta();
+        const double impact = beta * peer_ofi;
+        const double residual = own_return - impact;
+        last_ = {beta, impact, residual, peer_ofi};
+        return last_;
+    }
+
+    void advance(double own_return, double peer_ofi) { (void) update(own_return, peer_ofi); }
+    inline const CrossAssetOrderFlowImbalanceResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    CrossAssetOrderFlowImbalanceBatchResult batch_array(const A0 &own_return, const A1 &peer_ofi) {
+        const std::size_t n = own_return.shape(0);
+        require_same_size(n, peer_ofi.shape(0));
+        std::vector<double> beta(n), impact(n), residual(n), peer(n);
+        const auto *r = own_return.data();
+        const auto *p = peer_ofi.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(r[i]), static_cast<double>(p[i]));
+            beta[i] = out.beta;
+            impact[i] = out.impact;
+            residual[i] = out.residual;
+            peer[i] = out.peer_ofi;
+        }
+        return {
+            make_array(std::move(beta)),
+            make_array(std::move(impact)),
+            make_array(std::move(residual)),
+            make_array(std::move(peer)),
+        };
+    }
+
+private:
+    RollingPairStats stats_;
+    bool fillna_;
+    CrossAssetOrderFlowImbalanceResult last_;
+};
+
+class ResidualBOCPD {
+public:
+    // Bounded BOCPD applied to a residual/innovation series (model-based changepoints).
+    ResidualBOCPD(int max_run_length = 128, double hazard = 0.01, double threshold = 0.5, double min_variance = 1.0e-6)
+        : core_(max_run_length, hazard, threshold, min_variance),
+          last_{0.0, 0.0} {}
+
+    ResidualBOCPDResult update(double residual) {
+        const double signal = core_.update(residual);
+        last_ = {signal, core_.last_probability()};
+        return last_;
+    }
+
+    void advance(double residual) { (void) update(residual); }
+    inline const ResidualBOCPDResult &last() const { return last_; }
+    inline double last_probability() const { return last_.probability; }
+
+    template <typename Array>
+    ResidualBOCPDBatchResult batch_array(const Array &residual) {
+        const std::size_t n = residual.shape(0);
+        std::vector<double> signal(n), probability(n);
+        const auto *values = residual.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(values[i]));
+            signal[i] = out.signal;
+            probability[i] = out.probability;
+        }
+        return {make_array(std::move(signal)), make_array(std::move(probability))};
+    }
+
+private:
+    BoundedBOCPD core_;
+    ResidualBOCPDResult last_;
+};
+
+
+class KalmanInnovationResidualFOCuS {
+public:
+    // Convenience: Kalman innovation z-score residual fed into FOCuS.
+    KalmanInnovationResidualFOCuS(
+        double focus_threshold = 10.0,
+        double focus_sigma = 1.0,
+        double initial_price = nan(),
+        double dt = 1.0,
+        double measurement_variance = 0.25,
+        bool fillna = true)
+        : innov_(initial_price, 0.0, dt, 1.0, 1.0, 1.0e-4, 1.0e-3, measurement_variance, fillna),
+          focus_(focus_threshold, 0.0, focus_sigma),
+          fillna_(fillna),
+          count_(0),
+          last_{0.0, 0.0, nan()} {}
+
+    InnovationChangepointResult update(double close) {
+        const double residual = innov_.update(close);
+        ++count_;
+        if (!std::isfinite(residual)) {
+            last_ = {0.0, 0.0, residual};
+            return last_;
+        }
+        const FOCuSResult cp = focus_.update(residual);
+        last_ = {cp.signal, cp.statistic, residual};
+        return last_;
+    }
+
+    void advance(double close) { (void) update(close); }
+    inline const InnovationChangepointResult &last() const { return last_; }
+
+    template <typename Array>
+    InnovationChangepointBatchResult batch_array(const Array &close) {
+        const std::size_t n = close.shape(0);
+        std::vector<double> signal(n), score(n), residual(n);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(values[i]));
+            signal[i] = out.signal;
+            score[i] = out.score;
+            residual[i] = out.residual;
+        }
+        return {make_array(std::move(signal)), make_array(std::move(score)), make_array(std::move(residual))};
+    }
+
+private:
+    KalmanInnovationZScore innov_;
+    FOCuS focus_;
+    bool fillna_;
+    long count_;
+    InnovationChangepointResult last_;
+};
+
+class KalmanInnovationResidualBOCPD {
+public:
+    // Convenience: Kalman innovation z-score residual fed into ResidualBOCPD.
+    KalmanInnovationResidualBOCPD(
+        int max_run_length = 128,
+        double hazard = 0.01,
+        double threshold = 0.5,
+        double min_variance = 1.0e-6,
+        double initial_price = nan(),
+        double dt = 1.0,
+        double measurement_variance = 0.25,
+        bool fillna = true)
+        : innov_(initial_price, 0.0, dt, 1.0, 1.0, 1.0e-4, 1.0e-3, measurement_variance, fillna),
+          bocpd_(max_run_length, hazard, threshold, min_variance),
+          last_{0.0, 0.0, nan()} {}
+
+    InnovationChangepointResult update(double close) {
+        const double residual = innov_.update(close);
+        if (!std::isfinite(residual)) {
+            last_ = {0.0, 0.0, residual};
+            return last_;
+        }
+        const ResidualBOCPDResult cp = bocpd_.update(residual);
+        last_ = {cp.signal, cp.probability, residual};
+        return last_;
+    }
+
+    void advance(double close) { (void) update(close); }
+    inline const InnovationChangepointResult &last() const { return last_; }
+
+    template <typename Array>
+    InnovationChangepointBatchResult batch_array(const Array &close) {
+        const std::size_t n = close.shape(0);
+        std::vector<double> signal(n), score(n), residual(n);
+        const auto *values = close.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(values[i]));
+            signal[i] = out.signal;
+            score[i] = out.score;
+            residual[i] = out.residual;
+        }
+        return {make_array(std::move(signal)), make_array(std::move(score)), make_array(std::move(residual))};
+    }
+
+private:
+    KalmanInnovationZScore innov_;
+    ResidualBOCPD bocpd_;
+    InnovationChangepointResult last_;
+};
+
+class MultiPeerOrderFlowImbalance {
+public:
+    // Basket/cross-asset OFI: peer_ofis is a length-n_peers vector each tick.
+    // peer_mean is equal-weight average; beta is rolling OLS of own_return on peer_mean.
+    explicit MultiPeerOrderFlowImbalance(int window = 50, bool fillna = true)
+        : stats_(std::max(window, 2)),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    MultiPeerOrderFlowImbalanceResult update(double own_return, const InputArray &peer_ofis) {
+        const std::size_t n = peer_ofis.shape(0);
+        if (n == 0) {
+            last_ = {nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        const double *p = peer_ofis.data();
+        double sum = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            sum += p[i];
+        }
+        const double peer_mean = sum / static_cast<double>(n);
+        stats_.push(own_return, peer_mean);
+        if (!fillna_ && !stats_.full()) {
+            last_ = {nan(), nan(), nan(), peer_mean};
+            return last_;
+        }
+        const double beta = stats_.beta();
+        const double impact = beta * peer_mean;
+        last_ = {beta, impact, own_return - impact, peer_mean};
+        return last_;
+    }
+
+    MultiPeerOrderFlowImbalanceResult update(double own_return, const FloatInputArray &peer_ofis) {
+        const std::size_t n = peer_ofis.shape(0);
+        if (n == 0) {
+            last_ = {nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        const float *p = peer_ofis.data();
+        double sum = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            sum += static_cast<double>(p[i]);
+        }
+        const double peer_mean = sum / static_cast<double>(n);
+        stats_.push(own_return, peer_mean);
+        if (!fillna_ && !stats_.full()) {
+            last_ = {nan(), nan(), nan(), peer_mean};
+            return last_;
+        }
+        const double beta = stats_.beta();
+        const double impact = beta * peer_mean;
+        last_ = {beta, impact, own_return - impact, peer_mean};
+        return last_;
+    }
+
+    void advance(double own_return, const InputArray &peer_ofis) { (void) update(own_return, peer_ofis); }
+    void advance(double own_return, const FloatInputArray &peer_ofis) { (void) update(own_return, peer_ofis); }
+    inline const MultiPeerOrderFlowImbalanceResult &last() const { return last_; }
+
+    // batch: own_return shape (T,), peer_ofis shape (T, n_peers)
+    MultiPeerOrderFlowImbalanceBatchResult batch(const InputArray &own_return, const InputArray2D &peer_ofis) {
+        return batch_matrix(own_return, peer_ofis);
+    }
+    MultiPeerOrderFlowImbalanceBatchResult batch(const FloatInputArray &own_return, const FloatInputArray2D &peer_ofis) {
+        return batch_matrix(own_return, peer_ofis);
+    }
+
+private:
+    template <typename A0, typename A1>
+    MultiPeerOrderFlowImbalanceBatchResult batch_matrix(const A0 &own_return, const A1 &peer_ofis) {
+        const std::size_t t = own_return.shape(0);
+        require_same_size(t, peer_ofis.shape(0));
+        const std::size_t peers = peer_ofis.shape(1);
+        if (peers == 0) {
+            throw nb::value_error("peer_ofis must have at least one peer column");
+        }
+        std::vector<double> beta(t), impact(t), residual(t), peer_mean(t);
+        const auto *r = own_return.data();
+        const auto *p = peer_ofis.data();
+        std::vector<double> row(peers);
+        for (std::size_t i = 0; i < t; ++i) {
+            for (std::size_t j = 0; j < peers; ++j) {
+                row[j] = static_cast<double>(p[i * peers + j]);
+            }
+            // Temporary InputArray-like: use update with raw mean path
+            double sum = 0.0;
+            for (double v : row) {
+                sum += v;
+            }
+            const double pm = sum / static_cast<double>(peers);
+            stats_.push(static_cast<double>(r[i]), pm);
+            if (!fillna_ && !stats_.full()) {
+                beta[i] = nan();
+                impact[i] = nan();
+                residual[i] = nan();
+                peer_mean[i] = pm;
+            } else {
+                const double b = stats_.beta();
+                const double imp = b * pm;
+                beta[i] = b;
+                impact[i] = imp;
+                residual[i] = static_cast<double>(r[i]) - imp;
+                peer_mean[i] = pm;
+            }
+            last_ = {beta[i], impact[i], residual[i], peer_mean[i]};
+        }
+        return {
+            make_array(std::move(beta)),
+            make_array(std::move(impact)),
+            make_array(std::move(residual)),
+            make_array(std::move(peer_mean)),
+        };
+    }
+
+    RollingPairStats stats_;
+    bool fillna_;
+    MultiPeerOrderFlowImbalanceResult last_;
+};
+
+class VolumeRunBarGenerator {
+public:
+    // Same-sign volume run bar: accumulate volume while tick sign holds; close when |run_vol| >= threshold.
+    explicit VolumeRunBarGenerator(double threshold = 10000.0)
+        : threshold_(threshold > 0.0 ? threshold : 10000.0),
+          initialized_(false),
+          run_sign_(0.0),
+          run_volume_(0.0),
+          bar_open_(0.0),
+          bar_high_(0.0),
+          bar_low_(0.0),
+          prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), 0.0, 0.0, 0.0, 0.0} {}
+
+    InformationBarResult update(double close, double volume) {
+        const double v = std::max(volume, 0.0);
+        if (!initialized_) {
+            initialized_ = true;
+            prev_close_ = close;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+            run_sign_ = 0.0;
+            run_volume_ = 0.0;
+            last_ = {close, close, close, close, 0.0, 0.0, 0.0, 0.0};
+            return last_;
+        }
+        const double sign = close > prev_close_ ? 1.0 : (close < prev_close_ ? -1.0 : 0.0);
+        prev_close_ = close;
+        bar_high_ = std::max(bar_high_, close);
+        bar_low_ = std::min(bar_low_, close);
+        if (sign != 0.0) {
+            if (run_sign_ == 0.0 || sign == run_sign_) {
+                run_sign_ = sign;
+                run_volume_ += v;
+            } else {
+                run_sign_ = sign;
+                run_volume_ = v;
+                bar_open_ = close;
+                bar_high_ = close;
+                bar_low_ = close;
+            }
+        }
+        double complete = 0.0;
+        double bars = 0.0;
+        double direction = 0.0;
+        double out_open = bar_open_, out_close = close, out_high = bar_high_, out_low = bar_low_;
+        double out_vol = run_volume_;
+        if (run_volume_ >= threshold_) {
+            complete = 1.0;
+            bars = 1.0;
+            direction = run_sign_;
+            out_open = bar_open_;
+            out_close = close;
+            out_high = bar_high_;
+            out_low = bar_low_;
+            out_vol = run_volume_;
+            run_volume_ = 0.0;
+            run_sign_ = 0.0;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+        last_ = {out_open, out_close, out_high, out_low, out_vol, direction, complete, bars};
+        return last_;
+    }
+
+    void advance(double close, double volume) { (void) update(close, volume); }
+    inline const InformationBarResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    InformationBarBatchResult batch_array(const A0 &close, const A1 &volume) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        std::vector<double> o(n), c(n), h(n), l(n), v(n), d(n), comp(n), b(n);
+        const auto *pc = close.data();
+        const auto *pv = volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(pc[i]), static_cast<double>(pv[i]));
+            o[i] = out.bar_open; c[i] = out.bar_close; h[i] = out.bar_high; l[i] = out.bar_low;
+            v[i] = out.bar_volume; d[i] = out.direction; comp[i] = out.complete; b[i] = out.bars;
+        }
+        return {
+            make_array(std::move(o)), make_array(std::move(c)), make_array(std::move(h)), make_array(std::move(l)),
+            make_array(std::move(v)), make_array(std::move(d)), make_array(std::move(comp)), make_array(std::move(b)),
+        };
+    }
+
+private:
+    double threshold_;
+    bool initialized_;
+    double run_sign_;
+    double run_volume_;
+    double bar_open_, bar_high_, bar_low_;
+    double prev_close_;
+    InformationBarResult last_;
+};
+
+class DollarRunBarGenerator {
+public:
+    // Same-sign dollar run bar: accumulate |price|*volume while sign holds.
+    explicit DollarRunBarGenerator(double threshold = 1.0e6)
+        : threshold_(threshold > 0.0 ? threshold : 1.0e6),
+          initialized_(false),
+          run_sign_(0.0),
+          run_dollar_(0.0),
+          bar_open_(0.0),
+          bar_high_(0.0),
+          bar_low_(0.0),
+          prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), 0.0, 0.0, 0.0, 0.0} {}
+
+    InformationBarResult update(double close, double volume) {
+        const double dollar = std::abs(close) * std::max(volume, 0.0);
+        if (!initialized_) {
+            initialized_ = true;
+            prev_close_ = close;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+            run_sign_ = 0.0;
+            run_dollar_ = 0.0;
+            last_ = {close, close, close, close, 0.0, 0.0, 0.0, 0.0};
+            return last_;
+        }
+        const double sign = close > prev_close_ ? 1.0 : (close < prev_close_ ? -1.0 : 0.0);
+        prev_close_ = close;
+        bar_high_ = std::max(bar_high_, close);
+        bar_low_ = std::min(bar_low_, close);
+        if (sign != 0.0) {
+            if (run_sign_ == 0.0 || sign == run_sign_) {
+                run_sign_ = sign;
+                run_dollar_ += dollar;
+            } else {
+                run_sign_ = sign;
+                run_dollar_ = dollar;
+                bar_open_ = close;
+                bar_high_ = close;
+                bar_low_ = close;
+            }
+        }
+        double complete = 0.0;
+        double bars = 0.0;
+        double direction = 0.0;
+        double out_open = bar_open_, out_close = close, out_high = bar_high_, out_low = bar_low_;
+        double out_vol = run_dollar_;
+        if (run_dollar_ >= threshold_) {
+            complete = 1.0;
+            bars = 1.0;
+            direction = run_sign_;
+            out_open = bar_open_;
+            out_close = close;
+            out_high = bar_high_;
+            out_low = bar_low_;
+            out_vol = run_dollar_;
+            run_dollar_ = 0.0;
+            run_sign_ = 0.0;
+            bar_open_ = close;
+            bar_high_ = close;
+            bar_low_ = close;
+        }
+        last_ = {out_open, out_close, out_high, out_low, out_vol, direction, complete, bars};
+        return last_;
+    }
+
+    void advance(double close, double volume) { (void) update(close, volume); }
+    inline const InformationBarResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    InformationBarBatchResult batch_array(const A0 &close, const A1 &volume) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        std::vector<double> o(n), c(n), h(n), l(n), v(n), d(n), comp(n), b(n);
+        const auto *pc = close.data();
+        const auto *pv = volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(pc[i]), static_cast<double>(pv[i]));
+            o[i] = out.bar_open; c[i] = out.bar_close; h[i] = out.bar_high; l[i] = out.bar_low;
+            v[i] = out.bar_volume; d[i] = out.direction; comp[i] = out.complete; b[i] = out.bars;
+        }
+        return {
+            make_array(std::move(o)), make_array(std::move(c)), make_array(std::move(h)), make_array(std::move(l)),
+            make_array(std::move(v)), make_array(std::move(d)), make_array(std::move(comp)), make_array(std::move(b)),
+        };
+    }
+
+private:
+    double threshold_;
+    bool initialized_;
+    double run_sign_;
+    double run_dollar_;
+    double bar_open_, bar_high_, bar_low_;
+    double prev_close_;
+    InformationBarResult last_;
+};
+
+class WoodiePivotPoints {
+public:
+    // Woodie pivots from previous bar: PP = (H + L + 2C) / 4.
+    explicit WoodiePivotPoints(bool fillna = true)
+        : fillna_(fillna), has_prev_(false), prev_high_(0.0), prev_low_(0.0), prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    PivotPointsResult update(double high, double low, double close) {
+        if (!has_prev_) {
+            prev_high_ = high; prev_low_ = low; prev_close_ = close; has_prev_ = true;
+            last_ = fillna_ ? PivotPointsResult{close, close, close, close, close, close, close}
+                            : PivotPointsResult{nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        const double range = prev_high_ - prev_low_;
+        const double pp = (prev_high_ + prev_low_ + 2.0 * prev_close_) / 4.0;
+        const double r1 = 2.0 * pp - prev_low_;
+        const double s1 = 2.0 * pp - prev_high_;
+        const double r2 = pp + range;
+        const double s2 = pp - range;
+        const double r3 = prev_high_ + 2.0 * (pp - prev_low_);
+        const double s3 = prev_low_ - 2.0 * (prev_high_ - pp);
+        last_ = {pp, r1, r2, r3, s1, s2, s3};
+        prev_high_ = high; prev_low_ = low; prev_close_ = close;
+        return last_;
+    }
+
+    void advance(double high, double low, double close) { (void) update(high, low, close); }
+    inline const PivotPointsResult &last() const { return last_; }
+
+private:
+    bool fillna_;
+    bool has_prev_;
+    double prev_high_, prev_low_, prev_close_;
+    PivotPointsResult last_;
+};
+
+class CamarillaPivotPoints {
+public:
+    // Camarilla pivots: levels from previous H/L/C with 1.1/12 ... 1.1/2 multipliers.
+    explicit CamarillaPivotPoints(bool fillna = true)
+        : fillna_(fillna), has_prev_(false), prev_high_(0.0), prev_low_(0.0), prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    PivotPointsResult update(double high, double low, double close) {
+        if (!has_prev_) {
+            prev_high_ = high; prev_low_ = low; prev_close_ = close; has_prev_ = true;
+            last_ = fillna_ ? PivotPointsResult{close, close, close, close, close, close, close}
+                            : PivotPointsResult{nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        const double range = prev_high_ - prev_low_;
+        const double pp = (prev_high_ + prev_low_ + prev_close_) / 3.0;
+        const double r1 = prev_close_ + range * (1.1 / 12.0);
+        const double r2 = prev_close_ + range * (1.1 / 6.0);
+        const double r3 = prev_close_ + range * (1.1 / 4.0);
+        const double s1 = prev_close_ - range * (1.1 / 12.0);
+        const double s2 = prev_close_ - range * (1.1 / 6.0);
+        const double s3 = prev_close_ - range * (1.1 / 4.0);
+        last_ = {pp, r1, r2, r3, s1, s2, s3};
+        prev_high_ = high; prev_low_ = low; prev_close_ = close;
+        return last_;
+    }
+
+    void advance(double high, double low, double close) { (void) update(high, low, close); }
+    inline const PivotPointsResult &last() const { return last_; }
+
+private:
+    bool fillna_;
+    bool has_prev_;
+    double prev_high_, prev_low_, prev_close_;
+    PivotPointsResult last_;
+};
+
+class MovingAverageVariablePeriod {
+public:
+    // TA-Lib-style MAVP: SMA of `value` over a per-bar period clamped to [min_period, max_period].
+    MovingAverageVariablePeriod(int max_period = 30, int min_period = 2, bool fillna = true)
+        : max_period_(std::max(max_period, 2)),
+          min_period_(std::clamp(min_period, 2, max_period_)),
+          fillna_(fillna),
+          values_(max_period_) {}
+
+    double update(double value, double period) {
+        values_.push(value);
+        int p = static_cast<int>(std::llround(period));
+        if (p < min_period_) {
+            p = min_period_;
+        }
+        if (p > max_period_) {
+            p = max_period_;
+        }
+        if (!fillna_ && static_cast<int>(values_.size()) < p) {
+            return nan();
+        }
+        const std::size_t n = values_.size();
+        const std::size_t use = std::min(n, static_cast<std::size_t>(p));
+        double sum = 0.0;
+        // Sum the most recent `use` samples.
+        for (std::size_t i = 0; i < use; ++i) {
+            sum += values_.at(n - use + i);
+        }
+        return sum / static_cast<double>(use);
+    }
+
+    template <typename A0, typename A1>
+    nb::object batch_array(const A0 &value, const A1 &period) {
+        const std::size_t n = value.shape(0);
+        require_same_size(n, period.shape(0));
+        std::vector<double> output(n);
+        const auto *v = value.data();
+        const auto *p = period.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            output[i] = update(static_cast<double>(v[i]), static_cast<double>(p[i]));
+        }
+        return make_array(std::move(output));
+    }
+
+private:
+    int max_period_;
+    int min_period_;
+    bool fillna_;
+    RollingBuffer values_;
+};
+
+class FibonacciPivotPoints {
+public:
+    // Fib pivots from previous HLC: PP mid, R/S at 0.382 / 0.618 / 1.0 of range.
+    explicit FibonacciPivotPoints(bool fillna = true)
+        : fillna_(fillna), has_prev_(false), prev_high_(0.0), prev_low_(0.0), prev_close_(0.0),
+          last_{nan(), nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    PivotPointsResult update(double high, double low, double close) {
+        if (!has_prev_) {
+            prev_high_ = high; prev_low_ = low; prev_close_ = close; has_prev_ = true;
+            last_ = fillna_ ? PivotPointsResult{close, close, close, close, close, close, close}
+                            : PivotPointsResult{nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        const double range = prev_high_ - prev_low_;
+        const double pp = (prev_high_ + prev_low_ + prev_close_) / 3.0;
+        const double r1 = pp + 0.382 * range;
+        const double r2 = pp + 0.618 * range;
+        const double r3 = pp + 1.000 * range;
+        const double s1 = pp - 0.382 * range;
+        const double s2 = pp - 0.618 * range;
+        const double s3 = pp - 1.000 * range;
+        last_ = {pp, r1, r2, r3, s1, s2, s3};
+        prev_high_ = high; prev_low_ = low; prev_close_ = close;
+        return last_;
+    }
+
+    void advance(double high, double low, double close) { (void) update(high, low, close); }
+    inline const PivotPointsResult &last() const { return last_; }
+
+private:
+    bool fillna_;
+    bool has_prev_;
+    double prev_high_, prev_low_, prev_close_;
+    PivotPointsResult last_;
+};
+
+class GuppyMMARibbon {
+public:
+    // Full Guppy ribbon: short EMAs 3/5/8/10/12/15 and long 30/35/40/45/50/60.
+    explicit GuppyMMARibbon(bool fillna = true)
+        : short_{EMA(3, true), EMA(5, true), EMA(8, true), EMA(10, true), EMA(12, true), EMA(15, true)},
+          long_{EMA(30, true), EMA(35, true), EMA(40, true), EMA(45, true), EMA(50, true), EMA(60, true)},
+          fillna_(fillna),
+          count_(0),
+          last_{nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()} {}
+
+    GuppyMMARibbonResult update(double price) {
+        update_core(price);
+        return last_;
+    }
+    void advance(double price) { update_core(price); }
+    inline const GuppyMMARibbonResult &last() const { return last_; }
+
+    template <typename Array>
+    GuppyMMARibbonBatchResult batch_array(const Array &input) {
+        const std::size_t n = input.shape(0);
+        std::vector<double> s3(n), s5(n), s8(n), s10(n), s12(n), s15(n);
+        std::vector<double> l30(n), l35(n), l40(n), l45(n), l50(n), l60(n);
+        std::vector<double> short_avg(n), long_avg(n), spread(n);
+        const auto *v = input.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(v[i]));
+            s3[i]=out.s3; s5[i]=out.s5; s8[i]=out.s8; s10[i]=out.s10; s12[i]=out.s12; s15[i]=out.s15;
+            l30[i]=out.l30; l35[i]=out.l35; l40[i]=out.l40; l45[i]=out.l45; l50[i]=out.l50; l60[i]=out.l60;
+            short_avg[i]=out.short_average; long_avg[i]=out.long_average; spread[i]=out.spread;
+        }
+        return {
+            make_array(std::move(s3)), make_array(std::move(s5)), make_array(std::move(s8)),
+            make_array(std::move(s10)), make_array(std::move(s12)), make_array(std::move(s15)),
+            make_array(std::move(l30)), make_array(std::move(l35)), make_array(std::move(l40)),
+            make_array(std::move(l45)), make_array(std::move(l50)), make_array(std::move(l60)),
+            make_array(std::move(short_avg)), make_array(std::move(long_avg)), make_array(std::move(spread)),
+        };
+    }
+
+private:
+    inline void update_core(double price) {
+        const double v3 = short_[0].update(price);
+        const double v5 = short_[1].update(price);
+        const double v8 = short_[2].update(price);
+        const double v10 = short_[3].update(price);
+        const double v12 = short_[4].update(price);
+        const double v15 = short_[5].update(price);
+        const double w30 = long_[0].update(price);
+        const double w35 = long_[1].update(price);
+        const double w40 = long_[2].update(price);
+        const double w45 = long_[3].update(price);
+        const double w50 = long_[4].update(price);
+        const double w60 = long_[5].update(price);
+        const double short_avg = (v3 + v5 + v8 + v10 + v12 + v15) / 6.0;
+        const double long_avg = (w30 + w35 + w40 + w45 + w50 + w60) / 6.0;
+        ++count_;
+        if (!fillna_ && count_ < 60) {
+            last_ = {nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+            return;
+        }
+        last_ = {v3, v5, v8, v10, v12, v15, w30, w35, w40, w45, w50, w60, short_avg, long_avg, short_avg - long_avg};
+    }
+
+    std::array<EMA, 6> short_;
+    std::array<EMA, 6> long_;
+    bool fillna_;
+    long count_;
+    GuppyMMARibbonResult last_;
+};
+
+class AndrewsPitchfork {
+public:
+    // Streaming Andrews Pitchfork from percent ZigZag-style pivots.
+    // When three alternating pivots are available, emit median/upper/lower at the current bar.
+    explicit AndrewsPitchfork(double percent_change = 0.05, bool fillna = true)
+        : threshold_(percent_change > 1.0 ? percent_change / 100.0 : (percent_change > 0.0 ? percent_change : 0.05)),
+          fillna_(fillna),
+          index_(0),
+          direction_(0.0),
+          extreme_(0.0),
+          extreme_index_(0),
+          start_(0.0),
+          pivot_count_(0),
+          last_{nan(), nan(), nan(), 0.0, 0.0} {}
+
+    AndrewsPitchforkResult update(double high, double low, double close) {
+        const double price = close;
+        double pivot_flag = 0.0;
+        if (index_ == 0) {
+            start_ = price;
+            extreme_ = price;
+            extreme_index_ = 0;
+            last_ = fillna_ ? AndrewsPitchforkResult{price, price, price, 0.0, 0.0}
+                            : AndrewsPitchforkResult{nan(), nan(), nan(), 0.0, 0.0};
+            ++index_;
+            return last_;
+        }
+
+        if (direction_ == 0.0) {
+            if (high >= start_ * (1.0 + threshold_)) {
+                direction_ = 1.0;
+                extreme_ = high;
+                extreme_index_ = index_;
+            } else if (low <= start_ * (1.0 - threshold_)) {
+                direction_ = -1.0;
+                extreme_ = low;
+                extreme_index_ = index_;
+            }
+        } else if (direction_ > 0.0) {
+            if (high >= extreme_) {
+                extreme_ = high;
+                extreme_index_ = index_;
+            } else if (low <= extreme_ * (1.0 - threshold_)) {
+                // Confirm high pivot at extreme_
+                push_pivot(extreme_, extreme_index_, 1.0);
+                pivot_flag = 1.0;
+                direction_ = -1.0;
+                extreme_ = low;
+                extreme_index_ = index_;
+            }
+        } else {
+            if (low <= extreme_) {
+                extreme_ = low;
+                extreme_index_ = index_;
+            } else if (high >= extreme_ * (1.0 + threshold_)) {
+                push_pivot(extreme_, extreme_index_, -1.0);
+                pivot_flag = 1.0;
+                direction_ = 1.0;
+                extreme_ = high;
+                extreme_index_ = index_;
+            }
+        }
+
+        if (pivot_count_ >= 3) {
+            // Use last three pivots P0,P1,P2 (oldest to newest among last 3)
+            const auto &p0 = pivots_[pivot_count_ - 3];
+            const auto &p1 = pivots_[pivot_count_ - 2];
+            const auto &p2 = pivots_[pivot_count_ - 1];
+            const double mid_price = 0.5 * (p1.price + p2.price);
+            const double mid_index = 0.5 * (static_cast<double>(p1.index) + static_cast<double>(p2.index));
+            const double den = mid_index - static_cast<double>(p0.index);
+            const double slope = den == 0.0 ? 0.0 : (mid_price - p0.price) / den;
+            const double t = static_cast<double>(index_);
+            const double median = p0.price + slope * (t - static_cast<double>(p0.index));
+            // Distance of P1 from median line at p1.index
+            const double med_at_p1 = p0.price + slope * (static_cast<double>(p1.index) - static_cast<double>(p0.index));
+            const double offset = p1.price - med_at_p1;
+            last_ = {median, median + offset, median - offset, pivot_flag, direction_};
+        } else {
+            last_ = fillna_ ? AndrewsPitchforkResult{price, price, price, pivot_flag, direction_}
+                            : AndrewsPitchforkResult{nan(), nan(), nan(), pivot_flag, direction_};
+        }
+        ++index_;
+        return last_;
+    }
+
+    void advance(double high, double low, double close) { (void) update(high, low, close); }
+    inline const AndrewsPitchforkResult &last() const { return last_; }
+
+    template <typename A0, typename A1, typename A2>
+    AndrewsPitchforkBatchResult batch_array(const A0 &high, const A1 &low, const A2 &close) {
+        const std::size_t n = high.shape(0);
+        require_same_size(n, low.shape(0));
+        require_same_size(n, close.shape(0));
+        std::vector<double> median(n), upper(n), lower(n), pivot(n), direction(n);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+            median[i] = out.median;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+            pivot[i] = out.pivot;
+            direction[i] = out.direction;
+        }
+        return {
+            make_array(std::move(median)), make_array(std::move(upper)), make_array(std::move(lower)),
+            make_array(std::move(pivot)), make_array(std::move(direction)),
+        };
+    }
+
+private:
+    struct Pivot {
+        double price;
+        long index;
+        double kind;  // +1 high, -1 low
+    };
+
+    void push_pivot(double price, long idx, double kind) {
+        if (pivot_count_ < 8) {
+            pivots_[pivot_count_++] = Pivot{price, idx, kind};
+        } else {
+            for (int i = 0; i < 7; ++i) {
+                pivots_[i] = pivots_[i + 1];
+            }
+            pivots_[7] = Pivot{price, idx, kind};
+        }
+    }
+
+    double threshold_;
+    bool fillna_;
+    long index_;
+    double direction_;
+    double extreme_;
+    long extreme_index_;
+    double start_;
+    int pivot_count_;
+    Pivot pivots_[8];
+    AndrewsPitchforkResult last_;
+};
+
+class ElderThermometer {
+public:
+    // Elder thermometer: current bar range vs previous bar range.
+    // ratio = range / prev_range; hot = 1 if range > prev_range else 0.
+    explicit ElderThermometer(bool fillna = true)
+        : fillna_(fillna),
+          has_prev_(false),
+          prev_range_(0.0),
+          last_{nan(), nan(), nan()} {}
+
+    ElderThermometerResult update(double high, double low) {
+        if (high < low) {
+            std::swap(high, low);
+        }
+        const double range = high - low;
+        if (!has_prev_) {
+            prev_range_ = range;
+            has_prev_ = true;
+            last_ = fillna_ ? ElderThermometerResult{1.0, 0.0, range}
+                            : ElderThermometerResult{nan(), nan(), nan()};
+            return last_;
+        }
+        const double ratio = safe_divide(range, prev_range_);
+        const double hot = range > prev_range_ ? 1.0 : 0.0;
+        last_ = {ratio, hot, range};
+        prev_range_ = range;
+        return last_;
+    }
+
+    void advance(double high, double low) { (void) update(high, low); }
+    inline const ElderThermometerResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    ElderThermometerBatchResult batch_array(const A0 &high, const A1 &low) {
+        const std::size_t n = high.shape(0);
+        require_same_size(n, low.shape(0));
+        std::vector<double> ratio(n), hot(n), range(n);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(h[i]), static_cast<double>(l[i]));
+            ratio[i] = out.ratio;
+            hot[i] = out.hot;
+            range[i] = out.range;
+        }
+        return {make_array(std::move(ratio)), make_array(std::move(hot)), make_array(std::move(range))};
+    }
+
+private:
+    bool fillna_;
+    bool has_prev_;
+    double prev_range_;
+    ElderThermometerResult last_;
+};
+
+// Mel Widner Rainbow: recursive SMA layers. period default 2, layers default 10.
+class RainbowMovingAverage {
+public:
+    RainbowMovingAverage(int period = 2, int layers = 10, bool fillna = true)
+        : period_(std::max(period, 1)),
+          layers_(std::max(layers, 1)),
+          fillna_(fillna),
+          count_(0),
+          last_{nan(), nan(), nan(), nan(), nan()} {
+        layers_sma_.reserve(static_cast<std::size_t>(layers_));
+        for (int i = 0; i < layers_; ++i) {
+            layers_sma_.emplace_back(period_, true);
+        }
+    }
+
+    RainbowMovingAverageResult update(double price) {
+        double v = price;
+        double hi = -std::numeric_limits<double>::infinity();
+        double lo = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < layers_; ++i) {
+            v = layers_sma_[static_cast<std::size_t>(i)].update(v);
+            if (std::isfinite(v)) {
+                hi = std::max(hi, v);
+                lo = std::min(lo, v);
+            }
+        }
+        ++count_;
+        // Warmup: first layer needs period samples; each successive layer adds lag.
+        const int warm = period_ * layers_;
+        if (!fillna_ && count_ < warm) {
+            last_ = {nan(), nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        if (!std::isfinite(hi) || !std::isfinite(lo)) {
+            last_ = {nan(), nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        last_ = {v, hi, lo, 0.5 * (hi + lo), hi - lo};
+        return last_;
+    }
+
+    void advance(double price) { (void) update(price); }
+    inline const RainbowMovingAverageResult &last() const { return last_; }
+
+    template <typename Array>
+    RainbowMovingAverageBatchResult batch_array(const Array &input) {
+        const std::size_t n = input.shape(0);
+        std::vector<double> outer(n), highest(n), lowest(n), mid(n), width(n);
+        const auto *p = input.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(p[i]));
+            outer[i] = out.outer;
+            highest[i] = out.highest;
+            lowest[i] = out.lowest;
+            mid[i] = out.mid;
+            width[i] = out.width;
+        }
+        return {
+            make_array(std::move(outer)),
+            make_array(std::move(highest)),
+            make_array(std::move(lowest)),
+            make_array(std::move(mid)),
+            make_array(std::move(width)),
+        };
+    }
+
+private:
+    int period_;
+    int layers_;
+    bool fillna_;
+    int count_;
+    std::vector<SMA> layers_sma_;
+    RainbowMovingAverageResult last_;
+};
+
+class RainbowOscillator {
+public:
+    RainbowOscillator(int period = 2, int layers = 10, bool fillna = true)
+        : rainbow_(period, layers, fillna),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    RainbowOscillatorResult update(double price) {
+        const auto rb = rainbow_.update(price);
+        if (!std::isfinite(rb.width)) {
+            last_ = {nan(), nan(), nan()};
+            return last_;
+        }
+        const double value = safe_divide(100.0 * rb.width, price);
+        const double position = safe_divide(100.0 * (price - rb.mid), rb.width);
+        last_ = {value, position, rb.width};
+        return last_;
+    }
+
+    void advance(double price) { (void) update(price); }
+    inline const RainbowOscillatorResult &last() const { return last_; }
+
+    template <typename Array>
+    RainbowOscillatorBatchResult batch_array(const Array &input) {
+        const std::size_t n = input.shape(0);
+        std::vector<double> value(n), position(n), width(n);
+        const auto *p = input.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(p[i]));
+            value[i] = out.value;
+            position[i] = out.position;
+            width[i] = out.width;
+        }
+        return {
+            make_array(std::move(value)),
+            make_array(std::move(position)),
+            make_array(std::move(width)),
+        };
+    }
+
+private:
+    RainbowMovingAverage rainbow_;
+    bool fillna_;
+    RainbowOscillatorResult last_;
+};
+
+// Chande Forecast Oscillator: 100 * (close - TSF) / close
+class ChandeForecastOscillator {
+public:
+    ChandeForecastOscillator(int window = 14, bool fillna = true)
+        : core_(std::max(window, 2), fillna),
+          fillna_(fillna),
+          last_(nan()) {}
+
+    double update(double close) {
+        const auto lr = core_.update(close);
+        last_ = safe_divide(100.0 * (close - lr.tsf), close);
+        return last_;
+    }
+
+    void advance(double close) { (void) update(close); }
+    inline double last() const { return last_; }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        return batch_update1(*this, input);
+    }
+
+private:
+    LinearRegressionCore core_;
+    bool fillna_;
+    double last_;
+};
+
+// Range Action Verification Index: |SMA_short - SMA_long| / SMA_long * 100
+class RangeActionVerificationIndex {
+public:
+    RangeActionVerificationIndex(int short_window = 7, int long_window = 65, bool fillna = true)
+        : short_(std::max(short_window, 1), true),
+          long_(std::max(long_window, 1), true),
+          fillna_(fillna),
+          warm_(std::max(long_window, 1)),
+          count_(0),
+          last_(nan()) {}
+
+    double update(double close) {
+        const double s = short_.update(close);
+        const double l = long_.update(close);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            last_ = nan();
+            return last_;
+        }
+        last_ = safe_divide(100.0 * std::abs(s - l), l);
+        return last_;
+    }
+
+    void advance(double close) { (void) update(close); }
+    inline double last() const { return last_; }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        return batch_update1(*this, input);
+    }
+
+private:
+    SMA short_;
+    SMA long_;
+    bool fillna_;
+    int warm_;
+    int count_;
+    double last_;
+};
+
+// Elder Bulls Power: High - EMA(close)
+class BullsPower {
+public:
+    BullsPower(int window = 13, bool fillna = true)
+        : ema_(std::max(window, 1), fillna),
+          fillna_(fillna),
+          last_(nan()) {}
+
+    double update(double high, double close) {
+        const double e = ema_.update(close);
+        last_ = high - e;
+        return last_;
+    }
+
+    void advance(double high, double close) { (void) update(high, close); }
+    inline double last() const { return last_; }
+
+    template <typename A0, typename A1>
+    nb::object batch_array(const A0 &high, const A1 &close) {
+        return batch_update2(*this, high, close);
+    }
+
+private:
+    EMA ema_;
+    bool fillna_;
+    double last_;
+};
+
+// Elder Bears Power: Low - EMA(close)
+class BearsPower {
+public:
+    BearsPower(int window = 13, bool fillna = true)
+        : ema_(std::max(window, 1), fillna),
+          fillna_(fillna),
+          last_(nan()) {}
+
+    double update(double low, double close) {
+        const double e = ema_.update(close);
+        last_ = low - e;
+        return last_;
+    }
+
+    void advance(double low, double close) { (void) update(low, close); }
+    inline double last() const { return last_; }
+
+    template <typename A0, typename A1>
+    nb::object batch_array(const A0 &low, const A1 &close) {
+        return batch_update2(*this, low, close);
+    }
+
+private:
+    EMA ema_;
+    bool fillna_;
+    double last_;
+};
+
+// Projection Oscillator: stochastic of close vs linreg high/low projection bands.
+class ProjectionOscillator {
+public:
+    ProjectionOscillator(int window = 14, int signal_window = 3, bool fillna = true)
+        : high_lr_(std::max(window, 2), true),
+          low_lr_(std::max(window, 2), true),
+          signal_(std::max(signal_window, 1), true),
+          fillna_(fillna),
+          warm_(std::max(window, 2)),
+          count_(0),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    ProjectionOscillatorResult update(double high, double low, double close) {
+        const auto hu = high_lr_.update(high);
+        const auto lu = low_lr_.update(low);
+        const double upper = hu.value;
+        const double lower = lu.value;
+        const double osc = safe_divide(100.0 * (close - lower), upper - lower);
+        const double sig = signal_.update(osc);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            last_ = {nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        last_ = {osc, sig, upper, lower};
+        return last_;
+    }
+
+    void advance(double high, double low, double close) { (void) update(high, low, close); }
+    inline const ProjectionOscillatorResult &last() const { return last_; }
+
+    template <typename A0, typename A1, typename A2>
+    ProjectionOscillatorBatchResult batch_array(const A0 &high, const A1 &low, const A2 &close) {
+        const std::size_t n = high.shape(0);
+        require_same_size(n, low.shape(0));
+        require_same_size(n, close.shape(0));
+        std::vector<double> value(n), signal(n), upper(n), lower(n);
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+            value[i] = out.value;
+            signal[i] = out.signal;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+        }
+        return {
+            make_array(std::move(value)),
+            make_array(std::move(signal)),
+            make_array(std::move(upper)),
+            make_array(std::move(lower)),
+        };
+    }
+
+private:
+    LinearRegressionCore high_lr_;
+    LinearRegressionCore low_lr_;
+    SMA signal_;
+    bool fillna_;
+    int warm_;
+    int count_;
+    ProjectionOscillatorResult last_;
+};
+
+// Message-tape OFI from discrete LOB/trade events.
+// event_type: 1=add, 2=cancel, 3=trade; side: +1=bid/buy, -1=ask/sell; size >= 0.
+class MessageEventOrderFlowImbalance {
+public:
+    MessageEventOrderFlowImbalance(int window = 50, bool fillna = true)
+        : events_(std::max(window, 1)),
+          fillna_(fillna),
+          last_{nan(), nan(), nan()} {}
+
+    MessageEventOrderFlowImbalanceResult update(double event_type, double side, double qty) {
+        const double s = qty < 0.0 ? -qty : qty;
+        const double sd = side >= 0.0 ? 1.0 : -1.0;
+        const int et = static_cast<int>(std::llround(event_type));
+        double contrib = 0.0;
+        if (et == 1) {
+            // Add on bid increases ofi; add on ask decreases.
+            contrib = sd * s;
+        } else if (et == 2) {
+            // Cancel reverses add.
+            contrib = -sd * s;
+        } else if (et == 3) {
+            // Trade: buy aggressor (+side) increases ofi.
+            contrib = sd * s;
+        } else {
+            // Unknown type: treat as signed size using side only.
+            contrib = sd * s;
+        }
+        events_.push(contrib);
+        const double ofi = (!fillna_ && !events_.full()) ? nan() : events_.sum();
+        last_ = {ofi, contrib, sd * s};
+        return last_;
+    }
+
+    void advance(double event_type, double side, double qty) { (void) update(event_type, side, qty); }
+    inline const MessageEventOrderFlowImbalanceResult &last() const { return last_; }
+
+    template <typename A0, typename A1, typename A2>
+    MessageEventOrderFlowImbalanceBatchResult batch_array(const A0 &event_type, const A1 &side, const A2 &qty) {
+        const std::size_t n = event_type.shape(0);
+        require_same_size(n, side.shape(0));
+        require_same_size(n, qty.shape(0));
+        std::vector<double> ofi(n), event(n), signed_size(n);
+        const auto *e = event_type.data();
+        const auto *s = side.data();
+        const auto *z = qty.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(e[i]), static_cast<double>(s[i]), static_cast<double>(z[i]));
+            ofi[i] = out.ofi;
+            event[i] = out.event;
+            signed_size[i] = out.signed_size;
+        }
+        return {
+            make_array(std::move(ofi)),
+            make_array(std::move(event)),
+            make_array(std::move(signed_size)),
+        };
+    }
+
+private:
+    RollingSumWindow events_;
+    bool fillna_;
+    MessageEventOrderFlowImbalanceResult last_;
+};
+
+// Exponential Hawkes process intensity: λ = μ + A, A ← A e^{-β Δt} + α jump
+class HawkesIntensity {
+public:
+    HawkesIntensity(double mu = 1.0, double alpha = 0.5, double beta = 1.0, bool fillna = true)
+        : mu_(std::max(mu, 0.0)),
+          alpha_(std::max(alpha, 0.0)),
+          beta_(std::max(beta, 1.0e-12)),
+          fillna_(fillna),
+          has_time_(false),
+          last_time_(0.0),
+          excitation_(0.0),
+          last_{nan(), nan(), mu_} {}
+
+    HawkesIntensityResult update(double time, double jump = 1.0) {
+        const double j = jump < 0.0 ? 0.0 : jump;
+        if (!has_time_) {
+            has_time_ = true;
+            last_time_ = time;
+            excitation_ = alpha_ * j;
+            last_ = {mu_ + excitation_, excitation_, mu_};
+            return last_;
+        }
+        const double dt = time - last_time_;
+        last_time_ = time;
+        if (dt < 0.0) {
+            // Non-monotonic time: decay with |dt| and still apply jump.
+            excitation_ = excitation_ * std::exp(-beta_ * (-dt)) + alpha_ * j;
+        } else {
+            excitation_ = excitation_ * std::exp(-beta_ * dt) + alpha_ * j;
+        }
+        last_ = {mu_ + excitation_, excitation_, mu_};
+        return last_;
+    }
+
+    void advance(double time, double jump = 1.0) { (void) update(time, jump); }
+    inline const HawkesIntensityResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    HawkesIntensityBatchResult batch_array(const A0 &time, const A1 &jump) {
+        const std::size_t n = time.shape(0);
+        require_same_size(n, jump.shape(0));
+        std::vector<double> intensity(n), excitation(n), baseline(n);
+        const auto *t = time.data();
+        const auto *j = jump.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(t[i]), static_cast<double>(j[i]));
+            intensity[i] = out.intensity;
+            excitation[i] = out.excitation;
+            baseline[i] = out.baseline;
+        }
+        return {
+            make_array(std::move(intensity)),
+            make_array(std::move(excitation)),
+            make_array(std::move(baseline)),
+        };
+    }
+
+    template <typename Array>
+    HawkesIntensityBatchResult batch_array(const Array &time) {
+        const std::size_t n = time.shape(0);
+        std::vector<double> intensity(n), excitation(n), baseline(n);
+        const auto *t = time.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(t[i]), 1.0);
+            intensity[i] = out.intensity;
+            excitation[i] = out.excitation;
+            baseline[i] = out.baseline;
+        }
+        return {
+            make_array(std::move(intensity)),
+            make_array(std::move(excitation)),
+            make_array(std::move(baseline)),
+        };
+    }
+
+private:
+    double mu_;
+    double alpha_;
+    double beta_;
+    bool fillna_;
+    bool has_time_;
+    double last_time_;
+    double excitation_;
+    HawkesIntensityResult last_;
+};
+
+// Basket peer OFI with explicit peer weights (weighted mean then rolling beta).
+class WeightedMultiPeerOrderFlowImbalance {
+public:
+    explicit WeightedMultiPeerOrderFlowImbalance(int window = 50, bool fillna = true)
+        : stats_(std::max(window, 2)),
+          fillna_(fillna),
+          last_{nan(), nan(), nan(), nan()} {}
+
+    WeightedMultiPeerOrderFlowImbalanceResult update(
+        double own_return, const InputArray &peer_ofis, const InputArray &weights) {
+        return update_raw(own_return, peer_ofis.data(), weights.data(), peer_ofis.shape(0), weights.shape(0));
+    }
+    WeightedMultiPeerOrderFlowImbalanceResult update(
+        double own_return, const FloatInputArray &peer_ofis, const FloatInputArray &weights) {
+        // Materialize double row to reuse logic
+        const std::size_t n = peer_ofis.shape(0);
+        const std::size_t nw = weights.shape(0);
+        if (n == 0 || n != nw) {
+            last_ = {nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        std::vector<double> p(n), w(n);
+        const float *pf = peer_ofis.data();
+        const float *wf = weights.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            p[i] = static_cast<double>(pf[i]);
+            w[i] = static_cast<double>(wf[i]);
+        }
+        return update_raw(own_return, p.data(), w.data(), n, n);
+    }
+
+    void advance(double own_return, const InputArray &peer_ofis, const InputArray &weights) {
+        (void) update(own_return, peer_ofis, weights);
+    }
+    void advance(double own_return, const FloatInputArray &peer_ofis, const FloatInputArray &weights) {
+        (void) update(own_return, peer_ofis, weights);
+    }
+    inline const WeightedMultiPeerOrderFlowImbalanceResult &last() const { return last_; }
+
+    WeightedMultiPeerOrderFlowImbalanceBatchResult batch(
+        const InputArray &own_return, const InputArray2D &peer_ofis, const InputArray2D &weights) {
+        return batch_matrix(own_return, peer_ofis, weights);
+    }
+    WeightedMultiPeerOrderFlowImbalanceBatchResult batch(
+        const FloatInputArray &own_return, const FloatInputArray2D &peer_ofis, const FloatInputArray2D &weights) {
+        return batch_matrix(own_return, peer_ofis, weights);
+    }
+
+private:
+    WeightedMultiPeerOrderFlowImbalanceResult update_raw(
+        double own_return, const double *peers, const double *weights, std::size_t n, std::size_t nw) {
+        if (n == 0 || n != nw) {
+            last_ = {nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        double wsum = 0.0;
+        double psum = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double w = weights[i];
+            if (!std::isfinite(w) || w <= 0.0) {
+                continue;
+            }
+            wsum += w;
+            psum += w * peers[i];
+        }
+        if (wsum <= 0.0) {
+            // Fall back to equal weight
+            double sum = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                sum += peers[i];
+            }
+            wsum = static_cast<double>(n);
+            psum = sum;
+        }
+        const double peer_mean = psum / wsum;
+        stats_.push(own_return, peer_mean);
+        if (!fillna_ && !stats_.full()) {
+            last_ = {nan(), nan(), nan(), peer_mean};
+            return last_;
+        }
+        const double beta = stats_.beta();
+        const double impact = beta * peer_mean;
+        last_ = {beta, impact, own_return - impact, peer_mean};
+        return last_;
+    }
+
+    template <typename A0, typename A1, typename A2>
+    WeightedMultiPeerOrderFlowImbalanceBatchResult batch_matrix(
+        const A0 &own_return, const A1 &peer_ofis, const A2 &weights) {
+        const std::size_t t = own_return.shape(0);
+        require_same_size(t, peer_ofis.shape(0));
+        require_same_size(t, weights.shape(0));
+        const std::size_t peers = peer_ofis.shape(1);
+        if (peers == 0 || peers != static_cast<std::size_t>(weights.shape(1))) {
+            throw nb::value_error("peer_ofis and weights must share peer dimension");
+        }
+        std::vector<double> beta(t), impact(t), residual(t), peer_mean(t);
+        const auto *r = own_return.data();
+        const auto *p = peer_ofis.data();
+        const auto *w = weights.data();
+        std::vector<double> prow(peers), wrow(peers);
+        for (std::size_t i = 0; i < t; ++i) {
+            for (std::size_t j = 0; j < peers; ++j) {
+                prow[j] = static_cast<double>(p[i * peers + j]);
+                wrow[j] = static_cast<double>(w[i * peers + j]);
+            }
+            const auto out = update_raw(static_cast<double>(r[i]), prow.data(), wrow.data(), peers, peers);
+            beta[i] = out.beta;
+            impact[i] = out.impact;
+            residual[i] = out.residual;
+            peer_mean[i] = out.peer_mean;
+        }
+        return {
+            make_array(std::move(beta)),
+            make_array(std::move(impact)),
+            make_array(std::move(residual)),
+            make_array(std::move(peer_mean)),
+        };
+    }
+
+    RollingPairStats stats_;
+    bool fillna_;
+    WeightedMultiPeerOrderFlowImbalanceResult last_;
+};
+
+// Streaming split-conformal style bands around SMA center using rolling abs residual quantile.
+class ConformalBands {
+public:
+    ConformalBands(int window = 20, double alpha = 0.1, bool fillna = true)
+        : center_(std::max(window, 1), true),
+          residuals_(std::max(window, 2), 1.0 - std::clamp(alpha, 0.0, 0.999)),
+          fillna_(fillna),
+          warm_(std::max(window, 2)),
+          count_(0),
+          last_pred_(nan()),
+          has_pred_(false),
+          last_{nan(), nan(), nan(), nan()} {
+        if (alpha < 0.0 || alpha >= 1.0) {
+            throw nb::value_error("alpha must be in [0, 1)");
+        }
+    }
+
+    ConformalBandsResult update(double value) {
+        // Previous prediction residual (if any)
+        if (has_pred_ && std::isfinite(last_pred_)) {
+            residuals_.push(std::abs(value - last_pred_));
+        }
+        const double mid = center_.update(value);
+        last_pred_ = mid;
+        has_pred_ = true;
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            last_ = {nan(), nan(), nan(), nan()};
+            return last_;
+        }
+        const double radius = residuals_.size() > 0 ? residuals_.value() : 0.0;
+        if (!std::isfinite(radius)) {
+            last_ = {mid, mid, mid, 0.0};
+            return last_;
+        }
+        last_ = {mid, mid + radius, mid - radius, radius};
+        return last_;
+    }
+
+    void advance(double value) { (void) update(value); }
+    inline const ConformalBandsResult &last() const { return last_; }
+
+    template <typename Array>
+    ConformalBandsBatchResult batch_array(const Array &input) {
+        const std::size_t n = input.shape(0);
+        std::vector<double> middle(n), upper(n), lower(n), radius(n);
+        const auto *p = input.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(p[i]));
+            middle[i] = out.middle;
+            upper[i] = out.upper;
+            lower[i] = out.lower;
+            radius[i] = out.radius;
+        }
+        return {
+            make_array(std::move(middle)),
+            make_array(std::move(upper)),
+            make_array(std::move(lower)),
+            make_array(std::move(radius)),
+        };
+    }
+
+private:
+    SMA center_;
+    RollingQuantile residuals_;
+    bool fillna_;
+    int warm_;
+    int count_;
+    double last_pred_;
+    bool has_pred_;
+    ConformalBandsResult last_;
+};
+
+
+// ---------------------------------------------------------------------------
+// Candlestick (CDL) pattern recognition — streaming, Cont-style OHLC geometry.
+// Output convention (TA-Lib-like): +100 bullish match, -100 bearish match, 0 none.
+// ---------------------------------------------------------------------------
+
+struct CdlBar {
+    double o = 0.0;
+    double h = 0.0;
+    double l = 0.0;
+    double c = 0.0;
+
+    inline double body() const { return std::abs(c - o); }
+    inline double range() const { return std::max(h - l, 0.0); }
+    inline double upper() const { return std::max(h - std::max(o, c), 0.0); }
+    inline double lower() const { return std::max(std::min(o, c) - l, 0.0); }
+    inline bool bull() const { return c >= o; }
+    inline bool bear() const { return c < o; }
+    inline double mid_body() const { return 0.5 * (o + c); }
+    inline double top_body() const { return std::max(o, c); }
+    inline double bot_body() const { return std::min(o, c); }
+};
+
+class CdlHistory {
+public:
+    explicit CdlHistory(int capacity = 5)
+        : capacity_(static_cast<std::size_t>(std::max(capacity, 1))),
+          next_(0),
+          count_(0) {
+        bars_.resize(capacity_);
+    }
+
+    inline void push(double o, double h, double l, double c) {
+        if (h < l) {
+            std::swap(h, l);
+        }
+        bars_[next_] = CdlBar{o, h, l, c};
+        ring_advance(next_, capacity_);
+        if (count_ < capacity_) {
+            ++count_;
+        }
+    }
+
+    inline std::size_t size() const { return count_; }
+    inline bool ready(std::size_t need) const { return count_ >= need; }
+
+    // 0 = newest, 1 = previous, ...
+    inline const CdlBar &at(std::size_t age) const {
+        // next_ points to slot to write; newest is previous slot
+        const std::size_t newest = (next_ + capacity_ - 1) % capacity_;
+        const std::size_t idx = (newest + capacity_ - age) % capacity_;
+        return bars_[idx];
+    }
+
+    inline double avg_body(std::size_t n) const {
+        const std::size_t use = std::min(n, count_);
+        if (use == 0) {
+            return 0.0;
+        }
+        double s = 0.0;
+        for (std::size_t i = 0; i < use; ++i) {
+            s += at(i).body();
+        }
+        return s / static_cast<double>(use);
+    }
+
+    inline double avg_range(std::size_t n) const {
+        const std::size_t use = std::min(n, count_);
+        if (use == 0) {
+            return 0.0;
+        }
+        double s = 0.0;
+        for (std::size_t i = 0; i < use; ++i) {
+            s += at(i).range();
+        }
+        return s / static_cast<double>(use);
+    }
+
+    // Simple trend: sign of newest close vs SMA of last n closes (excluding newest if want prior trend)
+    inline double prior_trend(std::size_t n) const {
+        // Compare previous close to average of older closes
+        if (count_ < n + 1) {
+            return 0.0;
+        }
+        double s = 0.0;
+        for (std::size_t i = 1; i <= n; ++i) {
+            s += at(i).c;
+        }
+        const double avg = s / static_cast<double>(n);
+        const double ref = at(1).c;
+        if (ref > avg * 1.0001) {
+            return 1.0;
+        }
+        if (ref < avg * 0.9999) {
+            return -1.0;
+        }
+        return 0.0;
+    }
+
+private:
+    std::vector<CdlBar> bars_;
+    std::size_t capacity_;
+    std::size_t next_;
+    std::size_t count_;
+};
+
+// Shared geometric predicates
+namespace cdl {
+
+inline bool near_doji(const CdlBar &b, double body_factor = 0.1) {
+    const double r = b.range();
+    if (r <= 0.0) {
+        return true;
+    }
+    return b.body() <= body_factor * r;
+}
+
+inline bool long_body(const CdlBar &b, double avg_body, double factor = 1.0) {
+    return b.body() >= factor * std::max(avg_body, 1e-12);
+}
+
+inline bool short_body(const CdlBar &b, double avg_body, double factor = 0.5) {
+    return b.body() <= factor * std::max(avg_body, 1e-12);
+}
+
+inline bool small_upper(const CdlBar &b, double factor = 0.1) {
+    const double r = b.range();
+    return r <= 0.0 || b.upper() <= factor * r;
+}
+
+inline bool small_lower(const CdlBar &b, double factor = 0.1) {
+    const double r = b.range();
+    return r <= 0.0 || b.lower() <= factor * r;
+}
+
+inline bool long_lower(const CdlBar &b, double mult = 2.0) {
+    return b.lower() >= mult * std::max(b.body(), 1e-12);
+}
+
+inline bool long_upper(const CdlBar &b, double mult = 2.0) {
+    return b.upper() >= mult * std::max(b.body(), 1e-12);
+}
+
+inline bool real_engulf(const CdlBar &cur, const CdlBar &prev) {
+    return cur.top_body() >= prev.top_body() && cur.bot_body() <= prev.bot_body()
+        && cur.body() > prev.body();
+}
+
+inline bool real_inside(const CdlBar &cur, const CdlBar &prev) {
+    return cur.top_body() <= prev.top_body() && cur.bot_body() >= prev.bot_body();
+}
+
+}  // namespace cdl
+
+// Base for scalar CDL indicators
+class CdlPatternBase {
+public:
+    explicit CdlPatternBase(int history = 5, bool fillna = true)
+        : hist_(std::max(history, 1)),
+          fillna_(fillna),
+          last_(fillna ? 0.0 : nan()) {}
+
+    inline double last() const { return last_; }
+
+protected:
+    CdlHistory hist_;
+    bool fillna_;
+    double last_;
+
+    inline double finish(double value, std::size_t need) {
+        if (!fillna_ && !hist_.ready(need)) {
+            last_ = nan();
+            return last_;
+        }
+        last_ = value;
+        return last_;
+    }
+};
+
+#define RTTA_CDL_SCALAR_CLASS(NAME, NEED, DETECT_BODY) \
+class NAME : public CdlPatternBase { \
+public: \
+    explicit NAME(bool fillna = true) : CdlPatternBase(std::max(NEED, 1), fillna) {} \
+    double update(double open, double high, double low, double close) { \
+        hist_.push(open, high, low, close); \
+        double value = 0.0; \
+        if (hist_.ready(NEED)) { \
+            DETECT_BODY \
+        } \
+        return finish(value, NEED); \
+    } \
+    void advance(double open, double high, double low, double close) { (void) update(open, high, low, close); } \
+    template <typename A0, typename A1, typename A2, typename A3> \
+    nb::object batch_array(const A0 &open, const A1 &high, const A2 &low, const A3 &close) { \
+        return batch_update4(*this, open, high, low, close); \
+    } \
+};
+
+// --- Single-bar patterns ---
+
+RTTA_CDL_SCALAR_CLASS(CDLDoji, 1, {
+    const auto &b = hist_.at(0);
+    value = cdl::near_doji(b) ? 100.0 : 0.0;
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLDragonflyDoji, 1, {
+    const auto &b = hist_.at(0);
+    if (cdl::near_doji(b) && cdl::long_lower(b, 2.0) && cdl::small_upper(b, 0.1)) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLGravestoneDoji, 1, {
+    const auto &b = hist_.at(0);
+    if (cdl::near_doji(b) && cdl::long_upper(b, 2.0) && cdl::small_lower(b, 0.1)) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLLongLeggedDoji, 1, {
+    const auto &b = hist_.at(0);
+    const double r = b.range();
+    if (cdl::near_doji(b) && r > 0.0 && b.upper() >= 0.3 * r && b.lower() >= 0.3 * r) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLHammer, 3, {
+    const auto &b = hist_.at(0);
+    const double trend = hist_.prior_trend(2);
+    if (cdl::long_lower(b, 2.0) && cdl::small_upper(b, 0.15)
+        && b.body() > 0.0 && b.body() <= 0.4 * std::max(b.range(), 1e-12)
+        && trend <= 0.0) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLHangingMan, 3, {
+    const auto &b = hist_.at(0);
+    const double trend = hist_.prior_trend(2);
+    if (cdl::long_lower(b, 2.0) && cdl::small_upper(b, 0.15)
+        && b.body() > 0.0 && b.body() <= 0.4 * std::max(b.range(), 1e-12)
+        && trend >= 0.0) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLInvertedHammer, 3, {
+    const auto &b = hist_.at(0);
+    const double trend = hist_.prior_trend(2);
+    if (cdl::long_upper(b, 2.0) && cdl::small_lower(b, 0.15)
+        && b.body() > 0.0 && b.body() <= 0.4 * std::max(b.range(), 1e-12)
+        && trend <= 0.0) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLShootingStar, 3, {
+    const auto &b = hist_.at(0);
+    const double trend = hist_.prior_trend(2);
+    if (cdl::long_upper(b, 2.0) && cdl::small_lower(b, 0.15)
+        && b.body() > 0.0 && b.body() <= 0.4 * std::max(b.range(), 1e-12)
+        && trend >= 0.0) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLMarubozu, 1, {
+    const auto &b = hist_.at(0);
+    const double r = b.range();
+    if (r > 0.0 && b.body() >= 0.9 * r) {
+        value = b.bull() ? 100.0 : -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLClosingMarubozu, 1, {
+    const auto &b = hist_.at(0);
+    const double r = b.range();
+    if (r <= 0.0) {
+        value = 0.0;
+    } else if (b.bull() && b.upper() <= 0.05 * r && b.body() >= 0.6 * r) {
+        value = 100.0;
+    } else if (b.bear() && b.lower() <= 0.05 * r && b.body() >= 0.6 * r) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLSpinningTop, 1, {
+    const auto &b = hist_.at(0);
+    const double r = b.range();
+    if (r > 0.0 && b.body() <= 0.3 * r && b.upper() >= 0.2 * r && b.lower() >= 0.2 * r) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLHighWave, 1, {
+    const auto &b = hist_.at(0);
+    const double r = b.range();
+    if (r > 0.0 && b.body() <= 0.2 * r && (b.upper() >= 0.4 * r || b.lower() >= 0.4 * r)) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLLongLine, 2, {
+    const auto &b = hist_.at(0);
+    const double ab = hist_.avg_body(std::min<std::size_t>(hist_.size(), 5));
+    if (cdl::long_body(b, ab, 1.2) && b.body() >= 0.6 * std::max(b.range(), 1e-12)) {
+        value = b.bull() ? 100.0 : -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLShortLine, 2, {
+    const auto &b = hist_.at(0);
+    const double ab = hist_.avg_body(std::min<std::size_t>(hist_.size(), 5));
+    if (cdl::short_body(b, ab, 0.5) && b.range() > 0.0) {
+        value = b.bull() ? 100.0 : -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLBeltHold, 2, {
+    const auto &b = hist_.at(0);
+    const double ab = hist_.avg_body(std::min<std::size_t>(hist_.size(), 5));
+    // Bullish belt hold: opens near low, long white body
+    if (b.bull() && cdl::long_body(b, ab, 1.0) && b.lower() <= 0.1 * std::max(b.range(), 1e-12)) {
+        value = 100.0;
+    } else if (b.bear() && cdl::long_body(b, ab, 1.0) && b.upper() <= 0.1 * std::max(b.range(), 1e-12)) {
+        value = -100.0;
+    }
+})
+
+// --- Two-bar patterns ---
+
+RTTA_CDL_SCALAR_CLASS(CDLEngulfing, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    if (cur.bull() && prev.bear() && cdl::real_engulf(cur, prev)) {
+        value = 100.0;
+    } else if (cur.bear() && prev.bull() && cdl::real_engulf(cur, prev)) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLHarami, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    if (prev.bear() && cur.bull() && cdl::real_inside(cur, prev) && prev.body() > cur.body()) {
+        value = 100.0;
+    } else if (prev.bull() && cur.bear() && cdl::real_inside(cur, prev) && prev.body() > cur.body()) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLHaramiCross, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    if (cdl::near_doji(cur) && cdl::real_inside(cur, prev) && prev.body() > hist_.avg_body(5) * 0.5) {
+        value = prev.bear() ? 100.0 : (prev.bull() ? -100.0 : 100.0);
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLPiercing, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    if (prev.bear() && cur.bull()
+        && cur.o < prev.c
+        && cur.c > prev.mid_body() && cur.c < prev.o) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLDarkCloudCover, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    if (prev.bull() && cur.bear()
+        && cur.o > prev.c
+        && cur.c < prev.mid_body() && cur.c > prev.o) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLDojiStar, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    if (cdl::near_doji(cur) && cdl::long_body(prev, hist_.avg_body(5), 0.8)) {
+        // gap away from prior body
+        if (prev.bull() && cur.bot_body() > prev.top_body()) {
+            value = -100.0;  // star after rally -> bearish risk
+        } else if (prev.bear() && cur.top_body() < prev.bot_body()) {
+            value = 100.0;
+        } else if (prev.bull()) {
+            value = -100.0;
+        } else if (prev.bear()) {
+            value = 100.0;
+        }
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLMatchingLow, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    if (prev.bear() && cur.bear()
+        && std::abs(cur.c - prev.c) <= 0.1 * std::max(hist_.avg_range(5), 1e-12)) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLCounterAttack, 2, {
+    const auto &cur = hist_.at(0);
+    const auto &prev = hist_.at(1);
+    const double ab = hist_.avg_body(5);
+    if (prev.bear() && cur.bull() && cdl::long_body(prev, ab, 0.8) && cdl::long_body(cur, ab, 0.8)
+        && std::abs(cur.c - prev.c) <= 0.1 * std::max(hist_.avg_range(5), 1e-12)) {
+        value = 100.0;
+    } else if (prev.bull() && cur.bear() && cdl::long_body(prev, ab, 0.8) && cdl::long_body(cur, ab, 0.8)
+               && std::abs(cur.c - prev.c) <= 0.1 * std::max(hist_.avg_range(5), 1e-12)) {
+        value = -100.0;
+    }
+})
+
+// --- Three-bar patterns ---
+
+RTTA_CDL_SCALAR_CLASS(CDLMorningStar, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    const double ab = hist_.avg_body(5);
+    if (a.bear() && cdl::long_body(a, ab, 0.8)
+        && cdl::short_body(b, ab, 0.6)
+        && c.bull() && cdl::long_body(c, ab, 0.7)
+        && c.c > a.mid_body()) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLEveningStar, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    const double ab = hist_.avg_body(5);
+    if (a.bull() && cdl::long_body(a, ab, 0.8)
+        && cdl::short_body(b, ab, 0.6)
+        && c.bear() && cdl::long_body(c, ab, 0.7)
+        && c.c < a.mid_body()) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLMorningDojiStar, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    const double ab = hist_.avg_body(5);
+    if (a.bear() && cdl::long_body(a, ab, 0.8)
+        && cdl::near_doji(b)
+        && c.bull() && cdl::long_body(c, ab, 0.7)
+        && c.c > a.mid_body()) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLEveningDojiStar, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    const double ab = hist_.avg_body(5);
+    if (a.bull() && cdl::long_body(a, ab, 0.8)
+        && cdl::near_doji(b)
+        && c.bear() && cdl::long_body(c, ab, 0.7)
+        && c.c < a.mid_body()) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDL3WhiteSoldiers, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    if (a.bull() && b.bull() && c.bull()
+        && b.c > a.c && c.c > b.c
+        && b.o > a.o && b.o < a.c
+        && c.o > b.o && c.o < b.c
+        && cdl::small_upper(a, 0.25) && cdl::small_upper(b, 0.25) && cdl::small_upper(c, 0.25)) {
+        value = 100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDL3BlackCrows, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    if (a.bear() && b.bear() && c.bear()
+        && b.c < a.c && c.c < b.c
+        && b.o < a.o && b.o > a.c
+        && c.o < b.o && c.o > b.c
+        && cdl::small_lower(a, 0.25) && cdl::small_lower(b, 0.25) && cdl::small_lower(c, 0.25)) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDL3Inside, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    // harami then confirmation
+    if (a.bear() && b.bull() && cdl::real_inside(b, a) && c.bull() && c.c > a.o) {
+        value = 100.0;
+    } else if (a.bull() && b.bear() && cdl::real_inside(b, a) && c.bear() && c.c < a.o) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDL3Outside, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    // engulfing then confirmation
+    if (a.bear() && b.bull() && cdl::real_engulf(b, a) && c.bull() && c.c > b.c) {
+        value = 100.0;
+    } else if (a.bull() && b.bear() && cdl::real_engulf(b, a) && c.bear() && c.c < b.c) {
+        value = -100.0;
+    }
+})
+
+RTTA_CDL_SCALAR_CLASS(CDLTriStar, 3, {
+    const auto &a = hist_.at(2);
+    const auto &b = hist_.at(1);
+    const auto &c = hist_.at(0);
+    if (cdl::near_doji(a) && cdl::near_doji(b) && cdl::near_doji(c)) {
+        // middle doji gaps relative to flanks
+        if (b.mid_body() < a.mid_body() && b.mid_body() < c.mid_body()) {
+            value = 100.0;
+        } else if (b.mid_body() > a.mid_body() && b.mid_body() > c.mid_body()) {
+            value = -100.0;
+        } else {
+            value = 100.0;
+        }
+    }
+})
+
+#undef RTTA_CDL_SCALAR_CLASS
+
+// Convenience multi-output pack of the most common patterns (one OHLC update).
+struct CDLPatternPackResult {
+    double doji;
+    double hammer;
+    double hanging_man;
+    double inverted_hammer;
+    double shooting_star;
+    double engulfing;
+    double harami;
+    double piercing;
+    double dark_cloud_cover;
+    double morning_star;
+    double evening_star;
+    double three_white_soldiers;
+    double three_black_crows;
+    double marubozu;
+    double spinning_top;
+};
+
+struct CDLPatternPackBatchResult {
+    nb::object doji;
+    nb::object hammer;
+    nb::object hanging_man;
+    nb::object inverted_hammer;
+    nb::object shooting_star;
+    nb::object engulfing;
+    nb::object harami;
+    nb::object piercing;
+    nb::object dark_cloud_cover;
+    nb::object morning_star;
+    nb::object evening_star;
+    nb::object three_white_soldiers;
+    nb::object three_black_crows;
+    nb::object marubozu;
+    nb::object spinning_top;
+};
+
+inline double result_checksum(const CDLPatternPackResult &value) {
+    return value.doji + value.hammer + value.hanging_man + value.inverted_hammer
+        + value.shooting_star + value.engulfing + value.harami + value.piercing
+        + value.dark_cloud_cover + value.morning_star + value.evening_star
+        + value.three_white_soldiers + value.three_black_crows + value.marubozu
+        + value.spinning_top;
+}
+
+
+struct SqrtImpactFlowSignalResult {
+    double signal;           // -1, 0, +1 discrete
+    double score;            // continuous alpha score
+    double impact;           // predicted |return| from sqrt-impact law
+    double residual;         // r - flow_sign * impact
+    double continuation;     // unused impact capacity in flow direction
+    double reversion;        // overshoot beyond impact (mean-reversion pressure)
+    double participation;    // dollar volume / ADV
+    double flow;             // signed participation
+    double volatility;       // EWMA abs-return scale
+    double vwap_gap;         // close/vwap - 1 when vwap provided
+};
+
+struct SqrtImpactFlowSignalBatchResult {
+    nb::object signal;
+    nb::object score;
+    nb::object impact;
+    nb::object residual;
+    nb::object continuation;
+    nb::object reversion;
+    nb::object participation;
+    nb::object flow;
+    nb::object volatility;
+    nb::object vwap_gap;
+};
+
+inline double result_checksum(const SqrtImpactFlowSignalResult &value) {
+    return value.signal + value.score + value.impact + value.residual
+        + value.continuation + value.reversion + value.participation
+        + value.flow + value.volatility + value.vwap_gap;
+}
+
+struct FourierResidueIdentityResult {
+    double rho;                      // scalar autocorrelation at the test lag
+    double rho_sign;                 // FRI sign channel, 2p-1 (direction only)
+    double rho_magnitude;            // FRI magnitude channel, Re gamma_{1,4}
+    double z_rho;                    // Bartlett z for rho
+    double z_sign;                   // binomial z for rho_sign
+    double directional_share;        // |z_sign| / (|z_sign| + |z_rho|)
+    double elliptical_ratio;         // rho_sign / ((2/pi) arcsin(rho)), Gaussian null = 1
+    double variance_ratio;           // VR(q) via the Fejer identity
+    double variance_ratio_sign;      // VR_2(q), direction channel
+    double variance_ratio_magnitude; // VR_4(q), magnitude channel
+    double z_variance_ratio;         // Lo-MacKinlay heteroskedasticity-robust z*
+    double persistence;              // half-period ratio R_N (sqrt2 noise, 1 structural)
+    double signal;                   // -1/0/+1, gated on sign-channel significance
+    double score;                    // continuous directional score in [-1, 1]
+    double magnitude_forecast;       // conditional E|r_next| from the magnitude channel
+};
+
+struct FourierResidueIdentityBatchResult {
+    nb::object rho;
+    nb::object rho_sign;
+    nb::object rho_magnitude;
+    nb::object z_rho;
+    nb::object z_sign;
+    nb::object directional_share;
+    nb::object elliptical_ratio;
+    nb::object variance_ratio;
+    nb::object variance_ratio_sign;
+    nb::object variance_ratio_magnitude;
+    nb::object z_variance_ratio;
+    nb::object persistence;
+    nb::object signal;
+    nb::object score;
+    nb::object magnitude_forecast;
+};
+
+inline double result_checksum(const FourierResidueIdentityResult &value) {
+    return value.rho + value.rho_sign + value.rho_magnitude
+        + value.z_rho + value.z_sign + value.directional_share + value.elliptical_ratio
+        + value.variance_ratio + value.variance_ratio_sign
+        + value.variance_ratio_magnitude + value.z_variance_ratio
+        + value.persistence + value.signal + value.score
+        + value.magnitude_forecast;
+}
+
+struct FlowPressureCapacitySignalResult {
+    double signal;                  // -1, 0, +1 discrete stance
+    double score;                   // continuous pressure/capacity score in [-1, 1]
+    double fair_value;              // flow-adjusted fair value inside the spread
+    double microprice;              // raw size-weighted L1 microprice
+    double raw_queue_imbalance;     // instantaneous (bid size - ask size) / total
+    double queue_imbalance;         // event-time filtered queue imbalance
+    double flow_imbalance;          // decayed aggressive buy/sell imbalance
+    double pressure;                // signed aggressive flow / opposing capacity
+    double replenishment;           // signed absorption from replenished depth
+    double fragility;               // ask withdrawal minus bid withdrawal
+    double spread_bps;              // quoted spread relative to midpoint
+};
+
+struct FlowPressureCapacitySignalBatchResult {
+    nb::object signal;
+    nb::object score;
+    nb::object fair_value;
+    nb::object microprice;
+    nb::object raw_queue_imbalance;
+    nb::object queue_imbalance;
+    nb::object flow_imbalance;
+    nb::object pressure;
+    nb::object replenishment;
+    nb::object fragility;
+    nb::object spread_bps;
+};
+
+inline double result_checksum(const FlowPressureCapacitySignalResult &value) {
+    return value.signal + value.score + value.fair_value + value.microprice
+        + value.raw_queue_imbalance + value.queue_imbalance + value.flow_imbalance
+        + value.pressure + value.replenishment + value.fragility + value.spread_bps;
+}
+
+
+class CDLPatternPack {
+public:
+    explicit CDLPatternPack(bool fillna = true)
+        : doji_(fillna), hammer_(fillna), hang_(fillna), inv_(fillna), star_(fillna),
+          eng_(fillna), har_(fillna), pierce_(fillna), dark_(fillna),
+          morn_(fillna), eve_(fillna), soldiers_(fillna), crows_(fillna),
+          maru_(fillna), spin_(fillna),
+          last_{} {
+        last_ = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    }
+
+    CDLPatternPackResult update(double open, double high, double low, double close) {
+        last_ = {
+            doji_.update(open, high, low, close),
+            hammer_.update(open, high, low, close),
+            hang_.update(open, high, low, close),
+            inv_.update(open, high, low, close),
+            star_.update(open, high, low, close),
+            eng_.update(open, high, low, close),
+            har_.update(open, high, low, close),
+            pierce_.update(open, high, low, close),
+            dark_.update(open, high, low, close),
+            morn_.update(open, high, low, close),
+            eve_.update(open, high, low, close),
+            soldiers_.update(open, high, low, close),
+            crows_.update(open, high, low, close),
+            maru_.update(open, high, low, close),
+            spin_.update(open, high, low, close),
+        };
+        return last_;
+    }
+
+    void advance(double open, double high, double low, double close) {
+        (void) update(open, high, low, close);
+    }
+    inline const CDLPatternPackResult &last() const { return last_; }
+
+    template <typename A0, typename A1, typename A2, typename A3>
+    CDLPatternPackBatchResult batch_array(const A0 &open, const A1 &high, const A2 &low, const A3 &close) {
+        const std::size_t n = open.shape(0);
+        require_same_size(n, high.shape(0));
+        require_same_size(n, low.shape(0));
+        require_same_size(n, close.shape(0));
+        std::vector<double> doji(n), hammer(n), hang(n), inv(n), star(n), eng(n), har(n);
+        std::vector<double> pierce(n), dark(n), morn(n), eve(n), sol(n), crow(n), maru(n), spin(n);
+        const auto *o = open.data();
+        const auto *h = high.data();
+        const auto *l = low.data();
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(
+                static_cast<double>(o[i]), static_cast<double>(h[i]),
+                static_cast<double>(l[i]), static_cast<double>(c[i]));
+            doji[i]=out.doji; hammer[i]=out.hammer; hang[i]=out.hanging_man;
+            inv[i]=out.inverted_hammer; star[i]=out.shooting_star; eng[i]=out.engulfing;
+            har[i]=out.harami; pierce[i]=out.piercing; dark[i]=out.dark_cloud_cover;
+            morn[i]=out.morning_star; eve[i]=out.evening_star;
+            sol[i]=out.three_white_soldiers; crow[i]=out.three_black_crows;
+            maru[i]=out.marubozu; spin[i]=out.spinning_top;
+        }
+        return {
+            make_array(std::move(doji)), make_array(std::move(hammer)),
+            make_array(std::move(hang)), make_array(std::move(inv)),
+            make_array(std::move(star)), make_array(std::move(eng)),
+            make_array(std::move(har)), make_array(std::move(pierce)),
+            make_array(std::move(dark)), make_array(std::move(morn)),
+            make_array(std::move(eve)), make_array(std::move(sol)),
+            make_array(std::move(crow)), make_array(std::move(maru)),
+            make_array(std::move(spin)),
+        };
+    }
+
+private:
+    CDLDoji doji_;
+    CDLHammer hammer_;
+    CDLHangingMan hang_;
+    CDLInvertedHammer inv_;
+    CDLShootingStar star_;
+    CDLEngulfing eng_;
+    CDLHarami har_;
+    CDLPiercing pierce_;
+    CDLDarkCloudCover dark_;
+    CDLMorningStar morn_;
+    CDLEveningStar eve_;
+    CDL3WhiteSoldiers soldiers_;
+    CDL3BlackCrows crows_;
+    CDLMarubozu maru_;
+    CDLSpinningTop spin_;
+    CDLPatternPackResult last_;
+};
+
+
+
+// ---------------------------------------------------------------------------
+// Square-root impact flow signal (competition research indicator)
+// Research: square-root market impact (Tóth/Bouchaud; 2025 arXiv:2509.05065
+// interplay of impact, order imbalance & volatility) + Cont-style signed flow.
+//
+// Predicted impact:  I = Y * σ * sqrt(|Q| / ADV)
+// Signed bar flow from tick-rule on close, or external signed_dollar volume.
+// Continuation: flow still has unused impact budget → expect more move with flow.
+// Reversion: price overshot impact → temporary impact mean-reverts.
+// Optional VWAP gap aligns microstructure pressure (Massive/Polygon aggregates).
+// ---------------------------------------------------------------------------
+
+class SqrtImpactFlowSignal {
+public:
+    SqrtImpactFlowSignal(
+        double impact_coefficient = 1.0,
+        double adv_span = 50.0,
+        double vol_span = 20.0,
+        double continuation_weight = 1.0,
+        double reversion_weight = 0.5,
+        double vwap_weight = 0.25,
+        double entry_z = 0.75,
+        double exit_z = 0.25,
+        bool fillna = true)
+        : y_(std::max(impact_coefficient, 0.0)),
+          adv_alpha_(2.0 / (1.0 + std::max(adv_span, 1.0))),
+          vol_alpha_(2.0 / (1.0 + std::max(vol_span, 1.0))),
+          cont_w_(continuation_weight),
+          rev_w_(reversion_weight),
+          vwap_w_(vwap_weight),
+          entry_z_(std::max(entry_z, 0.0)),
+          exit_z_(std::max(exit_z, 0.0)),
+          fillna_(fillna),
+          has_prev_(false),
+          prev_close_(0.0),
+          adv_(nan()),
+          sigma_(nan()),
+          score_ewma_(0.0),
+          has_score_ewma_(false),
+          score_var_(1.0),
+          discrete_(0.0),
+          last_{nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()} {
+        if (exit_z_ > entry_z_) {
+            exit_z_ = entry_z_;
+        }
+    }
+
+    // Aggregate bar (Polygon/Massive style). signed_dollar_volume optional (from tick tape).
+    // vwap optional (bar VWAP); if non-finite, vwap_gap = 0.
+    SqrtImpactFlowSignalResult update(
+        double close,
+        double volume,
+        double signed_dollar_volume = nan(),
+        double vwap = nan()) {
+        const double vol = std::max(volume, 0.0);
+        if (!std::isfinite(close) || close <= 0.0) {
+            last_ = empty_result();
+            return last_;
+        }
+
+        double ret = 0.0;
+        double flow_sign = 0.0;
+        if (!has_prev_) {
+            has_prev_ = true;
+            prev_close_ = close;
+            const double dollar0 = close * vol;
+            adv_ = dollar0 > 0.0 ? dollar0 : 1.0;
+            sigma_ = 1e-4;
+            last_ = empty_result();
+            last_.volatility = sigma_;
+            last_.participation = 0.0;
+            if (fillna_) {
+                last_.signal = 0.0;
+                last_.score = 0.0;
+            }
+            return last_;
+        }
+
+        ret = std::log(close / prev_close_);
+        prev_close_ = close;
+
+        const double dollar = close * vol;
+        if (!std::isfinite(adv_) || adv_ <= 0.0) {
+            adv_ = std::max(dollar, 1e-12);
+        } else if (dollar > 0.0) {
+            adv_ = (1.0 - adv_alpha_) * adv_ + adv_alpha_ * dollar;
+        }
+
+        const double abs_ret = std::abs(ret);
+        if (!std::isfinite(sigma_) || sigma_ <= 0.0) {
+            sigma_ = std::max(abs_ret, 1e-6);
+        } else {
+            sigma_ = (1.0 - vol_alpha_) * sigma_ + vol_alpha_ * abs_ret;
+            sigma_ = std::max(sigma_, 1e-8);
+        }
+
+        // Signed flow: prefer external signed dollar volume (tick aggregation), else tick-rule.
+        if (std::isfinite(signed_dollar_volume)) {
+            flow_sign = signed_dollar_volume > 0.0 ? 1.0 : (signed_dollar_volume < 0.0 ? -1.0 : 0.0);
+        } else {
+            flow_sign = ret > 0.0 ? 1.0 : (ret < 0.0 ? -1.0 : 0.0);
+        }
+
+        const double participation = dollar / std::max(adv_, 1e-12);
+        const double signed_part = flow_sign * participation;
+        // Square-root impact law: I = Y * σ * sqrt(Q/V)
+        const double impact = y_ * sigma_ * std::sqrt(std::max(participation, 0.0));
+        const double residual = ret - flow_sign * impact;
+
+        // Continuation: volume implies more permanent move than realized → unfinished impact
+        const double continuation = flow_sign * std::max(0.0, impact - abs_ret) / sigma_;
+        // Reversion: price overshot volume-implied impact → temporary impact
+        const double reversion = -std::copysign(1.0, ret) * std::max(0.0, abs_ret - impact) / sigma_;
+
+        double vgap = 0.0;
+        if (std::isfinite(vwap) && vwap > 0.0) {
+            vgap = close / vwap - 1.0;
+        }
+        // VWAP alignment: price above VWAP with buy flow (or below with sell) reinforces
+        const double vwap_align = flow_sign * vgap / std::max(sigma_, 1e-8);
+
+        double raw = cont_w_ * continuation + rev_w_ * reversion + vwap_w_ * vwap_align;
+        // mild saturation (matches concavity of impact at extremes in recent OFI studies)
+        raw = std::tanh(raw);
+
+        // Online z-score of raw score for discrete signals
+        if (!has_score_ewma_) {
+            score_ewma_ = raw;
+            score_var_ = 1.0;
+            has_score_ewma_ = true;
+        } else {
+            const double d = raw - score_ewma_;
+            score_ewma_ = (1.0 - vol_alpha_) * score_ewma_ + vol_alpha_ * raw;
+            score_var_ = (1.0 - vol_alpha_) * score_var_ + vol_alpha_ * d * d;
+        }
+        const double score_std = std::sqrt(std::max(score_var_, 1e-12));
+        const double z = (raw - score_ewma_) / score_std;
+
+        // Hysteresis discrete signal
+        if (discrete_ == 0.0) {
+            if (z >= entry_z_) {
+                discrete_ = 1.0;
+            } else if (z <= -entry_z_) {
+                discrete_ = -1.0;
+            }
+        } else if (discrete_ > 0.0) {
+            if (z <= exit_z_) {
+                discrete_ = (z <= -entry_z_) ? -1.0 : 0.0;
+            }
+        } else {
+            if (z >= -exit_z_) {
+                discrete_ = (z >= entry_z_) ? 1.0 : 0.0;
+            }
+        }
+
+        last_ = {
+            discrete_,
+            raw,
+            impact,
+            residual,
+            continuation,
+            reversion,
+            participation,
+            signed_part,
+            sigma_,
+            vgap,
+        };
+        return last_;
+    }
+
+    // Convenience OHLCV path (open/high/low unused but accepted for registry compatibility)
+    SqrtImpactFlowSignalResult update(
+        double open, double high, double low, double close, double volume,
+        double signed_dollar_volume = nan(), double vwap = nan()) {
+        (void) open; (void) high; (void) low;
+        return update(close, volume, signed_dollar_volume, vwap);
+    }
+
+    void advance(double close, double volume, double signed_dollar_volume = nan(), double vwap = nan()) {
+        (void) update(close, volume, signed_dollar_volume, vwap);
+    }
+    void advance(double open, double high, double low, double close, double volume,
+                 double signed_dollar_volume = nan(), double vwap = nan()) {
+        (void) update(open, high, low, close, volume, signed_dollar_volume, vwap);
+    }
+
+    inline const SqrtImpactFlowSignalResult &last() const { return last_; }
+
+    template <typename A0, typename A1>
+    SqrtImpactFlowSignalBatchResult batch_array(const A0 &close, const A1 &volume) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        std::vector<double> signal(n), score(n), impact(n), residual(n), cont(n), rev(n);
+        std::vector<double> part(n), flow(n), volatility(n), vgap(n);
+        const auto *c = close.data();
+        const auto *v = volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(c[i]), static_cast<double>(v[i]));
+            signal[i]=out.signal; score[i]=out.score; impact[i]=out.impact; residual[i]=out.residual;
+            cont[i]=out.continuation; rev[i]=out.reversion; part[i]=out.participation;
+            flow[i]=out.flow; volatility[i]=out.volatility; vgap[i]=out.vwap_gap;
+        }
+        return {
+            make_array(std::move(signal)), make_array(std::move(score)),
+            make_array(std::move(impact)), make_array(std::move(residual)),
+            make_array(std::move(cont)), make_array(std::move(rev)),
+            make_array(std::move(part)), make_array(std::move(flow)),
+            make_array(std::move(volatility)), make_array(std::move(vgap)),
+        };
+    }
+
+    template <typename A0, typename A1, typename A2, typename A3>
+    SqrtImpactFlowSignalBatchResult batch_array(
+        const A0 &close, const A1 &volume, const A2 &signed_dollar, const A3 &vwap) {
+        const std::size_t n = close.shape(0);
+        require_same_size(n, volume.shape(0));
+        require_same_size(n, signed_dollar.shape(0));
+        require_same_size(n, vwap.shape(0));
+        std::vector<double> signal(n), score(n), impact(n), residual(n), cont(n), rev(n);
+        std::vector<double> part(n), flow(n), volatility(n), vgap(n);
+        const auto *c = close.data();
+        const auto *v = volume.data();
+        const auto *s = signed_dollar.data();
+        const auto *w = vwap.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(
+                static_cast<double>(c[i]), static_cast<double>(v[i]),
+                static_cast<double>(s[i]), static_cast<double>(w[i]));
+            signal[i]=out.signal; score[i]=out.score; impact[i]=out.impact; residual[i]=out.residual;
+            cont[i]=out.continuation; rev[i]=out.reversion; part[i]=out.participation;
+            flow[i]=out.flow; volatility[i]=out.volatility; vgap[i]=out.vwap_gap;
+        }
+        return {
+            make_array(std::move(signal)), make_array(std::move(score)),
+            make_array(std::move(impact)), make_array(std::move(residual)),
+            make_array(std::move(cont)), make_array(std::move(rev)),
+            make_array(std::move(part)), make_array(std::move(flow)),
+            make_array(std::move(volatility)), make_array(std::move(vgap)),
+        };
+    }
+
+    template <typename A0, typename A1, typename A2, typename A3, typename A4>
+    SqrtImpactFlowSignalBatchResult batch_ohlcv(
+        const A0 &open, const A1 &high, const A2 &low, const A3 &close, const A4 &volume) {
+        (void) open; (void) high; (void) low;
+        return batch_array(close, volume);
+    }
+
+private:
+    SqrtImpactFlowSignalResult empty_result() const {
+        if (fillna_) {
+            return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, std::isfinite(sigma_) ? sigma_ : 0.0, 0.0};
+        }
+        return {nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+    }
+
+    double y_;
+    double adv_alpha_;
+    double vol_alpha_;
+    double cont_w_;
+    double rev_w_;
+    double vwap_w_;
+    double entry_z_;
+    double exit_z_;
+    bool fillna_;
+    bool has_prev_;
+    double prev_close_;
+    double adv_;
+    double sigma_;
+    double score_ewma_;
+    bool has_score_ewma_;
+    double score_var_;
+    double discrete_;
+    SqrtImpactFlowSignalResult last_;
+};
+
+
+// ---------------------------------------------------------------------------
+// Fourier-Residue Identity (FRI) channel decomposition
+// Research: V. Portnaya, "The Bounce Has No Direction: Sign, Magnitude, and the
+// Microstructure of Equity Return Predictability", arXiv:2606.29591 (Jun 2026).
+//
+// A scalar autocorrelation rho(m) conflates two economically distinct effects:
+// whether the *direction* of returns reverses, and whether the *magnitude* of
+// returns shrinks. The FRI separates them by coding returns as k-ary symbols
+// and evaluating the characters of the cyclic group Z/kZ (Definition 2.4):
+//
+//     gamma_{A,k}(m) = E[ w^{A (s_t - s_{t-m})} ],    w = exp(2*pi*i/k)
+//
+//   k = 2 (sign channel):  s_t = 1[r_t > 0]. With w = -1 the character is +1
+//     when successive signs agree and -1 when they disagree, giving the
+//     closed-form sign identity (Proposition 2.5)
+//         gamma_{1,2}(m) = 2*p_{m,0} - 1 =: rho_sign(m)
+//     where p_{m,0} is the probability of closing on the same side of zero m
+//     periods apart. This is a magnitude-free test of directional dependence.
+//
+//   k = 4 (magnitude channel): returns are bucketed at the median |r| into
+//     {large-down, small-down, small-up, large-up} = {0,1,2,3} and A = 1,
+//     w = i measures magnitude-bucket persistence independently of direction.
+//
+// Both channels feed the Fejer/variance-ratio identity (Proposition 2.2)
+//     VR(q) = 1 + 2 * sum_{m=1}^{q-1} (1 - m/q) rho(m)
+// giving VR_2(q) (direction) and VR_4(q) (magnitude) alongside the scalar VR.
+//
+// Why a trader should care: a significantly negative rho(1) does NOT license a
+// contrarian directional bet. For SPY the paper reports rho(1) = -0.081 with
+// z_rho = -7.39 (p < 1e-12) but z_sign = -1.59 (p = 0.11) - the reversal lives
+// entirely in the magnitude channel (bid-ask bounce and non-synchronous
+// constituent trading). Accordingly `signal` here fires only when the *sign*
+// channel itself clears significance, while `magnitude_forecast` carries the
+// volatility-sizing content that is statistically warranted either way.
+//
+// Note on scope: this is a separation, not a bounce filter. A simulated Roll
+// bounce yields rho = -0.139 with rho_sign = -0.101 (z = -6.5), so `signal`
+// does fire on it. No statistic on close prices alone can do better - the
+// observed series really does reverse; what makes a bounce uncapturable is the
+// spread crossed, which is absent from the data. The payoff is knowing when
+// large |z_rho| coexists with small |z_sign|: direction is then a coin flip.
+//
+// The paper estimates full-sample; this is a bounded-memory streaming form.
+// Sample means become debiased EWMAs of span `span`, and n is replaced by the
+// EWMA effective sample size n_eff = min(count, (2 - alpha) / alpha).
+// ---------------------------------------------------------------------------
+
+class FourierResidueIdentity {
+public:
+    FourierResidueIdentity(
+        int max_lag = 8,
+        int horizon = 2,
+        int test_lag = 1,
+        double span = 512.0,
+        int median_window = 256,
+        double entry_z = 2.0,
+        double exit_z = 1.0,
+        bool fillna = true)
+        : horizon_(std::max(horizon, 2)),
+          test_lag_(std::max(test_lag, 1)),
+          entry_z_(std::max(entry_z, 0.0)),
+          exit_z_(std::max(exit_z, 0.0)),
+          fillna_(fillna),
+          median_window_(std::max(median_window, 1)),
+          median_(median_window_, true),
+          has_prev_(false),
+          prev_close_(0.0),
+          count_(0),
+          head_(0),
+          armed_(false) {
+        max_lag_ = std::max(std::max(max_lag, horizon_ - 1), test_lag_);
+        if (exit_z_ > entry_z_) {
+            exit_z_ = entry_z_;
+        }
+        const double s = std::max(span, 2.0);
+        alpha_ = 2.0 / (s + 1.0);
+        const double half_alpha = 2.0 / (std::max(0.5 * s, 2.0) + 1.0);
+
+        capacity_ = static_cast<std::size_t>(max_lag_) + 1;
+        hist_r_.assign(capacity_, 0.0);
+        hist_s_.assign(capacity_, 0.0);
+        hist_c_.assign(capacity_, 0);
+
+        mu_.reset(alpha_);
+        m2_.reset(alpha_);
+        abs_mu_.reset(alpha_);
+        abs_m2_.reset(alpha_);
+        mu_half_.reset(half_alpha);
+        m2_half_.reset(half_alpha);
+
+        const std::size_t lags = static_cast<std::size_t>(max_lag_) + 1;
+        cross_.assign(lags, Ewma());
+        cross_half_.assign(lags, Ewma());
+        sgn_.assign(lags, Ewma());
+        mag_re_.assign(lags, Ewma());
+        abs_cross_.assign(lags, Ewma());
+        delta_.assign(lags, Ewma());
+        for (std::size_t m = 1; m < lags; ++m) {
+            cross_[m].reset(alpha_);
+            cross_half_[m].reset(half_alpha);
+            sgn_[m].reset(alpha_);
+            mag_re_[m].reset(alpha_);
+            abs_cross_[m].reset(alpha_);
+            delta_[m].reset(alpha_);
+        }
+        last_ = empty_result();
+    }
+
+    FourierResidueIdentityResult update(double close) {
+        if (!std::isfinite(close) || close <= 0.0) {
+            last_ = empty_result();
+            return last_;
+        }
+        if (!has_prev_) {
+            has_prev_ = true;
+            prev_close_ = close;
+            last_ = empty_result();
+            return last_;
+        }
+        const double ret = std::log(close / prev_close_);
+        prev_close_ = close;
+        if (!std::isfinite(ret)) {
+            last_ = empty_result();
+            return last_;
+        }
+
+        const double abs_ret = std::abs(ret);
+        const double median_abs = median_.update(abs_ret);
+        // Sign coding s_t = 1[r_t > 0], carried as +-1 so that the k=2 character
+        // (-1)^(s_t - s_{t-m}) is just the product of the two signs.
+        const double sign_now = (ret > 0.0) ? 1.0 : -1.0;
+        const bool large = std::isfinite(median_abs) && abs_ret > median_abs;
+        // k=4 ladder: 0 large-down, 1 small-down, 2 small-up, 3 large-up.
+        const int code_now = (sign_now < 0.0) ? (large ? 0 : 1) : (large ? 3 : 2);
+
+        // Cross-products against history. r_{t-m} sits (m-1) slots back because
+        // the newest stored return is r_{t-1}; push r_t only afterwards.
+        const double mu_prev = mu_.ready() ? mu_.mean() : 0.0;
+        const int usable = std::min(count_, max_lag_);
+        for (int m = 1; m <= usable; ++m) {
+            const std::size_t idx = index_back(m - 1);
+            const double lag_ret = hist_r_[idx];
+            cross_[m].push(ret * lag_ret);
+            cross_half_[m].push(ret * lag_ret);
+            sgn_[m].push(sign_now * hist_s_[idx]);
+            const int d = ((code_now - hist_c_[idx]) % 4 + 4) % 4;
+            mag_re_[m].push(kFriRe[d]);
+            abs_cross_[m].push(abs_ret * std::abs(lag_ret));
+            const double dr = ret - mu_prev;
+            const double dl = lag_ret - mu_prev;
+            delta_[m].push(dr * dr * dl * dl);
+        }
+
+        mu_.push(ret);
+        m2_.push(ret * ret);
+        abs_mu_.push(abs_ret);
+        abs_m2_.push(abs_ret * abs_ret);
+        mu_half_.push(ret);
+        m2_half_.push(ret * ret);
+
+        head_ = (head_ + 1) % capacity_;
+        hist_r_[head_] = ret;
+        hist_s_[head_] = sign_now;
+        hist_c_[head_] = code_now;
+        if (count_ < std::numeric_limits<int>::max()) {
+            ++count_;
+        }
+
+        if (count_ < max_lag_ + 2) {
+            last_ = empty_result();
+            return last_;
+        }
+
+        const double mu = mu_.mean();
+        const double var = m2_.mean() - mu * mu;
+        if (!(var > 0.0)) {
+            last_ = empty_result();
+            return last_;
+        }
+        const double n_eff = std::min(
+            static_cast<double>(count_), (2.0 - alpha_) / alpha_);
+
+        // Scalar autocorrelations, sign channel and magnitude channel.
+        double g_full = 0.0;
+        double g_half = 0.0;
+        const double mu_h = mu_half_.mean();
+        const double var_h = m2_half_.mean() - mu_h * mu_h;
+        for (int m = 1; m <= max_lag_; ++m) {
+            const double r_m = clamp_unit((cross_[m].mean() - mu * mu) / var);
+            g_full = std::max(g_full, std::abs(r_m));
+            if (var_h > 0.0) {
+                const double r_h = clamp_unit((cross_half_[m].mean() - mu_h * mu_h) / var_h);
+                g_half = std::max(g_half, std::abs(r_h));
+            }
+        }
+
+        const double rho_test = rho_at(test_lag_, mu, var);
+        const double rho_sign = clamp_unit(sgn_[test_lag_].mean());
+        const double rho_mag = clamp_unit(mag_re_[test_lag_].mean());
+
+        // Bartlett standard error accounts for correlation among the rho hats.
+        double bartlett = 1.0;
+        for (int k = 1; k < test_lag_; ++k) {
+            const double r_k = rho_at(k, mu, var);
+            bartlett += 2.0 * r_k * r_k;
+        }
+        const double se_rho = std::sqrt(bartlett / n_eff);
+        const double z_rho = (se_rho > 0.0) ? rho_test / se_rho : nan();
+        // Binomial z under H0: p_{m,0} = 1/2 (direction is a fair coin).
+        const double z_sign = rho_sign * std::sqrt(std::max(n_eff - test_lag_, 1.0));
+
+        // Fejer identity applied to the scalar series and to each channel.
+        double vr = 1.0;
+        double vr_sign = 1.0;
+        double vr_mag = 1.0;
+        double phi2 = 0.0;
+        const double q = static_cast<double>(horizon_);
+        for (int m = 1; m <= horizon_ - 1; ++m) {
+            const double w = 1.0 - static_cast<double>(m) / q;
+            vr += 2.0 * w * rho_at(m, mu, var);
+            vr_sign += 2.0 * w * clamp_unit(sgn_[m].mean());
+            vr_mag += 2.0 * w * clamp_unit(mag_re_[m].mean());
+            // Lo-MacKinlay M2 weight, with delta_hat in its standard O(1/n)
+            // normalisation so that phi2 collapses to phi1 under an IID null.
+            const double lm_w = 2.0 * (q - static_cast<double>(m)) / q;
+            const double delta_hat = delta_[m].mean() / (n_eff * var * var);
+            phi2 += lm_w * lm_w * delta_hat;
+        }
+        const double z_vr = (phi2 > 0.0) ? (vr - 1.0) / std::sqrt(phi2) : nan();
+
+        const double abs_z_sign = std::abs(z_sign);
+        const double abs_z_rho = std::abs(z_rho);
+        const double evidence = abs_z_sign + abs_z_rho;
+        const double directional_share =
+            (std::isfinite(evidence) && evidence > 0.0) ? abs_z_sign / evidence : nan();
+
+        // Elliptical (Grothendieck) benchmark. For a bivariate normal pair,
+        // E[sgn(X) sgn(Y)] = (2/pi) arcsin(rho), so the sign channel is not free
+        // of rho - it has a predictable null. Comparing the observed sign channel
+        // to that null is scale-free: ~1 means the autocorrelation is exactly as
+        // directional as a Gaussian process with the same rho (a plain Roll bounce
+        // scores ~0.95 here), while ~0 means the predictability is carried by
+        // magnitude alone. The paper's SPY pair (rho = -0.081, rho_sign = -0.017)
+        // scores 0.34: reversal concentrated in large moves, not in typical days.
+        // Only interpret this when the scalar ACF is itself detectable (|z_rho| large).
+        const double bench = (2.0 / kFriPi) * std::asin(clamp_unit(rho_test));
+        const double elliptical_ratio =
+            (std::abs(bench) > 1e-4) ? rho_sign / bench : nan();
+
+        // Half-period ratio: sqrt(2) under IID noise, 1 under genuine dependence.
+        const double persistence = (g_full > 1e-12) ? g_half / g_full : nan();
+
+        // Direction forecast: E[sigma_{t+1}] ~ gamma_{1,2}(m) * sigma_{t+1-m}.
+        const std::size_t lag_idx = index_back(test_lag_ - 1);
+        const double score = rho_sign * hist_s_[lag_idx];
+
+        // Hysteresis gates on the *evidence* for a direction channel; the sign
+        // of the trade then comes from the score.
+        if (abs_z_sign >= entry_z_) {
+            armed_ = true;
+        } else if (abs_z_sign < exit_z_) {
+            armed_ = false;
+        }
+        const double signal =
+            armed_ ? ((score > 0.0) ? 1.0 : ((score < 0.0) ? -1.0 : 0.0)) : 0.0;
+
+        // Magnitude channel content that is tradeable regardless of direction:
+        // an AR(1)-style conditional forecast of the next absolute return.
+        const double a_mu = abs_mu_.mean();
+        const double a_var = abs_m2_.mean() - a_mu * a_mu;
+        double rho_abs = 0.0;
+        if (a_var > 0.0) {
+            rho_abs = clamp_unit((abs_cross_[test_lag_].mean() - a_mu * a_mu) / a_var);
+        }
+        const double magnitude_forecast =
+            std::max(0.0, a_mu + rho_abs * (std::abs(hist_r_[lag_idx]) - a_mu));
+
+        last_ = {
+            rho_test,
+            rho_sign,
+            rho_mag,
+            z_rho,
+            z_sign,
+            directional_share,
+            elliptical_ratio,
+            vr,
+            vr_sign,
+            vr_mag,
+            z_vr,
+            persistence,
+            signal,
+            score,
+            magnitude_forecast,
+        };
+        return last_;
+    }
+
+    // OHLC-compatible overload (open/high/low accepted for registry symmetry).
+    FourierResidueIdentityResult update(double open, double high, double low, double close) {
+        (void) open; (void) high; (void) low;
+        return update(close);
+    }
+
+    void advance(double close) {
+        (void) update(close);
+    }
+    void advance(double open, double high, double low, double close) {
+        (void) update(open, high, low, close);
+    }
+
+    inline const FourierResidueIdentityResult &last() const { return last_; }
+
+    void reset() {
+        has_prev_ = false;
+        prev_close_ = 0.0;
+        count_ = 0;
+        head_ = 0;
+        armed_ = false;
+        // The median window defines the k=4 buckets, so stale absolute returns
+        // would otherwise survive a reset and shift the magnitude channel.
+        median_ = RollingMedian(median_window_, true);
+        std::fill(hist_r_.begin(), hist_r_.end(), 0.0);
+        std::fill(hist_s_.begin(), hist_s_.end(), 0.0);
+        std::fill(hist_c_.begin(), hist_c_.end(), 0);
+        mu_.clear();
+        m2_.clear();
+        abs_mu_.clear();
+        abs_m2_.clear();
+        mu_half_.clear();
+        m2_half_.clear();
+        for (std::size_t m = 1; m < cross_.size(); ++m) {
+            cross_[m].clear();
+            cross_half_[m].clear();
+            sgn_[m].clear();
+            mag_re_[m].clear();
+            abs_cross_[m].clear();
+            delta_[m].clear();
+        }
+        last_ = empty_result();
+    }
+
+    template <typename A0>
+    FourierResidueIdentityBatchResult batch_array(const A0 &close) {
+        const std::size_t n = close.shape(0);
+        std::vector<double> rho(n), rho_sign(n), rho_mag(n), z_rho(n), z_sign(n);
+        std::vector<double> share(n), ellip(n), vr(n), vr_sign(n), vr_mag(n), z_vr(n);
+        std::vector<double> persistence(n), signal(n), score(n), mag_fc(n);
+        const auto *c = close.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto out = update(static_cast<double>(c[i]));
+            rho[i]=out.rho; rho_sign[i]=out.rho_sign; rho_mag[i]=out.rho_magnitude;
+            z_rho[i]=out.z_rho; z_sign[i]=out.z_sign; share[i]=out.directional_share;
+            ellip[i]=out.elliptical_ratio;
+            vr[i]=out.variance_ratio; vr_sign[i]=out.variance_ratio_sign;
+            vr_mag[i]=out.variance_ratio_magnitude; z_vr[i]=out.z_variance_ratio;
+            persistence[i]=out.persistence; signal[i]=out.signal; score[i]=out.score;
+            mag_fc[i]=out.magnitude_forecast;
+        }
+        return {
+            make_array(std::move(rho)), make_array(std::move(rho_sign)),
+            make_array(std::move(rho_mag)), make_array(std::move(z_rho)),
+            make_array(std::move(z_sign)), make_array(std::move(share)),
+            make_array(std::move(ellip)),
+            make_array(std::move(vr)), make_array(std::move(vr_sign)),
+            make_array(std::move(vr_mag)), make_array(std::move(z_vr)),
+            make_array(std::move(persistence)), make_array(std::move(signal)),
+            make_array(std::move(score)), make_array(std::move(mag_fc)),
+        };
+    }
+
+    template <typename A0, typename A1, typename A2, typename A3>
+    FourierResidueIdentityBatchResult batch_ohlc(
+        const A0 &open, const A1 &high, const A2 &low, const A3 &close) {
+        (void) open; (void) high; (void) low;
+        return batch_array(close);
+    }
+
+private:
+    // Debiased EWMA: value/weight is a normalised weighted mean, so early
+    // updates behave like an expanding sample rather than a biased ramp.
+    struct Ewma {
+        double value = 0.0;
+        double weight = 0.0;
+        double alpha = 0.0;
+        inline void reset(double a) { alpha = a; value = 0.0; weight = 0.0; }
+        inline void clear() { value = 0.0; weight = 0.0; }
+        inline void push(double x) {
+            value = (1.0 - alpha) * value + alpha * x;
+            weight = (1.0 - alpha) * weight + alpha;
+        }
+        inline bool ready() const { return weight > 0.0; }
+        inline double mean() const { return weight > 0.0 ? value / weight : nan(); }
+    };
+
+    static inline double clamp_unit(double x) {
+        if (!std::isfinite(x)) {
+            return nan();
+        }
+        return std::min(1.0, std::max(-1.0, x));
+    }
+
+    inline std::size_t index_back(int back) const {
+        const std::size_t offset = static_cast<std::size_t>(back) % capacity_;
+        return (head_ + capacity_ - offset) % capacity_;
+    }
+
+    inline double rho_at(int m, double mu, double var) const {
+        return clamp_unit((cross_[m].mean() - mu * mu) / var);
+    }
+
+    FourierResidueIdentityResult empty_result() const {
+        if (fillna_) {
+            return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        }
+        return {nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(),
+                nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+    }
+
+    static constexpr double kFriRe[4] = {1.0, 0.0, -1.0, 0.0};
+    static constexpr double kFriPi = 3.14159265358979323846;
+
+    int max_lag_;
+    int horizon_;
+    int test_lag_;
+    double alpha_;
+    double entry_z_;
+    double exit_z_;
+    bool fillna_;
+    int median_window_;
+    RollingMedian median_;
+    bool has_prev_;
+    double prev_close_;
+    int count_;
+    std::size_t capacity_;
+    std::size_t head_;
+    bool armed_;
+    std::vector<double> hist_r_;
+    std::vector<double> hist_s_;
+    std::vector<int> hist_c_;
+    Ewma mu_;
+    Ewma m2_;
+    Ewma abs_mu_;
+    Ewma abs_m2_;
+    Ewma mu_half_;
+    Ewma m2_half_;
+    std::vector<Ewma> cross_;
+    std::vector<Ewma> cross_half_;
+    std::vector<Ewma> sgn_;
+    std::vector<Ewma> mag_re_;
+    std::vector<Ewma> abs_cross_;
+    std::vector<Ewma> delta_;
+    FourierResidueIdentityResult last_;
+};
+
+
+// ---------------------------------------------------------------------------
+// Flow pressure versus displayed capacity (competition research indicator)
+//
+// Recent microstructure work finds that aggressive flow becomes more useful
+// when measured against near-touch capacity, while transient quote imbalance
+// is materially noisier than persistent or trade-confirmed pressure.  This
+// indicator combines four causal L1 channels in event time:
+//
+//   * filtered queue imbalance / weighted-mid microprice,
+//   * aggressive buy and sell flow relative to opposing displayed capacity,
+//   * same-price queue replenishment after inferred executions, and
+//   * quote withdrawal / price-level depletion (liquidity fragility).
+//
+// It is deliberately O(1), symmetric under bid/ask reflection, and accepts
+// either net signed trade volume or separate buy/sell volumes observed between
+// consecutive quote snapshots.  Price and size units must be consistent.
+// ---------------------------------------------------------------------------
+
+class FlowPressureCapacitySignal {
+public:
+    FlowPressureCapacitySignal(
+        double half_life_updates = 32.0,
+        double queue_weight = 0.25,
+        double pressure_weight = 1.0,
+        double replenishment_weight = 0.75,
+        double fragility_weight = 0.25,
+        double score_scale = 1.0,
+        double entry_threshold = 0.35,
+        double exit_threshold = 0.15,
+        int warmup = 8,
+        bool fillna = true)
+        : decay_(decay_from_half_life(half_life_updates)),
+          queue_weight_(finite_or(queue_weight, 0.25)),
+          pressure_weight_(finite_or(pressure_weight, 1.0)),
+          replenishment_weight_(finite_or(replenishment_weight, 0.75)),
+          fragility_weight_(finite_or(fragility_weight, 0.25)),
+          score_scale_(std::abs(finite_or(score_scale, 1.0))),
+          entry_threshold_(std::abs(finite_or(entry_threshold, 0.35))),
+          exit_threshold_(std::abs(finite_or(exit_threshold, 0.15))),
+          warmup_(std::max(warmup, 1)),
+          fillna_(fillna),
+          has_previous_(false),
+          previous_bid_price_(0.0),
+          previous_bid_size_(0.0),
+          previous_ask_price_(0.0),
+          previous_ask_size_(0.0),
+          queue_filtered_(0.0),
+          buy_flow_(0.0),
+          sell_flow_(0.0),
+          bid_replenishment_(0.0),
+          ask_replenishment_(0.0),
+          bid_withdrawal_(0.0),
+          ask_withdrawal_(0.0),
+          count_(0),
+          discrete_(0.0),
+          last_(empty_result()) {
+        if (exit_threshold_ > entry_threshold_) {
+            exit_threshold_ = entry_threshold_;
+        }
+    }
+
+    // Compact path: positive signed volume is buyer initiated, negative is
+    // seller initiated.  This is lossless when only one side trades between
+    // quote observations.
+    FlowPressureCapacitySignalResult update(
+        double bid_price,
+        double bid_size,
+        double ask_price,
+        double ask_size,
+        double signed_trade_volume = 0.0) {
+        const double signed_flow = std::isfinite(signed_trade_volume)
+            ? signed_trade_volume : 0.0;
+        return update_core(
+            bid_price, bid_size, ask_price, ask_size,
+            std::max(signed_flow, 0.0), std::max(-signed_flow, 0.0));
+    }
+
+    // Detailed path: preserves simultaneous buys and sells between quotes.
+    FlowPressureCapacitySignalResult update(
+        double bid_price,
+        double bid_size,
+        double ask_price,
+        double ask_size,
+        double buy_volume,
+        double sell_volume) {
+        return update_core(
+            bid_price, bid_size, ask_price, ask_size,
+            positive_or_zero(buy_volume), positive_or_zero(sell_volume));
+    }
+
+    void advance(
+        double bid_price,
+        double bid_size,
+        double ask_price,
+        double ask_size,
+        double signed_trade_volume = 0.0) {
+        (void) update(bid_price, bid_size, ask_price, ask_size, signed_trade_volume);
+    }
+
+    void advance(
+        double bid_price,
+        double bid_size,
+        double ask_price,
+        double ask_size,
+        double buy_volume,
+        double sell_volume) {
+        (void) update(bid_price, bid_size, ask_price, ask_size, buy_volume, sell_volume);
+    }
+
+    inline const FlowPressureCapacitySignalResult &last() const { return last_; }
+
+    void reset() {
+        has_previous_ = false;
+        previous_bid_price_ = 0.0;
+        previous_bid_size_ = 0.0;
+        previous_ask_price_ = 0.0;
+        previous_ask_size_ = 0.0;
+        queue_filtered_ = 0.0;
+        buy_flow_ = 0.0;
+        sell_flow_ = 0.0;
+        bid_replenishment_ = 0.0;
+        ask_replenishment_ = 0.0;
+        bid_withdrawal_ = 0.0;
+        ask_withdrawal_ = 0.0;
+        count_ = 0;
+        discrete_ = 0.0;
+        last_ = empty_result();
+    }
+
+    template <typename A0, typename A1, typename A2, typename A3, typename A4>
+    FlowPressureCapacitySignalBatchResult batch_array(
+        const A0 &bid_price,
+        const A1 &bid_size,
+        const A2 &ask_price,
+        const A3 &ask_size,
+        const A4 &signed_trade_volume) {
+        const std::size_t n = bid_price.shape(0);
+        require_same_size(n, bid_size.shape(0));
+        require_same_size(n, ask_price.shape(0));
+        require_same_size(n, ask_size.shape(0));
+        require_same_size(n, signed_trade_volume.shape(0));
+        BatchVectors values(n);
+        const auto *bp = bid_price.data();
+        const auto *bs = bid_size.data();
+        const auto *ap = ask_price.data();
+        const auto *as = ask_size.data();
+        const auto *sv = signed_trade_volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            values.store(i, update(
+                static_cast<double>(bp[i]), static_cast<double>(bs[i]),
+                static_cast<double>(ap[i]), static_cast<double>(as[i]),
+                static_cast<double>(sv[i])));
+        }
+        return values.finish();
+    }
+
+    template <typename A0, typename A1, typename A2, typename A3, typename A4, typename A5>
+    FlowPressureCapacitySignalBatchResult batch_array(
+        const A0 &bid_price,
+        const A1 &bid_size,
+        const A2 &ask_price,
+        const A3 &ask_size,
+        const A4 &buy_volume,
+        const A5 &sell_volume) {
+        const std::size_t n = bid_price.shape(0);
+        require_same_size(n, bid_size.shape(0));
+        require_same_size(n, ask_price.shape(0));
+        require_same_size(n, ask_size.shape(0));
+        require_same_size(n, buy_volume.shape(0));
+        require_same_size(n, sell_volume.shape(0));
+        BatchVectors values(n);
+        const auto *bp = bid_price.data();
+        const auto *bs = bid_size.data();
+        const auto *ap = ask_price.data();
+        const auto *as = ask_size.data();
+        const auto *bv = buy_volume.data();
+        const auto *sv = sell_volume.data();
+        for (std::size_t i = 0; i < n; ++i) {
+            values.store(i, update(
+                static_cast<double>(bp[i]), static_cast<double>(bs[i]),
+                static_cast<double>(ap[i]), static_cast<double>(as[i]),
+                static_cast<double>(bv[i]), static_cast<double>(sv[i])));
+        }
+        return values.finish();
+    }
+
+private:
+    struct BatchVectors {
+        explicit BatchVectors(std::size_t n)
+            : signal(n), score(n), fair_value(n), microprice(n), raw_queue(n),
+              queue(n), flow(n), pressure(n), replenishment(n), fragility(n), spread(n) {}
+
+        void store(std::size_t i, const FlowPressureCapacitySignalResult &out) {
+            signal[i] = out.signal;
+            score[i] = out.score;
+            fair_value[i] = out.fair_value;
+            microprice[i] = out.microprice;
+            raw_queue[i] = out.raw_queue_imbalance;
+            queue[i] = out.queue_imbalance;
+            flow[i] = out.flow_imbalance;
+            pressure[i] = out.pressure;
+            replenishment[i] = out.replenishment;
+            fragility[i] = out.fragility;
+            spread[i] = out.spread_bps;
+        }
+
+        FlowPressureCapacitySignalBatchResult finish() {
+            return {
+                make_array(std::move(signal)), make_array(std::move(score)),
+                make_array(std::move(fair_value)), make_array(std::move(microprice)),
+                make_array(std::move(raw_queue)), make_array(std::move(queue)),
+                make_array(std::move(flow)), make_array(std::move(pressure)),
+                make_array(std::move(replenishment)), make_array(std::move(fragility)),
+                make_array(std::move(spread)),
+            };
+        }
+
+        std::vector<double> signal;
+        std::vector<double> score;
+        std::vector<double> fair_value;
+        std::vector<double> microprice;
+        std::vector<double> raw_queue;
+        std::vector<double> queue;
+        std::vector<double> flow;
+        std::vector<double> pressure;
+        std::vector<double> replenishment;
+        std::vector<double> fragility;
+        std::vector<double> spread;
+    };
+
+    static double finite_or(double value, double fallback) {
+        return std::isfinite(value) ? value : fallback;
+    }
+
+    static double positive_or_zero(double value) {
+        return std::isfinite(value) ? std::max(value, 0.0) : 0.0;
+    }
+
+    static double decay_from_half_life(double half_life_updates) {
+        const double half_life = std::isfinite(half_life_updates)
+            ? std::max(half_life_updates, 1e-6) : 32.0;
+        return std::exp(-0.69314718055994530942 / half_life);
+    }
+
+    bool valid_quote(double bid_price, double bid_size, double ask_price, double ask_size) const {
+        return std::isfinite(bid_price) && std::isfinite(ask_price)
+            && std::isfinite(bid_size) && std::isfinite(ask_size)
+            && bid_price > 0.0 && ask_price > bid_price
+            && bid_size >= 0.0 && ask_size >= 0.0;
+    }
+
+    FlowPressureCapacitySignalResult update_core(
+        double bid_price,
+        double bid_size,
+        double ask_price,
+        double ask_size,
+        double buy_volume,
+        double sell_volume) {
+        if (!valid_quote(bid_price, bid_size, ask_price, ask_size)) {
+            last_ = empty_result();
+            return last_;
+        }
+
+        const double total_depth = bid_size + ask_size;
+        const double raw_queue = total_depth > 0.0
+            ? (bid_size - ask_size) / total_depth : 0.0;
+
+        double bid_replenishment = 0.0;
+        double ask_replenishment = 0.0;
+        double bid_withdrawal = 0.0;
+        double ask_withdrawal = 0.0;
+
+        if (has_previous_) {
+            buy_flow_ *= decay_;
+            sell_flow_ *= decay_;
+            bid_replenishment_ *= decay_;
+            ask_replenishment_ *= decay_;
+            bid_withdrawal_ *= decay_;
+            ask_withdrawal_ *= decay_;
+            queue_filtered_ = decay_ * queue_filtered_ + (1.0 - decay_) * raw_queue;
+
+            // Same-level queue accounting: absent cancels and hidden liquidity,
+            // new = old - executions + additions - cancellations.  Positive
+            // residual is replenishment; negative residual is withdrawal.
+            if (ask_price == previous_ask_price_) {
+                const double net = ask_size - previous_ask_size_ + buy_volume;
+                ask_replenishment = std::max(net, 0.0);
+                ask_withdrawal = std::max(-net, 0.0);
+            } else if (ask_price > previous_ask_price_) {
+                ask_withdrawal = previous_ask_size_;
+            } else {
+                ask_replenishment = ask_size;
+            }
+
+            if (bid_price == previous_bid_price_) {
+                const double net = bid_size - previous_bid_size_ + sell_volume;
+                bid_replenishment = std::max(net, 0.0);
+                bid_withdrawal = std::max(-net, 0.0);
+            } else if (bid_price < previous_bid_price_) {
+                bid_withdrawal = previous_bid_size_;
+            } else {
+                bid_replenishment = bid_size;
+            }
+        } else {
+            queue_filtered_ = raw_queue;
+            has_previous_ = true;
+        }
+
+        buy_flow_ += buy_volume;
+        sell_flow_ += sell_volume;
+        bid_replenishment_ += bid_replenishment;
+        ask_replenishment_ += ask_replenishment;
+        bid_withdrawal_ += bid_withdrawal;
+        ask_withdrawal_ += ask_withdrawal;
+
+        previous_bid_price_ = bid_price;
+        previous_bid_size_ = bid_size;
+        previous_ask_price_ = ask_price;
+        previous_ask_size_ = ask_size;
+        ++count_;
+
+        const double eps = 1e-12;
+        const double ask_capacity = ask_size + ask_replenishment_ + eps;
+        const double bid_capacity = bid_size + bid_replenishment_ + eps;
+        const double buy_pressure = buy_flow_ / ask_capacity;
+        const double sell_pressure = sell_flow_ / bid_capacity;
+        const double pressure = std::tanh(
+            std::log1p(buy_pressure) - std::log1p(sell_pressure));
+
+        const double flow_total = buy_flow_ + sell_flow_;
+        const double flow_imbalance = flow_total > eps
+            ? (buy_flow_ - sell_flow_) / flow_total : 0.0;
+        const double buy_share = flow_total > eps ? buy_flow_ / flow_total : 0.0;
+        const double sell_share = flow_total > eps ? sell_flow_ / flow_total : 0.0;
+        const double ask_absorption = ask_replenishment_
+            / (ask_replenishment_ + buy_flow_ + eps);
+        const double bid_absorption = bid_replenishment_
+            / (bid_replenishment_ + sell_flow_ + eps);
+        // Ask replenishment absorbs buys (bearish); bid replenishment absorbs
+        // sells (bullish).  Flow shares prevent unrelated additions from firing.
+        const double replenishment =
+            sell_share * bid_absorption - buy_share * ask_absorption;
+
+        const double ask_fragility = ask_withdrawal_
+            / (ask_withdrawal_ + ask_size + ask_replenishment_ + eps);
+        const double bid_fragility = bid_withdrawal_
+            / (bid_withdrawal_ + bid_size + bid_replenishment_ + eps);
+        const double fragility = ask_fragility - bid_fragility;
+
+        const double linear =
+            queue_weight_ * queue_filtered_
+            + pressure_weight_ * pressure
+            + replenishment_weight_ * replenishment
+            + fragility_weight_ * fragility;
+        const double score = std::tanh(score_scale_ * linear);
+
+        if (count_ < warmup_) {
+            discrete_ = 0.0;
+        } else if (discrete_ == 0.0) {
+            if (score > 0.0 && score >= entry_threshold_) {
+                discrete_ = 1.0;
+            } else if (score < 0.0 && score <= -entry_threshold_) {
+                discrete_ = -1.0;
+            }
+        } else if (discrete_ > 0.0) {
+            if (score <= exit_threshold_) {
+                discrete_ = score <= -entry_threshold_ ? -1.0 : 0.0;
+            }
+        } else if (score >= -exit_threshold_) {
+            discrete_ = score >= entry_threshold_ ? 1.0 : 0.0;
+        }
+
+        const double midpoint = 0.5 * (bid_price + ask_price);
+        const double half_spread = 0.5 * (ask_price - bid_price);
+        const double microprice = total_depth > 0.0
+            ? (ask_price * bid_size + bid_price * ask_size) / total_depth
+            : midpoint;
+        const double fair_value = midpoint + half_spread * score;
+        const double spread_bps = (ask_price - bid_price) / midpoint * 10000.0;
+
+        last_ = {
+            discrete_, score, fair_value, microprice, raw_queue, queue_filtered_,
+            flow_imbalance, pressure, replenishment, fragility, spread_bps,
+        };
+        if (!fillna_ && count_ < warmup_) {
+            last_ = empty_result();
+        }
+        return last_;
+    }
+
+    FlowPressureCapacitySignalResult empty_result() const {
+        if (fillna_) {
+            return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        }
+        return {nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan(), nan()};
+    }
+
+    double decay_;
+    double queue_weight_;
+    double pressure_weight_;
+    double replenishment_weight_;
+    double fragility_weight_;
+    double score_scale_;
+    double entry_threshold_;
+    double exit_threshold_;
+    int warmup_;
+    bool fillna_;
+    bool has_previous_;
+    double previous_bid_price_;
+    double previous_bid_size_;
+    double previous_ask_price_;
+    double previous_ask_size_;
+    double queue_filtered_;
+    double buy_flow_;
+    double sell_flow_;
+    double bid_replenishment_;
+    double ask_replenishment_;
+    double bid_withdrawal_;
+    double ask_withdrawal_;
+    int count_;
+    double discrete_;
+    FlowPressureCapacitySignalResult last_;
+};
+
+
 class StdDev {
 public:
     explicit StdDev(int window, bool fillna = true)
@@ -17846,6 +26861,115 @@ private:
     long counter_;
     double sum_;
     double sum2_;
+};
+
+class RelativeVolatilityIndex {
+public:
+    // Dorsey RVI: RSI-style smoothing of up/down stddev of close.
+    RelativeVolatilityIndex(int std_window = 10, int smooth_window = 14, bool fillna = true)
+        : std_(std_window, true),
+          up_(static_cast<double>(std::max(smooth_window, 1)), true),
+          down_(static_cast<double>(std::max(smooth_window, 1)), true),
+          signal_(static_cast<double>(std::max(smooth_window, 1)), true),
+          previous_(0.0),
+          first_(true),
+          fillna_(fillna),
+          warm_(std_window + smooth_window),
+          count_(0),
+          last_{nan(), nan()} {}
+
+    RelativeVolatilityIndexResult update(double close) {
+        update_core(close);
+        return last_;
+    }
+
+    void advance(double close) {
+        update_core(close);
+    }
+
+    inline const RelativeVolatilityIndexResult &last() const {
+        return last_;
+    }
+
+private:
+    inline void update_core(double close) {
+        const double sd = std_.update(close);
+        double up = 0.0;
+        double down = 0.0;
+        if (!first_) {
+            if (close > previous_) {
+                up = sd;
+            } else if (close < previous_) {
+                down = sd;
+            } else {
+                up = sd * 0.5;
+                down = sd * 0.5;
+            }
+        }
+        previous_ = close;
+        first_ = false;
+        const double u = up_.update(up);
+        const double d = down_.update(down);
+        const double rvi = safe_divide(100.0 * u, u + d);
+        const double sig = signal_.update(rvi);
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            last_ = {nan(), nan()};
+            return;
+        }
+        last_ = {rvi, sig};
+    }
+
+    StdDev std_;
+    EMA up_;
+    EMA down_;
+    EMA signal_;
+    double previous_;
+    bool first_;
+    bool fillna_;
+    int warm_;
+    long count_;
+    RelativeVolatilityIndexResult last_;
+};
+
+// Dorsey Inertia: linear regression of Relative Volatility Index.
+class Inertia {
+public:
+    Inertia(int std_window = 10, int smooth_window = 14, int reg_window = 20, bool fillna = true)
+        : rvi_(std_window, smooth_window, true),
+          reg_(std::max(reg_window, 2), true),
+          fillna_(fillna),
+          warm_(std_window + smooth_window + reg_window),
+          count_(0),
+          last_(nan()) {}
+
+    double update(double close) {
+        const auto r = rvi_.update(close);
+        const double value = reg_.update(r.rvi).value;
+        ++count_;
+        if (!fillna_ && count_ < warm_) {
+            last_ = nan();
+            return last_;
+        }
+        last_ = value;
+        return last_;
+    }
+
+    void advance(double close) { (void) update(close); }
+    inline double last() const { return last_; }
+
+    template <typename Array>
+    nb::object batch_array(const Array &input) {
+        return batch_update1(*this, input);
+    }
+
+private:
+    RelativeVolatilityIndex rvi_;
+    LinearRegressionCore reg_;
+    bool fillna_;
+    int warm_;
+    int count_;
+    double last_;
 };
 
 class BollingerBands {
@@ -17985,6 +27109,328 @@ BollingerBandsBatchResult batch_bollinger_bands(BollingerBands &indicator, const
         lower[i] = out.lower;
     }
 
+    return {make_array(std::move(middle)), make_array(std::move(upper)), make_array(std::move(lower))};
+}
+
+template <typename Array>
+MovingAverageEnvelopeBatchResult batch_moving_average_envelope(MovingAverageEnvelope &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> middle(size);
+    std::vector<double> upper(size);
+    std::vector<double> lower(size);
+    const auto *values = input.data();
+
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const MovingAverageEnvelopeResult &out = indicator.last();
+        middle[i] = out.middle;
+        upper[i] = out.upper;
+        lower[i] = out.lower;
+    }
+
+    return {make_array(std::move(middle)), make_array(std::move(upper)), make_array(std::move(lower))};
+}
+
+
+
+template <typename Array>
+MACDBatchResult batch_macd(MACD &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> macd(size);
+    std::vector<double> signal(size);
+    std::vector<double> histogram(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        macd[i] = out.macd;
+        signal[i] = out.signal;
+        histogram[i] = out.histogram;
+    }
+    return {make_array(std::move(macd)), make_array(std::move(signal)), make_array(std::move(histogram))};
+}
+
+template <typename Array>
+MACDBatchResult batch_macd_fix(MACDFix &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> macd(size);
+    std::vector<double> signal(size);
+    std::vector<double> histogram(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        macd[i] = out.macd;
+        signal[i] = out.signal;
+        histogram[i] = out.histogram;
+    }
+    return {make_array(std::move(macd)), make_array(std::move(signal)), make_array(std::move(histogram))};
+}
+
+template <typename Array>
+MACDBatchResult batch_macd_ext(MACDExt &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> macd(size);
+    std::vector<double> signal(size);
+    std::vector<double> histogram(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        macd[i] = out.macd;
+        signal[i] = out.signal;
+        histogram[i] = out.histogram;
+    }
+    return {make_array(std::move(macd)), make_array(std::move(signal)), make_array(std::move(histogram))};
+}
+
+template <typename Array>
+RelativeVolatilityIndexBatchResult batch_relative_volatility_index(RelativeVolatilityIndex &indicator, const Array &close) {
+    const std::size_t size = close.shape(0);
+    std::vector<double> rvi(size);
+    std::vector<double> signal(size);
+    const auto *values = close.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        rvi[i] = out.rvi;
+        signal[i] = out.signal;
+    }
+    return {make_array(std::move(rvi)), make_array(std::move(signal))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+PivotPointsBatchResult batch_pivot_points(PivotPoints &indicator, const Array0 &high, const Array1 &low, const Array2 &close) {
+    const std::size_t size = high.shape(0);
+    require_same_size(size, low.shape(0));
+    require_same_size(size, close.shape(0));
+    std::vector<double> pp(size), r1(size), r2(size), r3(size), s1(size), s2(size), s3(size);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    const auto *c = close.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+        const auto &out = indicator.last();
+        pp[i]=out.pp; r1[i]=out.r1; r2[i]=out.r2; r3[i]=out.r3; s1[i]=out.s1; s2[i]=out.s2; s3[i]=out.s3;
+    }
+    return {make_array(std::move(pp)), make_array(std::move(r1)), make_array(std::move(r2)), make_array(std::move(r3)),
+            make_array(std::move(s1)), make_array(std::move(s2)), make_array(std::move(s3))};
+}
+
+template <typename Array0, typename Array1>
+WilliamsFractalsBatchResult batch_williams_fractals(WilliamsFractals &indicator, const Array0 &high, const Array1 &low) {
+    const std::size_t size = high.shape(0);
+    require_same_size(size, low.shape(0));
+    std::vector<double> up(size), down(size);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        up[i] = out.up;
+        down[i] = out.down;
+    }
+    return {make_array(std::move(up)), make_array(std::move(down))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+RandomWalkIndexBatchResult batch_random_walk_index(RandomWalkIndex &indicator, const Array0 &close, const Array1 &high, const Array2 &low) {
+    const std::size_t size = close.shape(0);
+    require_same_size(size, high.shape(0));
+    require_same_size(size, low.shape(0));
+    std::vector<double> hi(size), lo(size);
+    const auto *c = close.data();
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(c[i]), static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        hi[i] = out.high;
+        lo[i] = out.low;
+    }
+    return {make_array(std::move(hi)), make_array(std::move(lo))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+StochasticMomentumIndexBatchResult batch_stochastic_momentum_index(
+    StochasticMomentumIndex &indicator,
+    const Array0 &close,
+    const Array1 &high,
+    const Array2 &low) {
+    const std::size_t size = close.shape(0);
+    require_same_size(size, high.shape(0));
+    require_same_size(size, low.shape(0));
+    std::vector<double> smi(size);
+    std::vector<double> signal(size);
+    const auto *c = close.data();
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(c[i]), static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        smi[i] = out.smi;
+        signal[i] = out.signal;
+    }
+    return {make_array(std::move(smi)), make_array(std::move(signal))};
+}
+
+template <typename Array0, typename Array1>
+AlligatorBatchResult batch_alligator(Alligator &indicator, const Array0 &high, const Array1 &low) {
+    const std::size_t size = high.shape(0);
+    require_same_size(size, low.shape(0));
+    std::vector<double> jaw(size);
+    std::vector<double> teeth(size);
+    std::vector<double> lips(size);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        jaw[i] = out.jaw;
+        teeth[i] = out.teeth;
+        lips[i] = out.lips;
+    }
+    return {make_array(std::move(jaw)), make_array(std::move(teeth)), make_array(std::move(lips))};
+}
+
+template <typename Array0, typename Array1>
+GatorOscillatorBatchResult batch_gator(GatorOscillator &indicator, const Array0 &high, const Array1 &low) {
+    const std::size_t size = high.shape(0);
+    require_same_size(size, low.shape(0));
+    std::vector<double> upper(size);
+    std::vector<double> lower(size);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        upper[i] = out.upper;
+        lower[i] = out.lower;
+    }
+    return {make_array(std::move(upper)), make_array(std::move(lower))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+SqueezeMomentumBatchResult batch_squeeze_momentum(
+    SqueezeMomentum &indicator,
+    const Array0 &close,
+    const Array1 &high,
+    const Array2 &low) {
+    const std::size_t size = close.shape(0);
+    require_same_size(size, high.shape(0));
+    require_same_size(size, low.shape(0));
+    std::vector<double> on(size);
+    std::vector<double> momentum(size);
+    const auto *c = close.data();
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(c[i]), static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        on[i] = out.on;
+        momentum[i] = out.momentum;
+    }
+    return {make_array(std::move(on)), make_array(std::move(momentum))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+WaveTrendBatchResult batch_wave_trend(
+    WaveTrend &indicator,
+    const Array0 &high,
+    const Array1 &low,
+    const Array2 &close) {
+    const std::size_t size = high.shape(0);
+    require_same_size(size, low.shape(0));
+    require_same_size(size, close.shape(0));
+    std::vector<double> wt1(size);
+    std::vector<double> wt2(size);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    const auto *c = close.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+        const auto &out = indicator.last();
+        wt1[i] = out.wt1;
+        wt2[i] = out.wt2;
+    }
+    return {make_array(std::move(wt1)), make_array(std::move(wt2))};
+}
+
+template <typename Array>
+HilbertPhasorBatchResult batch_hilbert_phasor(HilbertPhasor &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> inphase(size);
+    std::vector<double> quadrature(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        inphase[i] = out.inphase;
+        quadrature[i] = out.quadrature;
+    }
+    return {make_array(std::move(inphase)), make_array(std::move(quadrature))};
+}
+
+template <typename Array>
+HilbertSineWaveBatchResult batch_hilbert_sine_wave(HilbertSineWave &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> sine(size);
+    std::vector<double> lead_sine(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        sine[i] = out.sine;
+        lead_sine[i] = out.lead_sine;
+    }
+    return {make_array(std::move(sine)), make_array(std::move(lead_sine))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+ChandelierExitBatchResult batch_chandelier_exit(
+    ChandelierExit &indicator,
+    const Array0 &close,
+    const Array1 &high,
+    const Array2 &low) {
+    const std::size_t size = close.shape(0);
+    require_same_size(size, high.shape(0));
+    require_same_size(size, low.shape(0));
+    std::vector<double> long_exit(size);
+    std::vector<double> short_exit(size);
+    const auto *c = close.data();
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(c[i]), static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        long_exit[i] = out.long_exit;
+        short_exit[i] = out.short_exit;
+    }
+    return {make_array(std::move(long_exit)), make_array(std::move(short_exit))};
+}
+
+template <typename Array0, typename Array1, typename Array2>
+AccelerationBandsBatchResult batch_acceleration_bands(
+    AccelerationBands &indicator,
+    const Array0 &close,
+    const Array1 &high,
+    const Array2 &low) {
+    const std::size_t size = close.shape(0);
+    require_same_size(size, high.shape(0));
+    require_same_size(size, low.shape(0));
+    std::vector<double> middle(size);
+    std::vector<double> upper(size);
+    std::vector<double> lower(size);
+    const auto *c = close.data();
+    const auto *h = high.data();
+    const auto *l = low.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(c[i]), static_cast<double>(h[i]), static_cast<double>(l[i]));
+        const auto &out = indicator.last();
+        middle[i] = out.middle;
+        upper[i] = out.upper;
+        lower[i] = out.lower;
+    }
     return {make_array(std::move(middle)), make_array(std::move(upper)), make_array(std::move(lower))};
 }
 
@@ -18142,23 +27588,317 @@ KSTOscillatorBatchResult batch_kst(KSTOscillator &indicator, const Array &close)
     return {make_array(std::move(kst)), make_array(std::move(signal)), make_array(std::move(difference))};
 }
 
+
+
+template <typename Array0, typename Array1, typename Array2, typename Array3>
+DecomposedOrderFlowImbalanceBatchResult batch_decomposed_ofi(
+    DecomposedOrderFlowImbalance &indicator,
+    const Array0 &bid_price,
+    const Array1 &bid_size,
+    const Array2 &ask_price,
+    const Array3 &ask_size) {
+    return indicator.batch_array(bid_price, bid_size, ask_price, ask_size);
+}
+
 template <typename Array0, typename Array1>
-IchimokuBatchResult batch_ichimoku(Ichimoku &indicator, const Array0 &high, const Array1 &low) {
+InformationBarBatchResult batch_volume_bar(VolumeBarGenerator &indicator, const Array0 &close, const Array1 &volume) {
+    return indicator.batch_array(close, volume);
+}
+template <typename Array0, typename Array1>
+InformationBarBatchResult batch_dollar_bar(DollarBarGenerator &indicator, const Array0 &close, const Array1 &volume) {
+    return indicator.batch_array(close, volume);
+}
+template <typename Array0, typename Array1>
+InformationBarBatchResult batch_imbalance_bar(ImbalanceBarGenerator &indicator, const Array0 &close, const Array1 &volume) {
+    return indicator.batch_array(close, volume);
+}
+template <typename Array>
+FOCuSBatchResult batch_focus(FOCuS &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename Array>
+FOCuSBatchResult batch_residual_focus(ResidualFOCuS &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename Array>
+DirectionalChangeBatchResult batch_directional_change(DirectionalChangeDetector &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+
+
+template <typename Array0, typename Array1, typename Array2>
+PivotPointsBatchResult batch_fib_pivots(FibonacciPivotPoints &indicator, const Array0 &high, const Array1 &low, const Array2 &close) {
+    const std::size_t n = high.shape(0);
+    require_same_size(n, low.shape(0));
+    require_same_size(n, close.shape(0));
+    std::vector<double> pp(n), r1(n), r2(n), r3(n), s1(n), s2(n), s3(n);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    const auto *c = close.data();
+    for (std::size_t i = 0; i < n; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+        const auto &out = indicator.last();
+        pp[i]=out.pp; r1[i]=out.r1; r2[i]=out.r2; r3[i]=out.r3; s1[i]=out.s1; s2[i]=out.s2; s3[i]=out.s3;
+    }
+    return {make_array(std::move(pp)), make_array(std::move(r1)), make_array(std::move(r2)), make_array(std::move(r3)),
+            make_array(std::move(s1)), make_array(std::move(s2)), make_array(std::move(s3))};
+}
+template <typename Array>
+GuppyMMARibbonBatchResult batch_guppy_ribbon(GuppyMMARibbon &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename A0, typename A1, typename A2>
+AndrewsPitchforkBatchResult batch_andrews_pitchfork(AndrewsPitchfork &indicator, const A0 &high, const A1 &low, const A2 &close) {
+    return indicator.batch_array(high, low, close);
+}
+template <typename A0, typename A1>
+ElderThermometerBatchResult batch_elder_thermometer(ElderThermometer &indicator, const A0 &high, const A1 &low) {
+    return indicator.batch_array(high, low);
+}
+template <typename Array>
+RainbowMovingAverageBatchResult batch_rainbow_ma(RainbowMovingAverage &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename Array>
+RainbowOscillatorBatchResult batch_rainbow_osc(RainbowOscillator &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename Array>
+nb::object batch_chande_forecast_oscillator(ChandeForecastOscillator &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename Array>
+nb::object batch_ravi(RangeActionVerificationIndex &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename A0, typename A1>
+nb::object batch_bulls_power(BullsPower &indicator, const A0 &high, const A1 &close) {
+    return indicator.batch_array(high, close);
+}
+template <typename A0, typename A1>
+nb::object batch_bears_power(BearsPower &indicator, const A0 &low, const A1 &close) {
+    return indicator.batch_array(low, close);
+}
+template <typename A0, typename A1, typename A2>
+ProjectionOscillatorBatchResult batch_projection_oscillator(ProjectionOscillator &indicator, const A0 &high, const A1 &low, const A2 &close) {
+    return indicator.batch_array(high, low, close);
+}
+template <typename Array>
+nb::object batch_inertia(Inertia &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename A0, typename A1, typename A2>
+MessageEventOrderFlowImbalanceBatchResult batch_message_event_ofi(
+    MessageEventOrderFlowImbalance &indicator, const A0 &event_type, const A1 &side, const A2 &qty) {
+    return indicator.batch_array(event_type, side, qty);
+}
+template <typename A0, typename A1>
+HawkesIntensityBatchResult batch_hawkes_intensity(HawkesIntensity &indicator, const A0 &time, const A1 &jump) {
+    return indicator.batch_array(time, jump);
+}
+template <typename A0, typename A1>
+SqrtImpactFlowSignalBatchResult batch_sqrt_impact_flow(
+    SqrtImpactFlowSignal &indicator, const A0 &close, const A1 &volume) {
+    return indicator.batch_array(close, volume);
+}
+template <typename Array>
+HawkesIntensityBatchResult batch_hawkes_intensity1(HawkesIntensity &indicator, const Array &time) {
+    return indicator.batch_array(time);
+}
+template <typename Array>
+ConformalBandsBatchResult batch_conformal_bands(ConformalBands &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+template <typename Array>
+InnovationChangepointBatchResult batch_kalman_residual_focus(KalmanInnovationResidualFOCuS &indicator, const Array &close) {
+    return indicator.batch_array(close);
+}
+template <typename Array>
+InnovationChangepointBatchResult batch_kalman_residual_bocpd(KalmanInnovationResidualBOCPD &indicator, const Array &close) {
+    return indicator.batch_array(close);
+}
+template <typename A0, typename A1>
+InformationBarBatchResult batch_volume_run_bar(VolumeRunBarGenerator &indicator, const A0 &close, const A1 &volume) {
+    return indicator.batch_array(close, volume);
+}
+template <typename A0, typename A1>
+InformationBarBatchResult batch_dollar_run_bar(DollarRunBarGenerator &indicator, const A0 &close, const A1 &volume) {
+    return indicator.batch_array(close, volume);
+}
+template <typename A0, typename A1>
+CrossAssetOrderFlowImbalanceBatchResult batch_cross_asset_ofi(
+    CrossAssetOrderFlowImbalance &indicator, const A0 &own_return, const A1 &peer_ofi) {
+    return indicator.batch_array(own_return, peer_ofi);
+}
+template <typename Array>
+ResidualBOCPDBatchResult batch_residual_bocpd(ResidualBOCPD &indicator, const Array &residual) {
+    return indicator.batch_array(residual);
+}
+template <typename Array>
+InformationBarBatchResult batch_run_bar(RunBarGenerator &indicator, const Array &close) {
+    return indicator.batch_array(close);
+}
+template <typename A0, typename A1>
+InformationBarBatchResult batch_run_bar2(RunBarGenerator &indicator, const A0 &close, const A1 &volume) {
+    return indicator.batch_array(close, volume);
+}
+template <typename Array0, typename Array1, typename Array2>
+PivotPointsBatchResult batch_woodie_pivots(WoodiePivotPoints &indicator, const Array0 &high, const Array1 &low, const Array2 &close) {
+    const std::size_t n = high.shape(0);
+    require_same_size(n, low.shape(0));
+    require_same_size(n, close.shape(0));
+    std::vector<double> pp(n), r1(n), r2(n), r3(n), s1(n), s2(n), s3(n);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    const auto *c = close.data();
+    for (std::size_t i = 0; i < n; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+        const auto &out = indicator.last();
+        pp[i]=out.pp; r1[i]=out.r1; r2[i]=out.r2; r3[i]=out.r3; s1[i]=out.s1; s2[i]=out.s2; s3[i]=out.s3;
+    }
+    return {make_array(std::move(pp)), make_array(std::move(r1)), make_array(std::move(r2)), make_array(std::move(r3)),
+            make_array(std::move(s1)), make_array(std::move(s2)), make_array(std::move(s3))};
+}
+template <typename Array0, typename Array1, typename Array2>
+PivotPointsBatchResult batch_camarilla_pivots(CamarillaPivotPoints &indicator, const Array0 &high, const Array1 &low, const Array2 &close) {
+    const std::size_t n = high.shape(0);
+    require_same_size(n, low.shape(0));
+    require_same_size(n, close.shape(0));
+    std::vector<double> pp(n), r1(n), r2(n), r3(n), s1(n), s2(n), s3(n);
+    const auto *h = high.data();
+    const auto *l = low.data();
+    const auto *c = close.data();
+    for (std::size_t i = 0; i < n; ++i) {
+        indicator.advance(static_cast<double>(h[i]), static_cast<double>(l[i]), static_cast<double>(c[i]));
+        const auto &out = indicator.last();
+        pp[i]=out.pp; r1[i]=out.r1; r2[i]=out.r2; r3[i]=out.r3; s1[i]=out.s1; s2[i]=out.s2; s3[i]=out.s3;
+    }
+    return {make_array(std::move(pp)), make_array(std::move(r1)), make_array(std::move(r2)), make_array(std::move(r3)),
+            make_array(std::move(s1)), make_array(std::move(s2)), make_array(std::move(s3))};
+}
+template <typename Array>
+EhlersRoofingFilterBatchResult batch_ehlers_roofing(EhlersRoofingFilter &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> roof(size), highpass(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        roof[i] = out.roof;
+        highpass[i] = out.highpass;
+    }
+    return {make_array(std::move(roof)), make_array(std::move(highpass))};
+}
+
+template <typename Array>
+EhlersCyberCycleBatchResult batch_ehlers_cyber_cycle(EhlersCyberCycle &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> cycle(size), trigger(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        cycle[i] = out.cycle;
+        trigger[i] = out.trigger;
+    }
+    return {make_array(std::move(cycle)), make_array(std::move(trigger))};
+}
+
+template <typename Array>
+EhlersCenterOfGravityBatchResult batch_ehlers_cg(EhlersCenterOfGravity &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> cg(size), lag(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        cg[i] = out.cg;
+        lag[i] = out.lag;
+    }
+    return {make_array(std::move(cg)), make_array(std::move(lag))};
+}
+
+template <typename Array>
+EhlersInstantaneousTrendlineBatchResult batch_ehlers_itrend(EhlersInstantaneousTrendline &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> trendline(size), trigger(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        trendline[i] = out.trendline;
+        trigger[i] = out.trigger;
+    }
+    return {make_array(std::move(trendline)), make_array(std::move(trigger))};
+}
+
+template <typename Array>
+EhlersDecyclerBatchResult batch_ehlers_decycler(EhlersDecycler &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> decycle(size), oscillator(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        decycle[i] = out.decycle;
+        oscillator[i] = out.oscillator;
+    }
+    return {make_array(std::move(decycle)), make_array(std::move(oscillator))};
+}
+
+template <typename Array>
+GuppyMultipleMovingAverageBatchResult batch_guppy(GuppyMultipleMovingAverage &indicator, const Array &input) {
+    const std::size_t size = input.shape(0);
+    std::vector<double> short_average(size), long_average(size), spread(size);
+    const auto *values = input.data();
+    for (std::size_t i = 0; i < size; ++i) {
+        indicator.advance(static_cast<double>(values[i]));
+        const auto &out = indicator.last();
+        short_average[i] = out.short_average;
+        long_average[i] = out.long_average;
+        spread[i] = out.spread;
+    }
+    return {make_array(std::move(short_average)), make_array(std::move(long_average)), make_array(std::move(spread))};
+}
+
+template <typename Array>
+KagiChartBatchResult batch_kagi(KagiChart &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+
+template <typename Array>
+PointAndFigureBatchResult batch_point_and_figure(PointAndFigure &indicator, const Array &input) {
+    return indicator.batch_array(input);
+}
+
+template <typename Array0, typename Array1, typename Array2>
+IchimokuBatchResult batch_ichimoku(Ichimoku &indicator, const Array0 &high, const Array1 &low, const Array2 &close) {
     const std::size_t size = high.shape(0);
     require_same_size(size, low.shape(0));
+    require_same_size(size, close.shape(0));
     std::vector<double> conversion(size);
     std::vector<double> base(size);
     std::vector<double> span_a(size);
     std::vector<double> span_b(size);
+    std::vector<double> lagging_span(size);
+    std::vector<double> span_a_displaced(size);
+    std::vector<double> span_b_displaced(size);
     const auto *high_values = high.data();
     const auto *low_values = low.data();
+    const auto *close_values = close.data();
 
     for (std::size_t i = 0; i < size; ++i) {
-        const IchimokuResult out = indicator.update(static_cast<double>(high_values[i]), static_cast<double>(low_values[i]));
+        const IchimokuResult out = indicator.update(
+            static_cast<double>(high_values[i]),
+            static_cast<double>(low_values[i]),
+            static_cast<double>(close_values[i]));
         conversion[i] = out.conversion;
         base[i] = out.base;
         span_a[i] = out.span_a;
         span_b[i] = out.span_b;
+        lagging_span[i] = out.lagging_span;
+        span_a_displaced[i] = out.span_a_displaced;
+        span_b_displaced[i] = out.span_b_displaced;
     }
 
     return {
@@ -18166,6 +27906,9 @@ IchimokuBatchResult batch_ichimoku(Ichimoku &indicator, const Array0 &high, cons
         make_array(std::move(base)),
         make_array(std::move(span_a)),
         make_array(std::move(span_b)),
+        make_array(std::move(lagging_span)),
+        make_array(std::move(span_a_displaced)),
+        make_array(std::move(span_b_displaced)),
     };
 }
 
@@ -18610,6 +28353,55 @@ inline double call_advance_checksum(Indicator &self, double arg0, double arg1, d
         return BATCH_FUNC(self, ARG0, ARG1, ARG2, ARG3); \
     }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2), array_arg(#ARG3))
 
+
+#define RTTA_MULTI_BATCH1(TYPE, ARG0, FIELD0, BATCH_FUNC) \
+    .def("batch", [](TYPE &self, const InputArray &ARG0) { \
+        return BATCH_FUNC(self, ARG0); \
+    }, array_arg(#ARG0)) \
+    .def("batch", [](TYPE &self, const FloatInputArray &ARG0) { \
+        return BATCH_FUNC(self, ARG0); \
+    }, array_arg(#ARG0)) \
+    .def("batch", [](TYPE &self, nb::iterable records) { \
+        if (table_has_column(records, FIELD0)) { \
+            return dispatch_table1(self, records, FIELD0, [](auto &indicator, const auto &ARG0) { \
+                return BATCH_FUNC(indicator, ARG0); \
+            }); \
+        } \
+        throw nb::type_error("pandas table batch input is missing a required column"); \
+    }, nb::arg("records"))
+
+#define RTTA_MULTI_BATCH2(TYPE, ARG0, ARG1, FIELD0, FIELD1, BATCH_FUNC) \
+    .def("batch", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1) { \
+        return BATCH_FUNC(self, ARG0, ARG1); \
+    }, array_arg(#ARG0), array_arg(#ARG1)) \
+    .def("batch", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1) { \
+        return BATCH_FUNC(self, ARG0, ARG1); \
+    }, array_arg(#ARG0), array_arg(#ARG1)) \
+    .def("batch", [](TYPE &self, nb::iterable records) { \
+        if (table_has_column(records, FIELD0)) { \
+            return dispatch_table2(self, records, FIELD0, FIELD1, [](auto &indicator, const auto &ARG0, const auto &ARG1) { \
+                return BATCH_FUNC(indicator, ARG0, ARG1); \
+            }); \
+        } \
+        throw nb::type_error("pandas table batch input is missing a required column"); \
+    }, nb::arg("records"))
+
+#define RTTA_MULTI_BATCH3(TYPE, ARG0, ARG1, ARG2, FIELD0, FIELD1, FIELD2, BATCH_FUNC) \
+    .def("batch", [](TYPE &self, const InputArray &ARG0, const InputArray &ARG1, const InputArray &ARG2) { \
+        return BATCH_FUNC(self, ARG0, ARG1, ARG2); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2)) \
+    .def("batch", [](TYPE &self, const FloatInputArray &ARG0, const FloatInputArray &ARG1, const FloatInputArray &ARG2) { \
+        return BATCH_FUNC(self, ARG0, ARG1, ARG2); \
+    }, array_arg(#ARG0), array_arg(#ARG1), array_arg(#ARG2)) \
+    .def("batch", [](TYPE &self, nb::iterable records) { \
+        if (table_has_column(records, FIELD0)) { \
+            return dispatch_table3(self, records, FIELD0, FIELD1, FIELD2, [](auto &indicator, const auto &ARG0, const auto &ARG1, const auto &ARG2) { \
+                return BATCH_FUNC(indicator, ARG0, ARG1, ARG2); \
+            }); \
+        } \
+        throw nb::type_error("pandas table batch input is missing a required column"); \
+    }, nb::arg("records"))
+
 #define RTTA_BATCH1(TYPE, ARG0, FIELD0) \
     .def("batch", [](TYPE &self, const InputArray &ARG0) { \
         return batch_update1(self, ARG0); \
@@ -18838,15 +28630,331 @@ NB_MODULE(indicator, m) {
         .def_ro("conversion", &IchimokuResult::conversion)
         .def_ro("base", &IchimokuResult::base)
         .def_ro("span_a", &IchimokuResult::span_a)
-        .def_ro("span_b", &IchimokuResult::span_b);
+        .def_ro("span_b", &IchimokuResult::span_b)
+        .def_ro("lagging_span", &IchimokuResult::lagging_span)
+        .def_ro("span_a_displaced", &IchimokuResult::span_a_displaced)
+        .def_ro("span_b_displaced", &IchimokuResult::span_b_displaced);
 
     nb::class_<IchimokuBatchResult>(m, "IchimokuBatchResult")
         .def_ro("conversion", &IchimokuBatchResult::conversion)
         .def_ro("base", &IchimokuBatchResult::base)
         .def_ro("span_a", &IchimokuBatchResult::span_a)
-        .def_ro("span_b", &IchimokuBatchResult::span_b);
+        .def_ro("span_b", &IchimokuBatchResult::span_b)
+        .def_ro("lagging_span", &IchimokuBatchResult::lagging_span)
+        .def_ro("span_a_displaced", &IchimokuBatchResult::span_a_displaced)
+        .def_ro("span_b_displaced", &IchimokuBatchResult::span_b_displaced);
 
-    nb::class_<PercentagePriceResult>(m, "PercentagePriceResult")
+    nb::class_<EhlersCenterOfGravityResult>(m, "EhlersCenterOfGravityResult")
+        .def_ro("cg", &EhlersCenterOfGravityResult::cg)
+        .def_ro("lag", &EhlersCenterOfGravityResult::lag);
+    nb::class_<EhlersCenterOfGravityBatchResult>(m, "EhlersCenterOfGravityBatchResult")
+        .def_ro("cg", &EhlersCenterOfGravityBatchResult::cg)
+        .def_ro("lag", &EhlersCenterOfGravityBatchResult::lag);
+    nb::class_<EhlersInstantaneousTrendlineResult>(m, "EhlersInstantaneousTrendlineResult")
+        .def_ro("trendline", &EhlersInstantaneousTrendlineResult::trendline)
+        .def_ro("trigger", &EhlersInstantaneousTrendlineResult::trigger);
+    nb::class_<EhlersInstantaneousTrendlineBatchResult>(m, "EhlersInstantaneousTrendlineBatchResult")
+        .def_ro("trendline", &EhlersInstantaneousTrendlineBatchResult::trendline)
+        .def_ro("trigger", &EhlersInstantaneousTrendlineBatchResult::trigger);
+    nb::class_<EhlersCyberCycleResult>(m, "EhlersCyberCycleResult")
+        .def_ro("cycle", &EhlersCyberCycleResult::cycle)
+        .def_ro("trigger", &EhlersCyberCycleResult::trigger);
+    nb::class_<EhlersCyberCycleBatchResult>(m, "EhlersCyberCycleBatchResult")
+        .def_ro("cycle", &EhlersCyberCycleBatchResult::cycle)
+        .def_ro("trigger", &EhlersCyberCycleBatchResult::trigger);
+    nb::class_<EhlersDecyclerResult>(m, "EhlersDecyclerResult")
+        .def_ro("decycle", &EhlersDecyclerResult::decycle)
+        .def_ro("oscillator", &EhlersDecyclerResult::oscillator);
+    nb::class_<EhlersDecyclerBatchResult>(m, "EhlersDecyclerBatchResult")
+        .def_ro("decycle", &EhlersDecyclerBatchResult::decycle)
+        .def_ro("oscillator", &EhlersDecyclerBatchResult::oscillator);
+    nb::class_<EhlersRoofingFilterResult>(m, "EhlersRoofingFilterResult")
+        .def_ro("roof", &EhlersRoofingFilterResult::roof)
+        .def_ro("highpass", &EhlersRoofingFilterResult::highpass);
+    nb::class_<EhlersRoofingFilterBatchResult>(m, "EhlersRoofingFilterBatchResult")
+        .def_ro("roof", &EhlersRoofingFilterBatchResult::roof)
+        .def_ro("highpass", &EhlersRoofingFilterBatchResult::highpass);
+    nb::class_<GuppyMultipleMovingAverageResult>(m, "GuppyMultipleMovingAverageResult")
+        .def_ro("short_average", &GuppyMultipleMovingAverageResult::short_average)
+        .def_ro("long_average", &GuppyMultipleMovingAverageResult::long_average)
+        .def_ro("spread", &GuppyMultipleMovingAverageResult::spread);
+    nb::class_<GuppyMultipleMovingAverageBatchResult>(m, "GuppyMultipleMovingAverageBatchResult")
+        .def_ro("short_average", &GuppyMultipleMovingAverageBatchResult::short_average)
+        .def_ro("long_average", &GuppyMultipleMovingAverageBatchResult::long_average)
+        .def_ro("spread", &GuppyMultipleMovingAverageBatchResult::spread);
+    nb::class_<KagiChartResult>(m, "KagiChartResult")
+        .def_ro("line", &KagiChartResult::line)
+        .def_ro("direction", &KagiChartResult::direction)
+        .def_ro("reversal", &KagiChartResult::reversal);
+    nb::class_<KagiChartBatchResult>(m, "KagiChartBatchResult")
+        .def_ro("line", &KagiChartBatchResult::line)
+        .def_ro("direction", &KagiChartBatchResult::direction)
+        .def_ro("reversal", &KagiChartBatchResult::reversal);
+    nb::class_<PointAndFigureResult>(m, "PointAndFigureResult")
+        .def_ro("box_price", &PointAndFigureResult::box_price)
+        .def_ro("direction", &PointAndFigureResult::direction)
+        .def_ro("boxes", &PointAndFigureResult::boxes)
+        .def_ro("reversal", &PointAndFigureResult::reversal);
+    nb::class_<PointAndFigureBatchResult>(m, "PointAndFigureBatchResult")
+        .def_ro("box_price", &PointAndFigureBatchResult::box_price)
+        .def_ro("direction", &PointAndFigureBatchResult::direction)
+        .def_ro("boxes", &PointAndFigureBatchResult::boxes)
+        .def_ro("reversal", &PointAndFigureBatchResult::reversal);
+
+    nb::class_<MultiLevelOrderFlowImbalanceResult>(m, "MultiLevelOrderFlowImbalanceResult")
+        .def_ro("total", &MultiLevelOrderFlowImbalanceResult::total)
+        .def_ro("mean", &MultiLevelOrderFlowImbalanceResult::mean)
+        .def_ro("l1", &MultiLevelOrderFlowImbalanceResult::l1)
+        .def_ro("l2", &MultiLevelOrderFlowImbalanceResult::l2)
+        .def_ro("l3", &MultiLevelOrderFlowImbalanceResult::l3)
+        .def_ro("l4", &MultiLevelOrderFlowImbalanceResult::l4)
+        .def_ro("l5", &MultiLevelOrderFlowImbalanceResult::l5);
+    nb::class_<MultiLevelOrderFlowImbalanceBatchResult>(m, "MultiLevelOrderFlowImbalanceBatchResult")
+        .def_ro("total", &MultiLevelOrderFlowImbalanceBatchResult::total)
+        .def_ro("mean", &MultiLevelOrderFlowImbalanceBatchResult::mean)
+        .def_ro("l1", &MultiLevelOrderFlowImbalanceBatchResult::l1)
+        .def_ro("l2", &MultiLevelOrderFlowImbalanceBatchResult::l2)
+        .def_ro("l3", &MultiLevelOrderFlowImbalanceBatchResult::l3)
+        .def_ro("l4", &MultiLevelOrderFlowImbalanceBatchResult::l4)
+        .def_ro("l5", &MultiLevelOrderFlowImbalanceBatchResult::l5);
+    nb::class_<IntegratedOrderFlowImbalanceResult>(m, "IntegratedOrderFlowImbalanceResult")
+        .def_ro("ofi", &IntegratedOrderFlowImbalanceResult::ofi)
+        .def_ro("weight_l1", &IntegratedOrderFlowImbalanceResult::weight_l1);
+    nb::class_<IntegratedOrderFlowImbalanceBatchResult>(m, "IntegratedOrderFlowImbalanceBatchResult")
+        .def_ro("ofi", &IntegratedOrderFlowImbalanceBatchResult::ofi)
+        .def_ro("weight_l1", &IntegratedOrderFlowImbalanceBatchResult::weight_l1);
+    nb::class_<DecomposedOrderFlowImbalanceResult>(m, "DecomposedOrderFlowImbalanceResult")
+        .def_ro("add", &DecomposedOrderFlowImbalanceResult::add)
+        .def_ro("cancel", &DecomposedOrderFlowImbalanceResult::cancel)
+        .def_ro("trade", &DecomposedOrderFlowImbalanceResult::trade)
+        .def_ro("total", &DecomposedOrderFlowImbalanceResult::total);
+    nb::class_<DecomposedOrderFlowImbalanceBatchResult>(m, "DecomposedOrderFlowImbalanceBatchResult")
+        .def_ro("add", &DecomposedOrderFlowImbalanceBatchResult::add)
+        .def_ro("cancel", &DecomposedOrderFlowImbalanceBatchResult::cancel)
+        .def_ro("trade", &DecomposedOrderFlowImbalanceBatchResult::trade)
+        .def_ro("total", &DecomposedOrderFlowImbalanceBatchResult::total);
+    nb::class_<InformationBarResult>(m, "InformationBarResult")
+        .def_ro("bar_open", &InformationBarResult::bar_open)
+        .def_ro("bar_close", &InformationBarResult::bar_close)
+        .def_ro("bar_high", &InformationBarResult::bar_high)
+        .def_ro("bar_low", &InformationBarResult::bar_low)
+        .def_ro("bar_volume", &InformationBarResult::bar_volume)
+        .def_ro("direction", &InformationBarResult::direction)
+        .def_ro("complete", &InformationBarResult::complete)
+        .def_ro("bars", &InformationBarResult::bars);
+    nb::class_<InformationBarBatchResult>(m, "InformationBarBatchResult")
+        .def_ro("bar_open", &InformationBarBatchResult::bar_open)
+        .def_ro("bar_close", &InformationBarBatchResult::bar_close)
+        .def_ro("bar_high", &InformationBarBatchResult::bar_high)
+        .def_ro("bar_low", &InformationBarBatchResult::bar_low)
+        .def_ro("bar_volume", &InformationBarBatchResult::bar_volume)
+        .def_ro("direction", &InformationBarBatchResult::direction)
+        .def_ro("complete", &InformationBarBatchResult::complete)
+        .def_ro("bars", &InformationBarBatchResult::bars);
+    nb::class_<FOCuSResult>(m, "FOCuSResult")
+        .def_ro("signal", &FOCuSResult::signal)
+        .def_ro("statistic", &FOCuSResult::statistic);
+    nb::class_<FOCuSBatchResult>(m, "FOCuSBatchResult")
+        .def_ro("signal", &FOCuSBatchResult::signal)
+        .def_ro("statistic", &FOCuSBatchResult::statistic);
+    nb::class_<DirectionalChangeResult>(m, "DirectionalChangeResult")
+        .def_ro("event", &DirectionalChangeResult::event)
+        .def_ro("overshoot", &DirectionalChangeResult::overshoot)
+        .def_ro("extremum", &DirectionalChangeResult::extremum)
+        .def_ro("direction", &DirectionalChangeResult::direction);
+    nb::class_<DirectionalChangeBatchResult>(m, "DirectionalChangeBatchResult")
+        .def_ro("event", &DirectionalChangeBatchResult::event)
+        .def_ro("overshoot", &DirectionalChangeBatchResult::overshoot)
+        .def_ro("extremum", &DirectionalChangeBatchResult::extremum)
+        .def_ro("direction", &DirectionalChangeBatchResult::direction);
+
+    nb::class_<CrossAssetOrderFlowImbalanceResult>(m, "CrossAssetOrderFlowImbalanceResult")
+        .def_ro("beta", &CrossAssetOrderFlowImbalanceResult::beta)
+        .def_ro("impact", &CrossAssetOrderFlowImbalanceResult::impact)
+        .def_ro("residual", &CrossAssetOrderFlowImbalanceResult::residual)
+        .def_ro("peer_ofi", &CrossAssetOrderFlowImbalanceResult::peer_ofi);
+    nb::class_<CrossAssetOrderFlowImbalanceBatchResult>(m, "CrossAssetOrderFlowImbalanceBatchResult")
+        .def_ro("beta", &CrossAssetOrderFlowImbalanceBatchResult::beta)
+        .def_ro("impact", &CrossAssetOrderFlowImbalanceBatchResult::impact)
+        .def_ro("residual", &CrossAssetOrderFlowImbalanceBatchResult::residual)
+        .def_ro("peer_ofi", &CrossAssetOrderFlowImbalanceBatchResult::peer_ofi);
+    nb::class_<ResidualBOCPDResult>(m, "ResidualBOCPDResult")
+        .def_ro("signal", &ResidualBOCPDResult::signal)
+        .def_ro("probability", &ResidualBOCPDResult::probability);
+    nb::class_<ResidualBOCPDBatchResult>(m, "ResidualBOCPDBatchResult")
+        .def_ro("signal", &ResidualBOCPDBatchResult::signal)
+        .def_ro("probability", &ResidualBOCPDBatchResult::probability);
+
+    nb::class_<InnovationChangepointResult>(m, "InnovationChangepointResult")
+        .def_ro("signal", &InnovationChangepointResult::signal)
+        .def_ro("score", &InnovationChangepointResult::score)
+        .def_ro("residual", &InnovationChangepointResult::residual);
+    nb::class_<InnovationChangepointBatchResult>(m, "InnovationChangepointBatchResult")
+        .def_ro("signal", &InnovationChangepointBatchResult::signal)
+        .def_ro("score", &InnovationChangepointBatchResult::score)
+        .def_ro("residual", &InnovationChangepointBatchResult::residual);
+    nb::class_<MultiPeerOrderFlowImbalanceResult>(m, "MultiPeerOrderFlowImbalanceResult")
+        .def_ro("beta", &MultiPeerOrderFlowImbalanceResult::beta)
+        .def_ro("impact", &MultiPeerOrderFlowImbalanceResult::impact)
+        .def_ro("residual", &MultiPeerOrderFlowImbalanceResult::residual)
+        .def_ro("peer_mean", &MultiPeerOrderFlowImbalanceResult::peer_mean);
+    nb::class_<MultiPeerOrderFlowImbalanceBatchResult>(m, "MultiPeerOrderFlowImbalanceBatchResult")
+        .def_ro("beta", &MultiPeerOrderFlowImbalanceBatchResult::beta)
+        .def_ro("impact", &MultiPeerOrderFlowImbalanceBatchResult::impact)
+        .def_ro("residual", &MultiPeerOrderFlowImbalanceBatchResult::residual)
+        .def_ro("peer_mean", &MultiPeerOrderFlowImbalanceBatchResult::peer_mean);
+
+    nb::class_<GuppyMMARibbonResult>(m, "GuppyMMARibbonResult")
+        .def_ro("s3", &GuppyMMARibbonResult::s3).def_ro("s5", &GuppyMMARibbonResult::s5)
+        .def_ro("s8", &GuppyMMARibbonResult::s8).def_ro("s10", &GuppyMMARibbonResult::s10)
+        .def_ro("s12", &GuppyMMARibbonResult::s12).def_ro("s15", &GuppyMMARibbonResult::s15)
+        .def_ro("l30", &GuppyMMARibbonResult::l30).def_ro("l35", &GuppyMMARibbonResult::l35)
+        .def_ro("l40", &GuppyMMARibbonResult::l40).def_ro("l45", &GuppyMMARibbonResult::l45)
+        .def_ro("l50", &GuppyMMARibbonResult::l50).def_ro("l60", &GuppyMMARibbonResult::l60)
+        .def_ro("short_average", &GuppyMMARibbonResult::short_average)
+        .def_ro("long_average", &GuppyMMARibbonResult::long_average)
+        .def_ro("spread", &GuppyMMARibbonResult::spread);
+    nb::class_<GuppyMMARibbonBatchResult>(m, "GuppyMMARibbonBatchResult")
+        .def_ro("s3", &GuppyMMARibbonBatchResult::s3).def_ro("s5", &GuppyMMARibbonBatchResult::s5)
+        .def_ro("s8", &GuppyMMARibbonBatchResult::s8).def_ro("s10", &GuppyMMARibbonBatchResult::s10)
+        .def_ro("s12", &GuppyMMARibbonBatchResult::s12).def_ro("s15", &GuppyMMARibbonBatchResult::s15)
+        .def_ro("l30", &GuppyMMARibbonBatchResult::l30).def_ro("l35", &GuppyMMARibbonBatchResult::l35)
+        .def_ro("l40", &GuppyMMARibbonBatchResult::l40).def_ro("l45", &GuppyMMARibbonBatchResult::l45)
+        .def_ro("l50", &GuppyMMARibbonBatchResult::l50).def_ro("l60", &GuppyMMARibbonBatchResult::l60)
+        .def_ro("short_average", &GuppyMMARibbonBatchResult::short_average)
+        .def_ro("long_average", &GuppyMMARibbonBatchResult::long_average)
+        .def_ro("spread", &GuppyMMARibbonBatchResult::spread);
+    nb::class_<AndrewsPitchforkResult>(m, "AndrewsPitchforkResult")
+        .def_ro("median", &AndrewsPitchforkResult::median)
+        .def_ro("upper", &AndrewsPitchforkResult::upper)
+        .def_ro("lower", &AndrewsPitchforkResult::lower)
+        .def_ro("pivot", &AndrewsPitchforkResult::pivot)
+        .def_ro("direction", &AndrewsPitchforkResult::direction);
+    nb::class_<AndrewsPitchforkBatchResult>(m, "AndrewsPitchforkBatchResult")
+        .def_ro("median", &AndrewsPitchforkBatchResult::median)
+        .def_ro("upper", &AndrewsPitchforkBatchResult::upper)
+        .def_ro("lower", &AndrewsPitchforkBatchResult::lower)
+        .def_ro("pivot", &AndrewsPitchforkBatchResult::pivot)
+        .def_ro("direction", &AndrewsPitchforkBatchResult::direction);
+    nb::class_<ElderThermometerResult>(m, "ElderThermometerResult")
+        .def_ro("ratio", &ElderThermometerResult::ratio)
+        .def_ro("hot", &ElderThermometerResult::hot)
+        .def_ro("range", &ElderThermometerResult::range);
+    nb::class_<ElderThermometerBatchResult>(m, "ElderThermometerBatchResult")
+        .def_ro("ratio", &ElderThermometerBatchResult::ratio)
+        .def_ro("hot", &ElderThermometerBatchResult::hot)
+        .def_ro("range", &ElderThermometerBatchResult::range);
+
+    nb::class_<RainbowMovingAverageResult>(m, "RainbowMovingAverageResult")
+        .def_ro("outer", &RainbowMovingAverageResult::outer)
+        .def_ro("highest", &RainbowMovingAverageResult::highest)
+        .def_ro("lowest", &RainbowMovingAverageResult::lowest)
+        .def_ro("mid", &RainbowMovingAverageResult::mid)
+        .def_ro("width", &RainbowMovingAverageResult::width);
+    nb::class_<RainbowMovingAverageBatchResult>(m, "RainbowMovingAverageBatchResult")
+        .def_ro("outer", &RainbowMovingAverageBatchResult::outer)
+        .def_ro("highest", &RainbowMovingAverageBatchResult::highest)
+        .def_ro("lowest", &RainbowMovingAverageBatchResult::lowest)
+        .def_ro("mid", &RainbowMovingAverageBatchResult::mid)
+        .def_ro("width", &RainbowMovingAverageBatchResult::width);
+    nb::class_<RainbowOscillatorResult>(m, "RainbowOscillatorResult")
+        .def_ro("value", &RainbowOscillatorResult::value)
+        .def_ro("position", &RainbowOscillatorResult::position)
+        .def_ro("width", &RainbowOscillatorResult::width);
+    nb::class_<RainbowOscillatorBatchResult>(m, "RainbowOscillatorBatchResult")
+        .def_ro("value", &RainbowOscillatorBatchResult::value)
+        .def_ro("position", &RainbowOscillatorBatchResult::position)
+        .def_ro("width", &RainbowOscillatorBatchResult::width);
+    nb::class_<ProjectionOscillatorResult>(m, "ProjectionOscillatorResult")
+        .def_ro("value", &ProjectionOscillatorResult::value)
+        .def_ro("signal", &ProjectionOscillatorResult::signal)
+        .def_ro("upper", &ProjectionOscillatorResult::upper)
+        .def_ro("lower", &ProjectionOscillatorResult::lower);
+    nb::class_<ProjectionOscillatorBatchResult>(m, "ProjectionOscillatorBatchResult")
+        .def_ro("value", &ProjectionOscillatorBatchResult::value)
+        .def_ro("signal", &ProjectionOscillatorBatchResult::signal)
+        .def_ro("upper", &ProjectionOscillatorBatchResult::upper)
+        .def_ro("lower", &ProjectionOscillatorBatchResult::lower);
+    nb::class_<MessageEventOrderFlowImbalanceResult>(m, "MessageEventOrderFlowImbalanceResult")
+        .def_ro("ofi", &MessageEventOrderFlowImbalanceResult::ofi)
+        .def_ro("event", &MessageEventOrderFlowImbalanceResult::event)
+        .def_ro("signed_size", &MessageEventOrderFlowImbalanceResult::signed_size);
+    nb::class_<MessageEventOrderFlowImbalanceBatchResult>(m, "MessageEventOrderFlowImbalanceBatchResult")
+        .def_ro("ofi", &MessageEventOrderFlowImbalanceBatchResult::ofi)
+        .def_ro("event", &MessageEventOrderFlowImbalanceBatchResult::event)
+        .def_ro("signed_size", &MessageEventOrderFlowImbalanceBatchResult::signed_size);
+    nb::class_<HawkesIntensityResult>(m, "HawkesIntensityResult")
+        .def_ro("intensity", &HawkesIntensityResult::intensity)
+        .def_ro("excitation", &HawkesIntensityResult::excitation)
+        .def_ro("baseline", &HawkesIntensityResult::baseline);
+    nb::class_<HawkesIntensityBatchResult>(m, "HawkesIntensityBatchResult")
+        .def_ro("intensity", &HawkesIntensityBatchResult::intensity)
+        .def_ro("excitation", &HawkesIntensityBatchResult::excitation)
+        .def_ro("baseline", &HawkesIntensityBatchResult::baseline);
+    nb::class_<WeightedMultiPeerOrderFlowImbalanceResult>(m, "WeightedMultiPeerOrderFlowImbalanceResult")
+        .def_ro("beta", &WeightedMultiPeerOrderFlowImbalanceResult::beta)
+        .def_ro("impact", &WeightedMultiPeerOrderFlowImbalanceResult::impact)
+        .def_ro("residual", &WeightedMultiPeerOrderFlowImbalanceResult::residual)
+        .def_ro("peer_mean", &WeightedMultiPeerOrderFlowImbalanceResult::peer_mean);
+    nb::class_<WeightedMultiPeerOrderFlowImbalanceBatchResult>(m, "WeightedMultiPeerOrderFlowImbalanceBatchResult")
+        .def_ro("beta", &WeightedMultiPeerOrderFlowImbalanceBatchResult::beta)
+        .def_ro("impact", &WeightedMultiPeerOrderFlowImbalanceBatchResult::impact)
+        .def_ro("residual", &WeightedMultiPeerOrderFlowImbalanceBatchResult::residual)
+        .def_ro("peer_mean", &WeightedMultiPeerOrderFlowImbalanceBatchResult::peer_mean);
+    nb::class_<ConformalBandsResult>(m, "ConformalBandsResult")
+        .def_ro("middle", &ConformalBandsResult::middle)
+        .def_ro("upper", &ConformalBandsResult::upper)
+        .def_ro("lower", &ConformalBandsResult::lower)
+        .def_ro("radius", &ConformalBandsResult::radius);
+    nb::class_<ConformalBandsBatchResult>(m, "ConformalBandsBatchResult")
+        .def_ro("middle", &ConformalBandsBatchResult::middle)
+        .def_ro("upper", &ConformalBandsBatchResult::upper)
+        .def_ro("lower", &ConformalBandsBatchResult::lower)
+        .def_ro("radius", &ConformalBandsBatchResult::radius);
+
+    nb::class_<MACDResult>(m, "MACDResult")
+        .def_ro("macd", &MACDResult::macd)
+        .def_ro("signal", &MACDResult::signal)
+        .def_ro("histogram", &MACDResult::histogram);
+    nb::class_<MACDBatchResult>(m, "MACDBatchResult")
+        .def_ro("macd", &MACDBatchResult::macd)
+        .def_ro("signal", &MACDBatchResult::signal)
+        .def_ro("histogram", &MACDBatchResult::histogram);
+    nb::class_<RelativeVolatilityIndexResult>(m, "RelativeVolatilityIndexResult")
+        .def_ro("rvi", &RelativeVolatilityIndexResult::rvi)
+        .def_ro("signal", &RelativeVolatilityIndexResult::signal);
+    nb::class_<RelativeVolatilityIndexBatchResult>(m, "RelativeVolatilityIndexBatchResult")
+        .def_ro("rvi", &RelativeVolatilityIndexBatchResult::rvi)
+        .def_ro("signal", &RelativeVolatilityIndexBatchResult::signal);
+    nb::class_<PivotPointsResult>(m, "PivotPointsResult")
+        .def_ro("pp", &PivotPointsResult::pp)
+        .def_ro("r1", &PivotPointsResult::r1)
+        .def_ro("r2", &PivotPointsResult::r2)
+        .def_ro("r3", &PivotPointsResult::r3)
+        .def_ro("s1", &PivotPointsResult::s1)
+        .def_ro("s2", &PivotPointsResult::s2)
+        .def_ro("s3", &PivotPointsResult::s3);
+    nb::class_<PivotPointsBatchResult>(m, "PivotPointsBatchResult")
+        .def_ro("pp", &PivotPointsBatchResult::pp)
+        .def_ro("r1", &PivotPointsBatchResult::r1)
+        .def_ro("r2", &PivotPointsBatchResult::r2)
+        .def_ro("r3", &PivotPointsBatchResult::r3)
+        .def_ro("s1", &PivotPointsBatchResult::s1)
+        .def_ro("s2", &PivotPointsBatchResult::s2)
+        .def_ro("s3", &PivotPointsBatchResult::s3);
+    nb::class_<WilliamsFractalsResult>(m, "WilliamsFractalsResult")
+        .def_ro("up", &WilliamsFractalsResult::up)
+        .def_ro("down", &WilliamsFractalsResult::down);
+    nb::class_<WilliamsFractalsBatchResult>(m, "WilliamsFractalsBatchResult")
+        .def_ro("up", &WilliamsFractalsBatchResult::up)
+        .def_ro("down", &WilliamsFractalsBatchResult::down);
+    nb::class_<RandomWalkIndexResult>(m, "RandomWalkIndexResult")
+        .def_ro("high", &RandomWalkIndexResult::high)
+        .def_ro("low", &RandomWalkIndexResult::low);
+    nb::class_<RandomWalkIndexBatchResult>(m, "RandomWalkIndexBatchResult")
+        .def_ro("high", &RandomWalkIndexBatchResult::high)
+        .def_ro("low", &RandomWalkIndexBatchResult::low);
+nb::class_<PercentagePriceResult>(m, "PercentagePriceResult")
         .def_ro("ppo", &PercentagePriceResult::ppo)
         .def_ro("signal", &PercentagePriceResult::signal)
         .def_ro("histogram", &PercentagePriceResult::histogram);
@@ -18892,7 +29000,94 @@ NB_MODULE(indicator, m) {
         .def_ro("upper", &BollingerBandsBatchResult::upper)
         .def_ro("lower", &BollingerBandsBatchResult::lower);
 
-    nb::class_<KalmanPredictionBandsResult>(m, "KalmanPredictionBandsResult")
+    nb::class_<MovingAverageEnvelopeResult>(m, "MovingAverageEnvelopeResult")
+        .def_ro("middle", &MovingAverageEnvelopeResult::middle)
+        .def_ro("upper", &MovingAverageEnvelopeResult::upper)
+        .def_ro("lower", &MovingAverageEnvelopeResult::lower);
+
+    nb::class_<MovingAverageEnvelopeBatchResult>(m, "MovingAverageEnvelopeBatchResult")
+        .def_ro("middle", &MovingAverageEnvelopeBatchResult::middle)
+        .def_ro("upper", &MovingAverageEnvelopeBatchResult::upper)
+        .def_ro("lower", &MovingAverageEnvelopeBatchResult::lower);
+
+
+    nb::class_<StochasticMomentumIndexResult>(m, "StochasticMomentumIndexResult")
+        .def_ro("smi", &StochasticMomentumIndexResult::smi)
+        .def_ro("signal", &StochasticMomentumIndexResult::signal);
+
+    nb::class_<StochasticMomentumIndexBatchResult>(m, "StochasticMomentumIndexBatchResult")
+        .def_ro("smi", &StochasticMomentumIndexBatchResult::smi)
+        .def_ro("signal", &StochasticMomentumIndexBatchResult::signal);
+
+    nb::class_<AlligatorResult>(m, "AlligatorResult")
+        .def_ro("jaw", &AlligatorResult::jaw)
+        .def_ro("teeth", &AlligatorResult::teeth)
+        .def_ro("lips", &AlligatorResult::lips);
+
+    nb::class_<AlligatorBatchResult>(m, "AlligatorBatchResult")
+        .def_ro("jaw", &AlligatorBatchResult::jaw)
+        .def_ro("teeth", &AlligatorBatchResult::teeth)
+        .def_ro("lips", &AlligatorBatchResult::lips);
+
+    nb::class_<GatorOscillatorResult>(m, "GatorOscillatorResult")
+        .def_ro("upper", &GatorOscillatorResult::upper)
+        .def_ro("lower", &GatorOscillatorResult::lower);
+
+    nb::class_<GatorOscillatorBatchResult>(m, "GatorOscillatorBatchResult")
+        .def_ro("upper", &GatorOscillatorBatchResult::upper)
+        .def_ro("lower", &GatorOscillatorBatchResult::lower);
+
+    nb::class_<SqueezeMomentumResult>(m, "SqueezeMomentumResult")
+        .def_ro("on", &SqueezeMomentumResult::on)
+        .def_ro("momentum", &SqueezeMomentumResult::momentum);
+
+    nb::class_<SqueezeMomentumBatchResult>(m, "SqueezeMomentumBatchResult")
+        .def_ro("on", &SqueezeMomentumBatchResult::on)
+        .def_ro("momentum", &SqueezeMomentumBatchResult::momentum);
+
+    nb::class_<WaveTrendResult>(m, "WaveTrendResult")
+        .def_ro("wt1", &WaveTrendResult::wt1)
+        .def_ro("wt2", &WaveTrendResult::wt2);
+
+    nb::class_<WaveTrendBatchResult>(m, "WaveTrendBatchResult")
+        .def_ro("wt1", &WaveTrendBatchResult::wt1)
+        .def_ro("wt2", &WaveTrendBatchResult::wt2);
+
+    nb::class_<HilbertPhasorResult>(m, "HilbertPhasorResult")
+        .def_ro("inphase", &HilbertPhasorResult::inphase)
+        .def_ro("quadrature", &HilbertPhasorResult::quadrature);
+
+    nb::class_<HilbertPhasorBatchResult>(m, "HilbertPhasorBatchResult")
+        .def_ro("inphase", &HilbertPhasorBatchResult::inphase)
+        .def_ro("quadrature", &HilbertPhasorBatchResult::quadrature);
+
+    nb::class_<HilbertSineWaveResult>(m, "HilbertSineWaveResult")
+        .def_ro("sine", &HilbertSineWaveResult::sine)
+        .def_ro("lead_sine", &HilbertSineWaveResult::lead_sine);
+
+    nb::class_<HilbertSineWaveBatchResult>(m, "HilbertSineWaveBatchResult")
+        .def_ro("sine", &HilbertSineWaveBatchResult::sine)
+        .def_ro("lead_sine", &HilbertSineWaveBatchResult::lead_sine);
+
+    nb::class_<ChandelierExitResult>(m, "ChandelierExitResult")
+        .def_ro("long_exit", &ChandelierExitResult::long_exit)
+        .def_ro("short_exit", &ChandelierExitResult::short_exit);
+
+    nb::class_<ChandelierExitBatchResult>(m, "ChandelierExitBatchResult")
+        .def_ro("long_exit", &ChandelierExitBatchResult::long_exit)
+        .def_ro("short_exit", &ChandelierExitBatchResult::short_exit);
+
+    nb::class_<AccelerationBandsResult>(m, "AccelerationBandsResult")
+        .def_ro("middle", &AccelerationBandsResult::middle)
+        .def_ro("upper", &AccelerationBandsResult::upper)
+        .def_ro("lower", &AccelerationBandsResult::lower);
+
+    nb::class_<AccelerationBandsBatchResult>(m, "AccelerationBandsBatchResult")
+        .def_ro("middle", &AccelerationBandsBatchResult::middle)
+        .def_ro("upper", &AccelerationBandsBatchResult::upper)
+        .def_ro("lower", &AccelerationBandsBatchResult::lower);
+
+nb::class_<KalmanPredictionBandsResult>(m, "KalmanPredictionBandsResult")
         .def_ro("middle", &KalmanPredictionBandsResult::middle)
         .def_ro("upper", &KalmanPredictionBandsResult::upper)
         .def_ro("lower", &KalmanPredictionBandsResult::lower);
@@ -20583,22 +30778,25 @@ NB_MODULE(indicator, m) {
              nb::arg("window2") = 26,
              nb::arg("window3") = 52,
              nb::arg("fillna") = true)
-        .def("update", &Ichimoku::update, nb::arg("high"), nb::arg("low"))
-        RTTA_ADVANCE2(Ichimoku, high, low)
-        RTTA_REPLAY2(Ichimoku, high, low)
-        RTTA_FIELD2(Ichimoku, conversion, high, low)
-        RTTA_FIELD2(Ichimoku, base, high, low)
-        RTTA_FIELD2(Ichimoku, span_a, high, low)
-        RTTA_FIELD2(Ichimoku, span_b, high, low)
-        RTTA_REPLAY_OUTPUTS2(Ichimoku, high, low, batch_ichimoku)
-        .def("batch", &Ichimoku::batch, array_arg("high"), array_arg("low"))
-        .def("batch", [](Ichimoku &self, const FloatInputArray &high, const FloatInputArray &low) {
-            return batch_ichimoku(self, high, low);
-        }, array_arg("high"), array_arg("low"))
+        .def("update", &Ichimoku::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(Ichimoku, high, low, close)
+        RTTA_REPLAY3(Ichimoku, high, low, close)
+        RTTA_FIELD3(Ichimoku, conversion, high, low, close)
+        RTTA_FIELD3(Ichimoku, base, high, low, close)
+        RTTA_FIELD3(Ichimoku, span_a, high, low, close)
+        RTTA_FIELD3(Ichimoku, span_b, high, low, close)
+        RTTA_FIELD3(Ichimoku, lagging_span, high, low, close)
+        RTTA_FIELD3(Ichimoku, span_a_displaced, high, low, close)
+        RTTA_FIELD3(Ichimoku, span_b_displaced, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(Ichimoku, high, low, close, batch_ichimoku)
+        .def("batch", &Ichimoku::batch, array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](Ichimoku &self, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close) {
+            return batch_ichimoku(self, high, low, close);
+        }, array_arg("high"), array_arg("low"), array_arg("close"))
         .def("batch", [](Ichimoku &self, nb::iterable records) {
             if (table_has_column(records, "high")) {
-                return dispatch_table2(self, records, "high", "low", [](auto &indicator, const auto &high, const auto &low) {
-                    return batch_ichimoku(indicator, high, low);
+                return dispatch_table3(self, records, "high", "low", "close", [](auto &indicator, const auto &high, const auto &low, const auto &close) {
+                    return batch_ichimoku(indicator, high, low, close);
                 });
             }
 
@@ -20606,21 +30804,28 @@ NB_MODULE(indicator, m) {
             std::vector<double> base;
             std::vector<double> span_a;
             std::vector<double> span_b;
+            std::vector<double> lagging_span;
             base.reserve(conversion.capacity());
             span_a.reserve(conversion.capacity());
             span_b.reserve(conversion.capacity());
+            lagging_span.reserve(conversion.capacity());
             for (nb::handle record : records) {
-                const IchimokuResult out = self.update(record_value(record, "high", 0), record_value(record, "low", 1));
+                const IchimokuResult out = self.update(
+                    record_value(record, "high", 0),
+                    record_value(record, "low", 1),
+                    record_value(record, "close", 2));
                 conversion.push_back(out.conversion);
                 base.push_back(out.base);
                 span_a.push_back(out.span_a);
                 span_b.push_back(out.span_b);
+                lagging_span.push_back(out.lagging_span);
             }
             return IchimokuBatchResult{
                 make_array(std::move(conversion)),
                 make_array(std::move(base)),
                 make_array(std::move(span_a)),
                 make_array(std::move(span_b)),
+                make_array(std::move(lagging_span)),
             };
         }, nb::arg("records"));
 
@@ -22130,27 +32335,31 @@ NB_MODULE(indicator, m) {
         RTTA_REPLAY1(LinearRegressionSlope, value)
         RTTA_BATCH1(LinearRegressionSlope, value, "value");
 
+
     nb::class_<MACD>(m, "MACD")
         .def(nb::init<int, int, int, bool>(), nb::arg("a") = 12, nb::arg("b") = 26, nb::arg("c") = 9, nb::arg("fillna") = false)
         .def("update", &MACD::update, nb::arg("value"))
         RTTA_ADVANCE1(MACD, value)
         RTTA_REPLAY1(MACD, value)
-        .def("batch", &MACD::batch, array_arg("input"))
-        .def("batch", [](MACD &self, const FloatInputArray &input) {
-            return batch_update1(self, input);
-        }, array_arg("input"))
-        .def("batch", [](MACD &self, nb::iterable records) {
-            return batch_records_one(self, records, "input");
-        }, nb::arg("records"));
+        RTTA_FIELD1(MACD, macd, value)
+        RTTA_FIELD1(MACD, signal, value)
+        RTTA_FIELD1(MACD, histogram, value)
+        RTTA_REPLAY_OUTPUTS1(MACD, value, batch_macd)
+        RTTA_MULTI_BATCH1(MACD, value, "value", batch_macd);
+
 
     nb::class_<MACDFix>(m, "MACDFix")
         .def(nb::init<int, bool>(), nb::arg("signal") = 9, nb::arg("fillna") = false)
         .def("update", &MACDFix::update, nb::arg("close"))
         RTTA_ADVANCE1(MACDFix, close)
         RTTA_REPLAY1(MACDFix, close)
-        RTTA_BATCH1(MACDFix, close, "close");
+        RTTA_FIELD1(MACDFix, macd, close)
+        RTTA_FIELD1(MACDFix, signal, close)
+        RTTA_FIELD1(MACDFix, histogram, close)
+        RTTA_REPLAY_OUTPUTS1(MACDFix, close, batch_macd_fix)
+        RTTA_MULTI_BATCH1(MACDFix, close, "close", batch_macd_fix);
 
-    nb::class_<MassIndex>(m, "MassIndex")
+nb::class_<MassIndex>(m, "MassIndex")
         .def(nb::init<int, int, int, bool>(),
              nb::arg("single") = 9,
              nb::arg("double") = 9,
@@ -23561,4 +33770,1962 @@ NB_MODULE(indicator, m) {
                 make_array(std::move(lower)),
             };
         }, nb::arg("records"));
+
+    nb::class_<BollingerPercentB>(m, "BollingerPercentB")
+        .def(nb::init<int, double, bool>(),
+             nb::arg("window") = 20,
+             nb::arg("num_std") = 2.0,
+             nb::arg("fillna") = true)
+        .def("update", &BollingerPercentB::update, nb::arg("value"))
+        RTTA_ADVANCE1(BollingerPercentB, value)
+        RTTA_REPLAY1(BollingerPercentB, value)
+        RTTA_BATCH1_ARRAY(BollingerPercentB, value, "value");
+
+    nb::class_<BollingerBandwidth>(m, "BollingerBandwidth")
+        .def(nb::init<int, double, bool>(),
+             nb::arg("window") = 20,
+             nb::arg("num_std") = 2.0,
+             nb::arg("fillna") = true)
+        .def("update", &BollingerBandwidth::update, nb::arg("value"))
+        RTTA_ADVANCE1(BollingerBandwidth, value)
+        RTTA_REPLAY1(BollingerBandwidth, value)
+        RTTA_BATCH1_ARRAY(BollingerBandwidth, value, "value");
+
+    nb::class_<SmoothedMovingAverage>(m, "SmoothedMovingAverage")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &SmoothedMovingAverage::update, nb::arg("value"))
+        RTTA_ADVANCE1(SmoothedMovingAverage, value)
+        RTTA_REPLAY1(SmoothedMovingAverage, value)
+        RTTA_BATCH1_ARRAY(SmoothedMovingAverage, value, "value");
+
+    nb::class_<ZeroLagEMA>(m, "ZeroLagEMA")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &ZeroLagEMA::update, nb::arg("value"))
+        RTTA_ADVANCE1(ZeroLagEMA, value)
+        RTTA_REPLAY1(ZeroLagEMA, value)
+        RTTA_BATCH1_ARRAY(ZeroLagEMA, value, "value");
+
+    nb::class_<ArnaudLegouxMovingAverage>(m, "ArnaudLegouxMovingAverage")
+        .def(nb::init<int, double, double, bool>(),
+             nb::arg("window") = 9,
+             nb::arg("offset") = 0.85,
+             nb::arg("sigma") = 6.0,
+             nb::arg("fillna") = true)
+        .def("update", &ArnaudLegouxMovingAverage::update, nb::arg("value"))
+        RTTA_ADVANCE1(ArnaudLegouxMovingAverage, value)
+        RTTA_REPLAY1(ArnaudLegouxMovingAverage, value)
+        RTTA_BATCH1_ARRAY(ArnaudLegouxMovingAverage, value, "value");
+
+    nb::class_<McGinleyDynamic>(m, "McGinleyDynamic")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &McGinleyDynamic::update, nb::arg("value"))
+        RTTA_ADVANCE1(McGinleyDynamic, value)
+        RTTA_REPLAY1(McGinleyDynamic, value)
+        RTTA_BATCH1_ARRAY(McGinleyDynamic, value, "value");
+
+    nb::class_<MovingAverageEnvelope>(m, "MovingAverageEnvelope")
+        .def(nb::init<int, double, bool>(),
+             nb::arg("window") = 20,
+             nb::arg("percent") = 0.025,
+             nb::arg("fillna") = true)
+        .def("update", &MovingAverageEnvelope::update, nb::arg("value"))
+        RTTA_ADVANCE1(MovingAverageEnvelope, value)
+        RTTA_REPLAY1(MovingAverageEnvelope, value)
+        RTTA_FIELD1(MovingAverageEnvelope, middle, value)
+        RTTA_FIELD1(MovingAverageEnvelope, upper, value)
+        RTTA_FIELD1(MovingAverageEnvelope, lower, value)
+        RTTA_REPLAY_OUTPUTS1(MovingAverageEnvelope, value, batch_moving_average_envelope)
+        .def("batch", [](MovingAverageEnvelope &self, const InputArray &value) {
+            return batch_moving_average_envelope(self, value);
+        }, array_arg("value"))
+        .def("batch", [](MovingAverageEnvelope &self, const FloatInputArray &value) {
+            return batch_moving_average_envelope(self, value);
+        }, array_arg("value"))
+        .def("batch", [](MovingAverageEnvelope &self, nb::iterable records) {
+            if (table_has_column(records, "value")) {
+                return dispatch_table1(self, records, "value", [](auto &indicator, const auto &value) {
+                    return batch_moving_average_envelope(indicator, value);
+                });
+            }
+
+            std::vector<double> middle = make_record_output(records);
+            std::vector<double> upper;
+            std::vector<double> lower;
+            upper.reserve(middle.capacity());
+            lower.reserve(middle.capacity());
+            for (nb::handle record : records) {
+                const MovingAverageEnvelopeResult out = self.update(record_value(record, "value", 0));
+                middle.push_back(out.middle);
+                upper.push_back(out.upper);
+                lower.push_back(out.lower);
+            }
+            return MovingAverageEnvelopeBatchResult{
+                make_array(std::move(middle)),
+                make_array(std::move(upper)),
+                make_array(std::move(lower)),
+            };
+        }, nb::arg("records"));
+
+    nb::class_<PositiveVolumeIndex>(m, "PositiveVolumeIndex")
+        .def(nb::init<>())
+        .def("update", &PositiveVolumeIndex::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(PositiveVolumeIndex, close, volume)
+        RTTA_REPLAY2(PositiveVolumeIndex, close, volume)
+        .def("batch", &PositiveVolumeIndex::batch, array_arg("close"), array_arg("volume"))
+        .def("batch", [](PositiveVolumeIndex &self, const FloatInputArray &close, const FloatInputArray &volume) {
+            return batch_update2(self, close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("batch", [](PositiveVolumeIndex &self, nb::iterable records) {
+            return batch_records_two(self, records, "close", "volume");
+        }, nb::arg("records"));
+
+    nb::class_<VolumeOscillator>(m, "VolumeOscillator")
+        .def(nb::init<int, int, bool>(),
+             nb::arg("short_window") = 12,
+             nb::arg("long_window") = 26,
+             nb::arg("fillna") = true)
+        .def("update", &VolumeOscillator::update, nb::arg("volume"))
+        RTTA_ADVANCE1(VolumeOscillator, volume)
+        RTTA_REPLAY1(VolumeOscillator, volume)
+        RTTA_BATCH1_ARRAY(VolumeOscillator, volume, "volume");
+
+    nb::class_<EfficiencyRatio>(m, "EfficiencyRatio")
+        .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
+        .def("update", &EfficiencyRatio::update, nb::arg("close"))
+        RTTA_ADVANCE1(EfficiencyRatio, close)
+        RTTA_REPLAY1(EfficiencyRatio, close)
+        RTTA_BATCH1_ARRAY(EfficiencyRatio, close, "close");
+
+    nb::class_<HistoricalVolatility>(m, "HistoricalVolatility")
+        .def(nb::init<int, double, bool>(),
+             nb::arg("window") = 20,
+             nb::arg("periods_per_year") = 252.0,
+             nb::arg("fillna") = true)
+        .def("update", &HistoricalVolatility::update, nb::arg("close"))
+        RTTA_ADVANCE1(HistoricalVolatility, close)
+        RTTA_REPLAY1(HistoricalVolatility, close)
+        RTTA_BATCH1_ARRAY(HistoricalVolatility, close, "close");
+
+    nb::class_<ChaikinVolatility>(m, "ChaikinVolatility")
+        .def(nb::init<int, int, bool>(),
+             nb::arg("ema_window") = 10,
+             nb::arg("roc_window") = 10,
+             nb::arg("fillna") = true)
+        .def("update", &ChaikinVolatility::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(ChaikinVolatility, high, low)
+        RTTA_REPLAY2(ChaikinVolatility, high, low)
+        RTTA_BATCH2_ARRAY(ChaikinVolatility, high, low, "high", "low");
+
+    nb::class_<StochasticMomentumIndex>(m, "StochasticMomentumIndex")
+        .def(nb::init<int, int, int, int, bool>(),
+             nb::arg("window") = 14,
+             nb::arg("smooth1") = 3,
+             nb::arg("smooth2") = 3,
+             nb::arg("signal") = 3,
+             nb::arg("fillna") = true)
+        .def("update", &StochasticMomentumIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(StochasticMomentumIndex, close, high, low)
+        RTTA_REPLAY3(StochasticMomentumIndex, close, high, low)
+        RTTA_FIELD3(StochasticMomentumIndex, smi, close, high, low)
+        RTTA_FIELD3(StochasticMomentumIndex, signal, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(StochasticMomentumIndex, close, high, low, batch_stochastic_momentum_index)
+        RTTA_MULTI_BATCH3(StochasticMomentumIndex, close, high, low, "close", "high", "low", batch_stochastic_momentum_index);
+
+    nb::class_<DeMarker>(m, "DeMarker")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &DeMarker::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(DeMarker, high, low)
+        RTTA_REPLAY2(DeMarker, high, low)
+        RTTA_BATCH2_ARRAY(DeMarker, high, low, "high", "low");
+
+    nb::class_<IntradayMomentumIndex>(m, "IntradayMomentumIndex")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &IntradayMomentumIndex::update, nb::arg("open"), nb::arg("close"))
+        RTTA_ADVANCE2(IntradayMomentumIndex, open, close)
+        RTTA_REPLAY2(IntradayMomentumIndex, open, close)
+        RTTA_BATCH2_ARRAY(IntradayMomentumIndex, open, close, "open", "close");
+
+    nb::class_<AccelerationBands>(m, "AccelerationBands")
+        .def(nb::init<int, double, bool>(),
+             nb::arg("window") = 20,
+             nb::arg("factor") = 4.0,
+             nb::arg("fillna") = true)
+        .def("update", &AccelerationBands::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(AccelerationBands, close, high, low)
+        RTTA_REPLAY3(AccelerationBands, close, high, low)
+        RTTA_FIELD3(AccelerationBands, middle, close, high, low)
+        RTTA_FIELD3(AccelerationBands, upper, close, high, low)
+        RTTA_FIELD3(AccelerationBands, lower, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(AccelerationBands, close, high, low, batch_acceleration_bands)
+        RTTA_MULTI_BATCH3(AccelerationBands, close, high, low, "close", "high", "low", batch_acceleration_bands);
+
+    nb::class_<ChandelierExit>(m, "ChandelierExit")
+        .def(nb::init<int, double, bool>(),
+             nb::arg("window") = 22,
+             nb::arg("multiplier") = 3.0,
+             nb::arg("fillna") = true)
+        .def("update", &ChandelierExit::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(ChandelierExit, close, high, low)
+        RTTA_REPLAY3(ChandelierExit, close, high, low)
+        RTTA_FIELD3(ChandelierExit, long_exit, close, high, low)
+        RTTA_FIELD3(ChandelierExit, short_exit, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(ChandelierExit, close, high, low, batch_chandelier_exit)
+        RTTA_MULTI_BATCH3(ChandelierExit, close, high, low, "close", "high", "low", batch_chandelier_exit);
+
+    nb::class_<Alligator>(m, "Alligator")
+        .def(nb::init<int, int, int, int, int, int, bool>(),
+             nb::arg("jaw_window") = 13,
+             nb::arg("teeth_window") = 8,
+             nb::arg("lips_window") = 5,
+             nb::arg("jaw_shift") = 8,
+             nb::arg("teeth_shift") = 5,
+             nb::arg("lips_shift") = 3,
+             nb::arg("fillna") = true)
+        .def("update", &Alligator::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(Alligator, high, low)
+        RTTA_REPLAY2(Alligator, high, low)
+        RTTA_FIELD2(Alligator, jaw, high, low)
+        RTTA_FIELD2(Alligator, teeth, high, low)
+        RTTA_FIELD2(Alligator, lips, high, low)
+        RTTA_REPLAY_OUTPUTS2(Alligator, high, low, batch_alligator)
+        RTTA_MULTI_BATCH2(Alligator, high, low, "high", "low", batch_alligator);
+
+    nb::class_<GatorOscillator>(m, "GatorOscillator")
+        .def(nb::init<int, int, int, int, int, int, bool>(),
+             nb::arg("jaw_window") = 13,
+             nb::arg("teeth_window") = 8,
+             nb::arg("lips_window") = 5,
+             nb::arg("jaw_shift") = 8,
+             nb::arg("teeth_shift") = 5,
+             nb::arg("lips_shift") = 3,
+             nb::arg("fillna") = true)
+        .def("update", &GatorOscillator::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(GatorOscillator, high, low)
+        RTTA_REPLAY2(GatorOscillator, high, low)
+        RTTA_FIELD2(GatorOscillator, upper, high, low)
+        RTTA_FIELD2(GatorOscillator, lower, high, low)
+        RTTA_REPLAY_OUTPUTS2(GatorOscillator, high, low, batch_gator)
+        RTTA_MULTI_BATCH2(GatorOscillator, high, low, "high", "low", batch_gator);
+
+    nb::class_<AcceleratorOscillator>(m, "AcceleratorOscillator")
+        .def(nb::init<int, int, int, bool>(),
+             nb::arg("ao_slow") = 34,
+             nb::arg("ao_fast") = 5,
+             nb::arg("smooth") = 5,
+             nb::arg("fillna") = true)
+        .def("update", &AcceleratorOscillator::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(AcceleratorOscillator, high, low)
+        RTTA_REPLAY2(AcceleratorOscillator, high, low)
+        RTTA_BATCH2_ARRAY(AcceleratorOscillator, high, low, "high", "low");
+
+    nb::class_<SqueezeMomentum>(m, "SqueezeMomentum")
+        .def(nb::init<int, double, double, bool>(),
+             nb::arg("window") = 20,
+             nb::arg("bb_mult") = 2.0,
+             nb::arg("kc_mult") = 1.5,
+             nb::arg("fillna") = true)
+        .def("update", &SqueezeMomentum::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(SqueezeMomentum, close, high, low)
+        RTTA_REPLAY3(SqueezeMomentum, close, high, low)
+        RTTA_FIELD3(SqueezeMomentum, on, close, high, low)
+        RTTA_FIELD3(SqueezeMomentum, momentum, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(SqueezeMomentum, close, high, low, batch_squeeze_momentum)
+        RTTA_MULTI_BATCH3(SqueezeMomentum, close, high, low, "close", "high", "low", batch_squeeze_momentum);
+
+    nb::class_<WaveTrend>(m, "WaveTrend")
+        .def(nb::init<int, int, int, bool>(),
+             nb::arg("channel_length") = 10,
+             nb::arg("average_length") = 21,
+             nb::arg("signal_length") = 4,
+             nb::arg("fillna") = true)
+        .def("update", &WaveTrend::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(WaveTrend, high, low, close)
+        RTTA_REPLAY3(WaveTrend, high, low, close)
+        RTTA_FIELD3(WaveTrend, wt1, high, low, close)
+        RTTA_FIELD3(WaveTrend, wt2, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(WaveTrend, high, low, close, batch_wave_trend)
+        RTTA_MULTI_BATCH3(WaveTrend, high, low, close, "high", "low", "close", batch_wave_trend);
+
+    nb::class_<HilbertDominantCyclePeriod>(m, "HilbertDominantCyclePeriod")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &HilbertDominantCyclePeriod::update, nb::arg("value"))
+        RTTA_ADVANCE1(HilbertDominantCyclePeriod, value)
+        RTTA_REPLAY1(HilbertDominantCyclePeriod, value)
+        RTTA_BATCH1_ARRAY(HilbertDominantCyclePeriod, value, "value");
+
+    nb::class_<HilbertDominantCyclePhase>(m, "HilbertDominantCyclePhase")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &HilbertDominantCyclePhase::update, nb::arg("value"))
+        RTTA_ADVANCE1(HilbertDominantCyclePhase, value)
+        RTTA_REPLAY1(HilbertDominantCyclePhase, value)
+        RTTA_BATCH1_ARRAY(HilbertDominantCyclePhase, value, "value");
+
+    nb::class_<HilbertPhasor>(m, "HilbertPhasor")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &HilbertPhasor::update, nb::arg("value"))
+        RTTA_ADVANCE1(HilbertPhasor, value)
+        RTTA_REPLAY1(HilbertPhasor, value)
+        RTTA_FIELD1(HilbertPhasor, inphase, value)
+        RTTA_FIELD1(HilbertPhasor, quadrature, value)
+        RTTA_REPLAY_OUTPUTS1(HilbertPhasor, value, batch_hilbert_phasor)
+        RTTA_MULTI_BATCH1(HilbertPhasor, value, "value", batch_hilbert_phasor);
+
+    nb::class_<HilbertSineWave>(m, "HilbertSineWave")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &HilbertSineWave::update, nb::arg("value"))
+        RTTA_ADVANCE1(HilbertSineWave, value)
+        RTTA_REPLAY1(HilbertSineWave, value)
+        RTTA_FIELD1(HilbertSineWave, sine, value)
+        RTTA_FIELD1(HilbertSineWave, lead_sine, value)
+        RTTA_REPLAY_OUTPUTS1(HilbertSineWave, value, batch_hilbert_sine_wave)
+        RTTA_MULTI_BATCH1(HilbertSineWave, value, "value", batch_hilbert_sine_wave);
+
+    nb::class_<HilbertTrendMode>(m, "HilbertTrendMode")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &HilbertTrendMode::update, nb::arg("value"))
+        RTTA_ADVANCE1(HilbertTrendMode, value)
+        RTTA_REPLAY1(HilbertTrendMode, value)
+        RTTA_BATCH1_ARRAY(HilbertTrendMode, value, "value");
+
+    nb::class_<HilbertTrendline>(m, "HilbertTrendline")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &HilbertTrendline::update, nb::arg("value"))
+        RTTA_ADVANCE1(HilbertTrendline, value)
+        RTTA_REPLAY1(HilbertTrendline, value)
+        RTTA_BATCH1_ARRAY(HilbertTrendline, value, "value");
+
+    nb::class_<MACDExt>(m, "MACDExt")
+        .def(nb::init<int, int, int, int, int, int, bool>(),
+             nb::arg("fast") = 12, nb::arg("slow") = 26, nb::arg("signal") = 9,
+             nb::arg("fast_ma_type") = 1, nb::arg("slow_ma_type") = 1, nb::arg("signal_ma_type") = 1,
+             nb::arg("fillna") = true)
+        .def("update", &MACDExt::update, nb::arg("value"))
+        RTTA_ADVANCE1(MACDExt, value)
+        RTTA_REPLAY1(MACDExt, value)
+        RTTA_FIELD1(MACDExt, macd, value)
+        RTTA_FIELD1(MACDExt, signal, value)
+        RTTA_FIELD1(MACDExt, histogram, value)
+        RTTA_REPLAY_OUTPUTS1(MACDExt, value, batch_macd_ext)
+        RTTA_MULTI_BATCH1(MACDExt, value, "value", batch_macd_ext);
+
+    nb::class_<RelativeVolatilityIndex>(m, "RelativeVolatilityIndex")
+        .def(nb::init<int, int, bool>(), nb::arg("std_window") = 10, nb::arg("smooth_window") = 14, nb::arg("fillna") = true)
+        .def("update", &RelativeVolatilityIndex::update, nb::arg("close"))
+        RTTA_ADVANCE1(RelativeVolatilityIndex, close)
+        RTTA_REPLAY1(RelativeVolatilityIndex, close)
+        RTTA_FIELD1(RelativeVolatilityIndex, rvi, close)
+        RTTA_FIELD1(RelativeVolatilityIndex, signal, close)
+        RTTA_REPLAY_OUTPUTS1(RelativeVolatilityIndex, close, batch_relative_volatility_index)
+        RTTA_MULTI_BATCH1(RelativeVolatilityIndex, close, "close", batch_relative_volatility_index);
+
+    nb::class_<PivotPoints>(m, "PivotPoints")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &PivotPoints::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(PivotPoints, high, low, close)
+        RTTA_REPLAY3(PivotPoints, high, low, close)
+        RTTA_FIELD3(PivotPoints, pp, high, low, close)
+        RTTA_FIELD3(PivotPoints, r1, high, low, close)
+        RTTA_FIELD3(PivotPoints, r2, high, low, close)
+        RTTA_FIELD3(PivotPoints, r3, high, low, close)
+        RTTA_FIELD3(PivotPoints, s1, high, low, close)
+        RTTA_FIELD3(PivotPoints, s2, high, low, close)
+        RTTA_FIELD3(PivotPoints, s3, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(PivotPoints, high, low, close, batch_pivot_points)
+        RTTA_MULTI_BATCH3(PivotPoints, high, low, close, "high", "low", "close", batch_pivot_points);
+
+    nb::class_<QStick>(m, "QStick")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &QStick::update, nb::arg("open"), nb::arg("close"))
+        RTTA_ADVANCE2(QStick, open, close)
+        RTTA_REPLAY2(QStick, open, close)
+        RTTA_BATCH2_ARRAY(QStick, open, close, "open", "close");
+
+    nb::class_<PsychologicalLine>(m, "PsychologicalLine")
+        .def(nb::init<int, bool>(), nb::arg("window") = 12, nb::arg("fillna") = true)
+        .def("update", &PsychologicalLine::update, nb::arg("close"))
+        RTTA_ADVANCE1(PsychologicalLine, close)
+        RTTA_REPLAY1(PsychologicalLine, close)
+        RTTA_BATCH1_ARRAY(PsychologicalLine, close, "close");
+
+    nb::class_<Bias>(m, "Bias")
+        .def(nb::init<int, bool>(), nb::arg("window") = 20, nb::arg("fillna") = true)
+        .def("update", &Bias::update, nb::arg("close"))
+        RTTA_ADVANCE1(Bias, close)
+        RTTA_REPLAY1(Bias, close)
+        RTTA_BATCH1_ARRAY(Bias, close, "close");
+
+    nb::class_<WilliamsFractals>(m, "WilliamsFractals")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &WilliamsFractals::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(WilliamsFractals, high, low)
+        RTTA_REPLAY2(WilliamsFractals, high, low)
+        RTTA_FIELD2(WilliamsFractals, up, high, low)
+        RTTA_FIELD2(WilliamsFractals, down, high, low)
+        RTTA_REPLAY_OUTPUTS2(WilliamsFractals, high, low, batch_williams_fractals)
+        RTTA_MULTI_BATCH2(WilliamsFractals, high, low, "high", "low", batch_williams_fractals);
+
+    nb::class_<MarketFacilitationIndex>(m, "MarketFacilitationIndex")
+        .def(nb::init<>())
+        .def("update", &MarketFacilitationIndex::update, nb::arg("high"), nb::arg("low"), nb::arg("volume"))
+        RTTA_ADVANCE3(MarketFacilitationIndex, high, low, volume)
+        RTTA_REPLAY3(MarketFacilitationIndex, high, low, volume)
+        RTTA_BATCH3_ARRAY(MarketFacilitationIndex, high, low, volume, "high", "low", "volume");
+
+    nb::class_<SwingIndex>(m, "SwingIndex")
+        .def(nb::init<double>(), nb::arg("limit") = 0.5)
+        .def("update", &SwingIndex::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE4(SwingIndex, open, high, low, close)
+        RTTA_REPLAY4(SwingIndex, open, high, low, close)
+        RTTA_BATCH4_ARRAY(SwingIndex, open, high, low, close, "open", "high", "low", "close");
+
+    nb::class_<AccumulativeSwingIndex>(m, "AccumulativeSwingIndex")
+        .def(nb::init<double>(), nb::arg("limit") = 0.5)
+        .def("update", &AccumulativeSwingIndex::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE4(AccumulativeSwingIndex, open, high, low, close)
+        RTTA_REPLAY4(AccumulativeSwingIndex, open, high, low, close)
+        RTTA_BATCH4_ARRAY(AccumulativeSwingIndex, open, high, low, close, "open", "high", "low", "close");
+
+    nb::class_<VerticalHorizontalFilter>(m, "VerticalHorizontalFilter")
+        .def(nb::init<int, bool>(), nb::arg("window") = 28, nb::arg("fillna") = true)
+        .def("update", &VerticalHorizontalFilter::update, nb::arg("close"))
+        RTTA_ADVANCE1(VerticalHorizontalFilter, close)
+        RTTA_REPLAY1(VerticalHorizontalFilter, close)
+        RTTA_BATCH1_ARRAY(VerticalHorizontalFilter, close, "close");
+
+    nb::class_<RandomWalkIndex>(m, "RandomWalkIndex")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &RandomWalkIndex::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(RandomWalkIndex, close, high, low)
+        RTTA_REPLAY3(RandomWalkIndex, close, high, low)
+        RTTA_FIELD3(RandomWalkIndex, high, close, high, low)
+        RTTA_FIELD3(RandomWalkIndex, low, close, high, low)
+        RTTA_REPLAY_OUTPUTS3(RandomWalkIndex, close, high, low, batch_random_walk_index)
+        RTTA_MULTI_BATCH3(RandomWalkIndex, close, high, low, "close", "high", "low", batch_random_walk_index);
+
+    nb::class_<PrettyGoodOscillator>(m, "PrettyGoodOscillator")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &PrettyGoodOscillator::update, nb::arg("close"), nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE3(PrettyGoodOscillator, close, high, low)
+        RTTA_REPLAY3(PrettyGoodOscillator, close, high, low)
+        RTTA_BATCH3_ARRAY(PrettyGoodOscillator, close, high, low, "close", "high", "low");
+
+    nb::class_<TrendIntensityIndex>(m, "TrendIntensityIndex")
+        .def(nb::init<int, bool>(), nb::arg("window") = 30, nb::arg("fillna") = true)
+        .def("update", &TrendIntensityIndex::update, nb::arg("close"))
+        RTTA_ADVANCE1(TrendIntensityIndex, close)
+        RTTA_REPLAY1(TrendIntensityIndex, close)
+        RTTA_BATCH1_ARRAY(TrendIntensityIndex, close, "close");
+
+    nb::class_<WilliamsAD>(m, "WilliamsAD")
+        .def(nb::init<>())
+        .def("update", &WilliamsAD::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(WilliamsAD, high, low, close)
+        RTTA_REPLAY3(WilliamsAD, high, low, close)
+        RTTA_BATCH3_ARRAY(WilliamsAD, high, low, close, "high", "low", "close");
+
+    nb::class_<IntradayIntensity>(m, "IntradayIntensity")
+        .def(nb::init<int, bool>(), nb::arg("window") = 21, nb::arg("fillna") = true)
+        .def("update", &IntradayIntensity::update, nb::arg("high"), nb::arg("low"), nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE4(IntradayIntensity, high, low, close, volume)
+        RTTA_REPLAY4(IntradayIntensity, high, low, close, volume)
+        RTTA_BATCH4_ARRAY(IntradayIntensity, high, low, close, volume, "high", "low", "close", "volume");
+
+    nb::class_<TwiggsMoneyFlow>(m, "TwiggsMoneyFlow")
+        .def(nb::init<int, bool>(), nb::arg("window") = 21, nb::arg("fillna") = true)
+        .def("update", &TwiggsMoneyFlow::update, nb::arg("high"), nb::arg("low"), nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE4(TwiggsMoneyFlow, high, low, close, volume)
+        RTTA_REPLAY4(TwiggsMoneyFlow, high, low, close, volume)
+        RTTA_BATCH4_ARRAY(TwiggsMoneyFlow, high, low, close, volume, "high", "low", "close", "volume");
+
+    nb::class_<ComparativeRelativeStrength>(m, "ComparativeRelativeStrength")
+        .def(nb::init<>())
+        .def("update", &ComparativeRelativeStrength::update, nb::arg("real0"), nb::arg("real1"))
+        RTTA_ADVANCE2(ComparativeRelativeStrength, real0, real1)
+        RTTA_REPLAY2(ComparativeRelativeStrength, real0, real1)
+        RTTA_BATCH2_ARRAY(ComparativeRelativeStrength, real0, real1, "real0", "real1");
+
+    nb::class_<InverseFisherRSI>(m, "InverseFisherRSI")
+        .def(nb::init<int, int, bool>(), nb::arg("rsi_window") = 5, nb::arg("wma_window") = 9, nb::arg("fillna") = true)
+        .def("update", &InverseFisherRSI::update, nb::arg("close"))
+        RTTA_ADVANCE1(InverseFisherRSI, close)
+        RTTA_REPLAY1(InverseFisherRSI, close)
+        RTTA_BATCH1_ARRAY(InverseFisherRSI, close, "close");
+
+    nb::class_<EhlersSuperSmoother>(m, "EhlersSuperSmoother")
+        .def(nb::init<int, bool>(), nb::arg("period") = 10, nb::arg("fillna") = true)
+        .def("update", &EhlersSuperSmoother::update, nb::arg("price"))
+        RTTA_ADVANCE1(EhlersSuperSmoother, price)
+        RTTA_REPLAY1(EhlersSuperSmoother, price)
+        RTTA_BATCH1_ARRAY(EhlersSuperSmoother, price, "close");
+
+    nb::class_<EhlersRoofingFilter>(m, "EhlersRoofingFilter")
+        .def(nb::init<int, int, bool>(), nb::arg("hp_period") = 48, nb::arg("lp_period") = 10, nb::arg("fillna") = true)
+        .def("update", &EhlersRoofingFilter::update, nb::arg("price"))
+        RTTA_ADVANCE1(EhlersRoofingFilter, price)
+        RTTA_REPLAY1(EhlersRoofingFilter, price)
+        RTTA_FIELD1(EhlersRoofingFilter, roof, price)
+        RTTA_FIELD1(EhlersRoofingFilter, highpass, price)
+        RTTA_REPLAY_OUTPUTS1(EhlersRoofingFilter, price, batch_ehlers_roofing)
+        RTTA_MULTI_BATCH1(EhlersRoofingFilter, price, "close", batch_ehlers_roofing);
+
+    nb::class_<EhlersCyberCycle>(m, "EhlersCyberCycle")
+        .def(nb::init<int, bool>(), nb::arg("period") = 20, nb::arg("fillna") = true)
+        .def("update", &EhlersCyberCycle::update, nb::arg("price"))
+        RTTA_ADVANCE1(EhlersCyberCycle, price)
+        RTTA_REPLAY1(EhlersCyberCycle, price)
+        RTTA_FIELD1(EhlersCyberCycle, cycle, price)
+        RTTA_FIELD1(EhlersCyberCycle, trigger, price)
+        RTTA_REPLAY_OUTPUTS1(EhlersCyberCycle, price, batch_ehlers_cyber_cycle)
+        RTTA_MULTI_BATCH1(EhlersCyberCycle, price, "close", batch_ehlers_cyber_cycle);
+
+    nb::class_<EhlersCenterOfGravity>(m, "EhlersCenterOfGravity")
+        .def(nb::init<int, bool>(), nb::arg("window") = 10, nb::arg("fillna") = true)
+        .def("update", &EhlersCenterOfGravity::update, nb::arg("price"))
+        RTTA_ADVANCE1(EhlersCenterOfGravity, price)
+        RTTA_REPLAY1(EhlersCenterOfGravity, price)
+        RTTA_FIELD1(EhlersCenterOfGravity, cg, price)
+        RTTA_FIELD1(EhlersCenterOfGravity, lag, price)
+        RTTA_REPLAY_OUTPUTS1(EhlersCenterOfGravity, price, batch_ehlers_cg)
+        RTTA_MULTI_BATCH1(EhlersCenterOfGravity, price, "close", batch_ehlers_cg);
+
+    nb::class_<EhlersInstantaneousTrendline>(m, "EhlersInstantaneousTrendline")
+        .def(nb::init<int, bool>(), nb::arg("period") = 20, nb::arg("fillna") = true)
+        .def("update", &EhlersInstantaneousTrendline::update, nb::arg("price"))
+        RTTA_ADVANCE1(EhlersInstantaneousTrendline, price)
+        RTTA_REPLAY1(EhlersInstantaneousTrendline, price)
+        RTTA_FIELD1(EhlersInstantaneousTrendline, trendline, price)
+        RTTA_FIELD1(EhlersInstantaneousTrendline, trigger, price)
+        RTTA_REPLAY_OUTPUTS1(EhlersInstantaneousTrendline, price, batch_ehlers_itrend)
+        RTTA_MULTI_BATCH1(EhlersInstantaneousTrendline, price, "close", batch_ehlers_itrend);
+
+    nb::class_<EhlersDecycler>(m, "EhlersDecycler")
+        .def(nb::init<int, bool>(), nb::arg("hp_period") = 60, nb::arg("fillna") = true)
+        .def("update", &EhlersDecycler::update, nb::arg("price"))
+        RTTA_ADVANCE1(EhlersDecycler, price)
+        RTTA_REPLAY1(EhlersDecycler, price)
+        RTTA_FIELD1(EhlersDecycler, decycle, price)
+        RTTA_FIELD1(EhlersDecycler, oscillator, price)
+        RTTA_REPLAY_OUTPUTS1(EhlersDecycler, price, batch_ehlers_decycler)
+        RTTA_MULTI_BATCH1(EhlersDecycler, price, "close", batch_ehlers_decycler);
+
+    nb::class_<ParabolicSARExtended>(m, "ParabolicSARExtended")
+        .def(nb::init<double, double, double, double, double, double, double, double>(),
+             nb::arg("start") = 0.0,
+             nb::arg("offset_on_reverse") = 0.0,
+             nb::arg("af_init_long") = 0.02,
+             nb::arg("af_long") = 0.02,
+             nb::arg("af_max_long") = 0.2,
+             nb::arg("af_init_short") = 0.02,
+             nb::arg("af_short") = 0.02,
+             nb::arg("af_max_short") = 0.2)
+        .def("update", &ParabolicSARExtended::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(ParabolicSARExtended, high, low)
+        RTTA_REPLAY2(ParabolicSARExtended, high, low)
+        RTTA_BATCH2_ARRAY(ParabolicSARExtended, high, low, "high", "low");
+
+    nb::class_<KagiChart>(m, "KagiChart")
+        .def(nb::init<double>(), nb::arg("reversal") = 1.0)
+        .def("update", &KagiChart::update, nb::arg("price"))
+        RTTA_ADVANCE1(KagiChart, price)
+        RTTA_REPLAY1(KagiChart, price)
+        RTTA_FIELD1(KagiChart, line, price)
+        RTTA_FIELD1(KagiChart, direction, price)
+        RTTA_FIELD1(KagiChart, reversal, price)
+        RTTA_REPLAY_OUTPUTS1(KagiChart, price, batch_kagi)
+        RTTA_MULTI_BATCH1(KagiChart, price, "close", batch_kagi);
+
+    nb::class_<PointAndFigure>(m, "PointAndFigure")
+        .def(nb::init<double, int>(), nb::arg("box_size") = 1.0, nb::arg("reversal_boxes") = 3)
+        .def("update", &PointAndFigure::update, nb::arg("price"))
+        RTTA_ADVANCE1(PointAndFigure, price)
+        RTTA_REPLAY1(PointAndFigure, price)
+        RTTA_FIELD1(PointAndFigure, box_price, price)
+        RTTA_FIELD1(PointAndFigure, direction, price)
+        RTTA_FIELD1(PointAndFigure, boxes, price)
+        RTTA_FIELD1(PointAndFigure, reversal, price)
+        RTTA_REPLAY_OUTPUTS1(PointAndFigure, price, batch_point_and_figure)
+        RTTA_MULTI_BATCH1(PointAndFigure, price, "close", batch_point_and_figure);
+
+    nb::class_<GuppyMultipleMovingAverage>(m, "GuppyMultipleMovingAverage")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &GuppyMultipleMovingAverage::update, nb::arg("price"))
+        RTTA_ADVANCE1(GuppyMultipleMovingAverage, price)
+        RTTA_REPLAY1(GuppyMultipleMovingAverage, price)
+        RTTA_FIELD1(GuppyMultipleMovingAverage, short_average, price)
+        RTTA_FIELD1(GuppyMultipleMovingAverage, long_average, price)
+        RTTA_FIELD1(GuppyMultipleMovingAverage, spread, price)
+        RTTA_REPLAY_OUTPUTS1(GuppyMultipleMovingAverage, price, batch_guppy)
+        RTTA_MULTI_BATCH1(GuppyMultipleMovingAverage, price, "close", batch_guppy);
+
+    nb::class_<RollingMedian>(m, "RollingMedian")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &RollingMedian::update, nb::arg("value"))
+        RTTA_ADVANCE1(RollingMedian, value)
+        RTTA_REPLAY1(RollingMedian, value)
+        RTTA_BATCH1_ARRAY(RollingMedian, value, "value");
+
+    nb::class_<GeometricMovingAverage>(m, "GeometricMovingAverage")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &GeometricMovingAverage::update, nb::arg("price"))
+        RTTA_ADVANCE1(GeometricMovingAverage, price)
+        RTTA_REPLAY1(GeometricMovingAverage, price)
+        RTTA_BATCH1_ARRAY(GeometricMovingAverage, price, "close");
+
+    nb::class_<MultiLevelOrderFlowImbalance>(m, "MultiLevelOrderFlowImbalance")
+        .def(nb::init<int, int, bool>(), nb::arg("levels") = 5, nb::arg("window") = 1, nb::arg("fillna") = true)
+        .def("update",
+             nb::overload_cast<const InputArray &, const InputArray &, const InputArray &, const InputArray &>(
+                 &MultiLevelOrderFlowImbalance::update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("update",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray &, const FloatInputArray &, const FloatInputArray &>(
+                 &MultiLevelOrderFlowImbalance::update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("advance",
+             nb::overload_cast<const InputArray &, const InputArray &, const InputArray &, const InputArray &>(
+                 &MultiLevelOrderFlowImbalance::advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("advance",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray &, const FloatInputArray &, const FloatInputArray &>(
+                 &MultiLevelOrderFlowImbalance::advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("last", &MultiLevelOrderFlowImbalance::last)
+        .def("replay_update",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::replay_update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_update",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::replay_update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_advance",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::replay_advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_advance",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::replay_advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &MultiLevelOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"));
+
+    nb::class_<IntegratedOrderFlowImbalance>(m, "IntegratedOrderFlowImbalance")
+        .def(nb::init<int, int, double, bool>(),
+             nb::arg("levels") = 5, nb::arg("window") = 1, nb::arg("ema_alpha") = 0.05, nb::arg("fillna") = true)
+        .def("update",
+             nb::overload_cast<const InputArray &, const InputArray &, const InputArray &, const InputArray &>(
+                 &IntegratedOrderFlowImbalance::update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("update",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray &, const FloatInputArray &, const FloatInputArray &>(
+                 &IntegratedOrderFlowImbalance::update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("advance",
+             nb::overload_cast<const InputArray &, const InputArray &, const InputArray &, const InputArray &>(
+                 &IntegratedOrderFlowImbalance::advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("advance",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray &, const FloatInputArray &, const FloatInputArray &>(
+                 &IntegratedOrderFlowImbalance::advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("last", &IntegratedOrderFlowImbalance::last)
+        .def("replay_update",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &IntegratedOrderFlowImbalance::replay_update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_update",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &IntegratedOrderFlowImbalance::replay_update),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_advance",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &IntegratedOrderFlowImbalance::replay_advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_advance",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &IntegratedOrderFlowImbalance::replay_advance),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &IntegratedOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &IntegratedOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const InputArray2D &, const InputArray2D &, const InputArray2D &, const InputArray2D &>(
+                 &IntegratedOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &, const FloatInputArray2D &>(
+                 &IntegratedOrderFlowImbalance::batch),
+             array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"));
+
+    nb::class_<DecomposedOrderFlowImbalance>(m, "DecomposedOrderFlowImbalance")
+        .def(nb::init<int, bool>(), nb::arg("window") = 1, nb::arg("fillna") = true)
+        .def("update", &DecomposedOrderFlowImbalance::update,
+             nb::arg("bid_price"), nb::arg("bid_size"), nb::arg("ask_price"), nb::arg("ask_size"))
+        RTTA_ADVANCE4(DecomposedOrderFlowImbalance, bid_price, bid_size, ask_price, ask_size)
+        RTTA_REPLAY4(DecomposedOrderFlowImbalance, bid_price, bid_size, ask_price, ask_size)
+        RTTA_FIELD4(DecomposedOrderFlowImbalance, add, bid_price, bid_size, ask_price, ask_size)
+        RTTA_FIELD4(DecomposedOrderFlowImbalance, cancel, bid_price, bid_size, ask_price, ask_size)
+        RTTA_FIELD4(DecomposedOrderFlowImbalance, trade, bid_price, bid_size, ask_price, ask_size)
+        RTTA_FIELD4(DecomposedOrderFlowImbalance, total, bid_price, bid_size, ask_price, ask_size)
+        RTTA_REPLAY_OUTPUTS4(DecomposedOrderFlowImbalance, bid_price, bid_size, ask_price, ask_size, batch_decomposed_ofi)
+        .def("batch", [](DecomposedOrderFlowImbalance &self, const InputArray &bid_price, const InputArray &bid_size, const InputArray &ask_price, const InputArray &ask_size) {
+            return batch_decomposed_ofi(self, bid_price, bid_size, ask_price, ask_size);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch", [](DecomposedOrderFlowImbalance &self, const FloatInputArray &bid_price, const FloatInputArray &bid_size, const FloatInputArray &ask_price, const FloatInputArray &ask_size) {
+            return batch_decomposed_ofi(self, bid_price, bid_size, ask_price, ask_size);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"), array_arg("ask_size"))
+        .def("batch", [](DecomposedOrderFlowImbalance &self, nb::iterable records) {
+            if (table_has_column(records, "bid_price")) {
+                return dispatch_table4(self, records, "bid_price", "bid_size", "ask_price", "ask_size",
+                    [](auto &indicator, const auto &a, const auto &b, const auto &c, const auto &d) {
+                        return batch_decomposed_ofi(indicator, a, b, c, d);
+                    });
+            }
+            throw nb::type_error("pandas table batch input is missing a required column");
+        }, nb::arg("records"));
+
+    nb::class_<VolumeBarGenerator>(m, "VolumeBarGenerator")
+        .def(nb::init<double>(), nb::arg("threshold") = 10000.0)
+        .def("update", &VolumeBarGenerator::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(VolumeBarGenerator, close, volume)
+        RTTA_REPLAY2(VolumeBarGenerator, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, bar_open, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, bar_close, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, bar_high, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, bar_low, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, bar_volume, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, direction, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, complete, close, volume)
+        RTTA_FIELD2(VolumeBarGenerator, bars, close, volume)
+        RTTA_REPLAY_OUTPUTS2(VolumeBarGenerator, close, volume, batch_volume_bar)
+        RTTA_MULTI_BATCH2(VolumeBarGenerator, close, volume, "close", "volume", batch_volume_bar);
+
+    nb::class_<DollarBarGenerator>(m, "DollarBarGenerator")
+        .def(nb::init<double>(), nb::arg("threshold") = 1.0e6)
+        .def("update", &DollarBarGenerator::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(DollarBarGenerator, close, volume)
+        RTTA_REPLAY2(DollarBarGenerator, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, bar_open, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, bar_close, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, bar_high, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, bar_low, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, bar_volume, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, direction, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, complete, close, volume)
+        RTTA_FIELD2(DollarBarGenerator, bars, close, volume)
+        RTTA_REPLAY_OUTPUTS2(DollarBarGenerator, close, volume, batch_dollar_bar)
+        RTTA_MULTI_BATCH2(DollarBarGenerator, close, volume, "close", "volume", batch_dollar_bar);
+
+    nb::class_<ImbalanceBarGenerator>(m, "ImbalanceBarGenerator")
+        .def(nb::init<double>(), nb::arg("threshold") = 10000.0)
+        .def("update", &ImbalanceBarGenerator::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(ImbalanceBarGenerator, close, volume)
+        RTTA_REPLAY2(ImbalanceBarGenerator, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, bar_open, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, bar_close, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, bar_high, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, bar_low, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, bar_volume, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, direction, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, complete, close, volume)
+        RTTA_FIELD2(ImbalanceBarGenerator, bars, close, volume)
+        RTTA_REPLAY_OUTPUTS2(ImbalanceBarGenerator, close, volume, batch_imbalance_bar)
+        RTTA_MULTI_BATCH2(ImbalanceBarGenerator, close, volume, "close", "volume", batch_imbalance_bar);
+
+    nb::class_<FOCuS>(m, "FOCuS")
+        .def(nb::init<double, double, double, int>(),
+             nb::arg("threshold") = 10.0, nb::arg("mu0") = 0.0, nb::arg("sigma") = 1.0, nb::arg("max_candidates") = 200)
+        .def("update", &FOCuS::update, nb::arg("value"))
+        RTTA_ADVANCE1(FOCuS, value)
+        RTTA_REPLAY1(FOCuS, value)
+        RTTA_FIELD1(FOCuS, signal, value)
+        RTTA_FIELD1(FOCuS, statistic, value)
+        RTTA_REPLAY_OUTPUTS1(FOCuS, value, batch_focus)
+        RTTA_MULTI_BATCH1(FOCuS, value, "value", batch_focus);
+
+    nb::class_<ResidualFOCuS>(m, "ResidualFOCuS")
+        .def(nb::init<double, double, double, int>(),
+             nb::arg("threshold") = 10.0, nb::arg("mu0") = 0.0, nb::arg("sigma") = 1.0, nb::arg("max_candidates") = 200)
+        .def("update", &ResidualFOCuS::update, nb::arg("residual"))
+        RTTA_ADVANCE1(ResidualFOCuS, residual)
+        RTTA_REPLAY1(ResidualFOCuS, residual)
+        RTTA_FIELD1(ResidualFOCuS, signal, residual)
+        RTTA_FIELD1(ResidualFOCuS, statistic, residual)
+        RTTA_REPLAY_OUTPUTS1(ResidualFOCuS, residual, batch_residual_focus)
+        RTTA_MULTI_BATCH1(ResidualFOCuS, residual, "residual", batch_residual_focus);
+
+    nb::class_<DirectionalChangeDetector>(m, "DirectionalChangeDetector")
+        .def(nb::init<double>(), nb::arg("threshold") = 0.01)
+        .def("update", &DirectionalChangeDetector::update, nb::arg("close"))
+        RTTA_ADVANCE1(DirectionalChangeDetector, close)
+        RTTA_REPLAY1(DirectionalChangeDetector, close)
+        RTTA_FIELD1(DirectionalChangeDetector, event, close)
+        RTTA_FIELD1(DirectionalChangeDetector, overshoot, close)
+        RTTA_FIELD1(DirectionalChangeDetector, extremum, close)
+        RTTA_FIELD1(DirectionalChangeDetector, direction, close)
+        RTTA_REPLAY_OUTPUTS1(DirectionalChangeDetector, close, batch_directional_change)
+        RTTA_MULTI_BATCH1(DirectionalChangeDetector, close, "close", batch_directional_change);
+
+    nb::class_<CrossAssetOrderFlowImbalance>(m, "CrossAssetOrderFlowImbalance")
+        .def(nb::init<int, bool>(), nb::arg("window") = 50, nb::arg("fillna") = true)
+        .def("update", &CrossAssetOrderFlowImbalance::update, nb::arg("own_return"), nb::arg("peer_ofi"))
+        RTTA_ADVANCE2(CrossAssetOrderFlowImbalance, own_return, peer_ofi)
+        RTTA_REPLAY2(CrossAssetOrderFlowImbalance, own_return, peer_ofi)
+        RTTA_FIELD2(CrossAssetOrderFlowImbalance, beta, own_return, peer_ofi)
+        RTTA_FIELD2(CrossAssetOrderFlowImbalance, impact, own_return, peer_ofi)
+        RTTA_FIELD2(CrossAssetOrderFlowImbalance, residual, own_return, peer_ofi)
+        RTTA_FIELD2(CrossAssetOrderFlowImbalance, peer_ofi, own_return, peer_ofi)
+        RTTA_REPLAY_OUTPUTS2(CrossAssetOrderFlowImbalance, own_return, peer_ofi, batch_cross_asset_ofi)
+        RTTA_MULTI_BATCH2(CrossAssetOrderFlowImbalance, own_return, peer_ofi, "real0", "real1", batch_cross_asset_ofi);
+
+    nb::class_<ResidualBOCPD>(m, "ResidualBOCPD")
+        .def(nb::init<int, double, double, double>(),
+             nb::arg("max_run_length") = 128, nb::arg("hazard") = 0.01,
+             nb::arg("threshold") = 0.5, nb::arg("min_variance") = 1.0e-6)
+        .def("update", &ResidualBOCPD::update, nb::arg("residual"))
+        .def("last", &ResidualBOCPD::last)
+        .def("last_probability", &ResidualBOCPD::last_probability)
+        RTTA_ADVANCE1(ResidualBOCPD, residual)
+        RTTA_REPLAY1(ResidualBOCPD, residual)
+        RTTA_FIELD1(ResidualBOCPD, signal, residual)
+        RTTA_FIELD1(ResidualBOCPD, probability, residual)
+        RTTA_REPLAY_OUTPUTS1(ResidualBOCPD, residual, batch_residual_bocpd)
+        RTTA_MULTI_BATCH1(ResidualBOCPD, residual, "residual", batch_residual_bocpd);
+
+    nb::class_<RunBarGenerator>(m, "RunBarGenerator")
+        .def(nb::init<int>(), nb::arg("threshold") = 10)
+        .def("update", nb::overload_cast<double>(&RunBarGenerator::update), nb::arg("close"))
+        .def("update", nb::overload_cast<double, double>(&RunBarGenerator::update), nb::arg("close"), nb::arg("volume"))
+        .def("advance", nb::overload_cast<double>(&RunBarGenerator::advance), nb::arg("close"))
+        .def("advance", nb::overload_cast<double, double>(&RunBarGenerator::advance), nb::arg("close"), nb::arg("volume"))
+        .def("last", &RunBarGenerator::last)
+        RTTA_REPLAY1(RunBarGenerator, close)
+        RTTA_FIELD1(RunBarGenerator, bar_open, close)
+        RTTA_FIELD1(RunBarGenerator, bar_close, close)
+        RTTA_FIELD1(RunBarGenerator, bar_high, close)
+        RTTA_FIELD1(RunBarGenerator, bar_low, close)
+        RTTA_FIELD1(RunBarGenerator, bar_volume, close)
+        RTTA_FIELD1(RunBarGenerator, direction, close)
+        RTTA_FIELD1(RunBarGenerator, complete, close)
+        RTTA_FIELD1(RunBarGenerator, bars, close)
+        RTTA_REPLAY_OUTPUTS1(RunBarGenerator, close, batch_run_bar)
+        RTTA_MULTI_BATCH1(RunBarGenerator, close, "close", batch_run_bar)
+        .def("batch", [](RunBarGenerator &self, const InputArray &close, const InputArray &volume) {
+            return batch_run_bar2(self, close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("batch", [](RunBarGenerator &self, const FloatInputArray &close, const FloatInputArray &volume) {
+            return batch_run_bar2(self, close, volume);
+        }, array_arg("close"), array_arg("volume"));
+
+    nb::class_<WoodiePivotPoints>(m, "WoodiePivotPoints")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &WoodiePivotPoints::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(WoodiePivotPoints, high, low, close)
+        RTTA_REPLAY3(WoodiePivotPoints, high, low, close)
+        RTTA_FIELD3(WoodiePivotPoints, pp, high, low, close)
+        RTTA_FIELD3(WoodiePivotPoints, r1, high, low, close)
+        RTTA_FIELD3(WoodiePivotPoints, r2, high, low, close)
+        RTTA_FIELD3(WoodiePivotPoints, r3, high, low, close)
+        RTTA_FIELD3(WoodiePivotPoints, s1, high, low, close)
+        RTTA_FIELD3(WoodiePivotPoints, s2, high, low, close)
+        RTTA_FIELD3(WoodiePivotPoints, s3, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(WoodiePivotPoints, high, low, close, batch_woodie_pivots)
+        RTTA_MULTI_BATCH3(WoodiePivotPoints, high, low, close, "high", "low", "close", batch_woodie_pivots);
+
+    nb::class_<CamarillaPivotPoints>(m, "CamarillaPivotPoints")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CamarillaPivotPoints::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(CamarillaPivotPoints, high, low, close)
+        RTTA_REPLAY3(CamarillaPivotPoints, high, low, close)
+        RTTA_FIELD3(CamarillaPivotPoints, pp, high, low, close)
+        RTTA_FIELD3(CamarillaPivotPoints, r1, high, low, close)
+        RTTA_FIELD3(CamarillaPivotPoints, r2, high, low, close)
+        RTTA_FIELD3(CamarillaPivotPoints, r3, high, low, close)
+        RTTA_FIELD3(CamarillaPivotPoints, s1, high, low, close)
+        RTTA_FIELD3(CamarillaPivotPoints, s2, high, low, close)
+        RTTA_FIELD3(CamarillaPivotPoints, s3, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(CamarillaPivotPoints, high, low, close, batch_camarilla_pivots)
+        RTTA_MULTI_BATCH3(CamarillaPivotPoints, high, low, close, "high", "low", "close", batch_camarilla_pivots);
+
+    nb::class_<MovingAverageVariablePeriod>(m, "MovingAverageVariablePeriod")
+        .def(nb::init<int, int, bool>(),
+             nb::arg("max_period") = 30, nb::arg("min_period") = 2, nb::arg("fillna") = true)
+        .def("update", &MovingAverageVariablePeriod::update, nb::arg("value"), nb::arg("period"))
+        RTTA_ADVANCE2(MovingAverageVariablePeriod, value, period)
+        RTTA_REPLAY2(MovingAverageVariablePeriod, value, period)
+        RTTA_BATCH2_ARRAY(MovingAverageVariablePeriod, value, period, "value", "period");
+
+    nb::class_<KalmanInnovationResidualFOCuS>(m, "KalmanInnovationResidualFOCuS")
+        .def(nb::init<double, double, double, double, double, bool>(),
+             nb::arg("focus_threshold") = 10.0,
+             nb::arg("focus_sigma") = 1.0,
+             nb::arg("initial_price") = nan(),
+             nb::arg("dt") = 1.0,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def("update", &KalmanInnovationResidualFOCuS::update, nb::arg("close"))
+        RTTA_ADVANCE1(KalmanInnovationResidualFOCuS, close)
+        RTTA_REPLAY1(KalmanInnovationResidualFOCuS, close)
+        RTTA_FIELD1(KalmanInnovationResidualFOCuS, signal, close)
+        RTTA_FIELD1(KalmanInnovationResidualFOCuS, score, close)
+        RTTA_FIELD1(KalmanInnovationResidualFOCuS, residual, close)
+        RTTA_REPLAY_OUTPUTS1(KalmanInnovationResidualFOCuS, close, batch_kalman_residual_focus)
+        RTTA_MULTI_BATCH1(KalmanInnovationResidualFOCuS, close, "close", batch_kalman_residual_focus);
+
+    nb::class_<KalmanInnovationResidualBOCPD>(m, "KalmanInnovationResidualBOCPD")
+        .def(nb::init<int, double, double, double, double, double, double, bool>(),
+             nb::arg("max_run_length") = 128,
+             nb::arg("hazard") = 0.01,
+             nb::arg("threshold") = 0.5,
+             nb::arg("min_variance") = 1.0e-6,
+             nb::arg("initial_price") = nan(),
+             nb::arg("dt") = 1.0,
+             nb::arg("measurement_variance") = 0.25,
+             nb::arg("fillna") = true)
+        .def("update", &KalmanInnovationResidualBOCPD::update, nb::arg("close"))
+        RTTA_ADVANCE1(KalmanInnovationResidualBOCPD, close)
+        RTTA_REPLAY1(KalmanInnovationResidualBOCPD, close)
+        RTTA_FIELD1(KalmanInnovationResidualBOCPD, signal, close)
+        RTTA_FIELD1(KalmanInnovationResidualBOCPD, score, close)
+        RTTA_FIELD1(KalmanInnovationResidualBOCPD, residual, close)
+        RTTA_REPLAY_OUTPUTS1(KalmanInnovationResidualBOCPD, close, batch_kalman_residual_bocpd)
+        RTTA_MULTI_BATCH1(KalmanInnovationResidualBOCPD, close, "close", batch_kalman_residual_bocpd);
+
+    nb::class_<MultiPeerOrderFlowImbalance>(m, "MultiPeerOrderFlowImbalance")
+        .def(nb::init<int, bool>(), nb::arg("window") = 50, nb::arg("fillna") = true)
+        .def("update",
+             nb::overload_cast<double, const InputArray &>(&MultiPeerOrderFlowImbalance::update),
+             nb::arg("own_return"), array_arg("peer_ofis"))
+        .def("update",
+             nb::overload_cast<double, const FloatInputArray &>(&MultiPeerOrderFlowImbalance::update),
+             nb::arg("own_return"), array_arg("peer_ofis"))
+        .def("advance",
+             nb::overload_cast<double, const InputArray &>(&MultiPeerOrderFlowImbalance::advance),
+             nb::arg("own_return"), array_arg("peer_ofis"))
+        .def("advance",
+             nb::overload_cast<double, const FloatInputArray &>(&MultiPeerOrderFlowImbalance::advance),
+             nb::arg("own_return"), array_arg("peer_ofis"))
+        .def("last", &MultiPeerOrderFlowImbalance::last)
+        .def("batch",
+             nb::overload_cast<const InputArray &, const InputArray2D &>(&MultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"))
+        .def("batch",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray2D &>(&MultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const InputArray &, const InputArray2D &>(&MultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray2D &>(&MultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"));
+
+    nb::class_<VolumeRunBarGenerator>(m, "VolumeRunBarGenerator")
+        .def(nb::init<double>(), nb::arg("threshold") = 10000.0)
+        .def("update", &VolumeRunBarGenerator::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(VolumeRunBarGenerator, close, volume)
+        RTTA_REPLAY2(VolumeRunBarGenerator, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, bar_open, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, bar_close, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, bar_high, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, bar_low, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, bar_volume, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, direction, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, complete, close, volume)
+        RTTA_FIELD2(VolumeRunBarGenerator, bars, close, volume)
+        RTTA_REPLAY_OUTPUTS2(VolumeRunBarGenerator, close, volume, batch_volume_run_bar)
+        RTTA_MULTI_BATCH2(VolumeRunBarGenerator, close, volume, "close", "volume", batch_volume_run_bar);
+
+    nb::class_<DollarRunBarGenerator>(m, "DollarRunBarGenerator")
+        .def(nb::init<double>(), nb::arg("threshold") = 1.0e6)
+        .def("update", &DollarRunBarGenerator::update, nb::arg("close"), nb::arg("volume"))
+        RTTA_ADVANCE2(DollarRunBarGenerator, close, volume)
+        RTTA_REPLAY2(DollarRunBarGenerator, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, bar_open, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, bar_close, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, bar_high, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, bar_low, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, bar_volume, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, direction, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, complete, close, volume)
+        RTTA_FIELD2(DollarRunBarGenerator, bars, close, volume)
+        RTTA_REPLAY_OUTPUTS2(DollarRunBarGenerator, close, volume, batch_dollar_run_bar)
+        RTTA_MULTI_BATCH2(DollarRunBarGenerator, close, volume, "close", "volume", batch_dollar_run_bar);
+
+    nb::class_<FibonacciPivotPoints>(m, "FibonacciPivotPoints")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &FibonacciPivotPoints::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(FibonacciPivotPoints, high, low, close)
+        RTTA_REPLAY3(FibonacciPivotPoints, high, low, close)
+        RTTA_FIELD3(FibonacciPivotPoints, pp, high, low, close)
+        RTTA_FIELD3(FibonacciPivotPoints, r1, high, low, close)
+        RTTA_FIELD3(FibonacciPivotPoints, r2, high, low, close)
+        RTTA_FIELD3(FibonacciPivotPoints, r3, high, low, close)
+        RTTA_FIELD3(FibonacciPivotPoints, s1, high, low, close)
+        RTTA_FIELD3(FibonacciPivotPoints, s2, high, low, close)
+        RTTA_FIELD3(FibonacciPivotPoints, s3, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(FibonacciPivotPoints, high, low, close, batch_fib_pivots)
+        RTTA_MULTI_BATCH3(FibonacciPivotPoints, high, low, close, "high", "low", "close", batch_fib_pivots);
+
+    nb::class_<GuppyMMARibbon>(m, "GuppyMMARibbon")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &GuppyMMARibbon::update, nb::arg("price"))
+        RTTA_ADVANCE1(GuppyMMARibbon, price)
+        RTTA_REPLAY1(GuppyMMARibbon, price)
+        RTTA_FIELD1(GuppyMMARibbon, s3, price)
+        RTTA_FIELD1(GuppyMMARibbon, s5, price)
+        RTTA_FIELD1(GuppyMMARibbon, s8, price)
+        RTTA_FIELD1(GuppyMMARibbon, s10, price)
+        RTTA_FIELD1(GuppyMMARibbon, s12, price)
+        RTTA_FIELD1(GuppyMMARibbon, s15, price)
+        RTTA_FIELD1(GuppyMMARibbon, l30, price)
+        RTTA_FIELD1(GuppyMMARibbon, l35, price)
+        RTTA_FIELD1(GuppyMMARibbon, l40, price)
+        RTTA_FIELD1(GuppyMMARibbon, l45, price)
+        RTTA_FIELD1(GuppyMMARibbon, l50, price)
+        RTTA_FIELD1(GuppyMMARibbon, l60, price)
+        RTTA_FIELD1(GuppyMMARibbon, short_average, price)
+        RTTA_FIELD1(GuppyMMARibbon, long_average, price)
+        RTTA_FIELD1(GuppyMMARibbon, spread, price)
+        RTTA_REPLAY_OUTPUTS1(GuppyMMARibbon, price, batch_guppy_ribbon)
+        RTTA_MULTI_BATCH1(GuppyMMARibbon, price, "close", batch_guppy_ribbon);
+
+    nb::class_<AndrewsPitchfork>(m, "AndrewsPitchfork")
+        .def(nb::init<double, bool>(), nb::arg("percent_change") = 0.05, nb::arg("fillna") = true)
+        .def("update", &AndrewsPitchfork::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(AndrewsPitchfork, high, low, close)
+        RTTA_REPLAY3(AndrewsPitchfork, high, low, close)
+        RTTA_FIELD3(AndrewsPitchfork, median, high, low, close)
+        RTTA_FIELD3(AndrewsPitchfork, upper, high, low, close)
+        RTTA_FIELD3(AndrewsPitchfork, lower, high, low, close)
+        RTTA_FIELD3(AndrewsPitchfork, pivot, high, low, close)
+        RTTA_FIELD3(AndrewsPitchfork, direction, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(AndrewsPitchfork, high, low, close, batch_andrews_pitchfork)
+        RTTA_MULTI_BATCH3(AndrewsPitchfork, high, low, close, "high", "low", "close", batch_andrews_pitchfork);
+
+    nb::class_<ElderThermometer>(m, "ElderThermometer")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &ElderThermometer::update, nb::arg("high"), nb::arg("low"))
+        RTTA_ADVANCE2(ElderThermometer, high, low)
+        RTTA_REPLAY2(ElderThermometer, high, low)
+        RTTA_FIELD2(ElderThermometer, ratio, high, low)
+        RTTA_FIELD2(ElderThermometer, hot, high, low)
+        RTTA_FIELD2(ElderThermometer, range, high, low)
+        RTTA_REPLAY_OUTPUTS2(ElderThermometer, high, low, batch_elder_thermometer)
+        RTTA_MULTI_BATCH2(ElderThermometer, high, low, "high", "low", batch_elder_thermometer);
+
+    nb::class_<RainbowMovingAverage>(m, "RainbowMovingAverage")
+        .def(nb::init<int, int, bool>(), nb::arg("period") = 2, nb::arg("layers") = 10, nb::arg("fillna") = true)
+        .def("update", &RainbowMovingAverage::update, nb::arg("price"))
+        RTTA_ADVANCE1(RainbowMovingAverage, price)
+        RTTA_REPLAY1(RainbowMovingAverage, price)
+        RTTA_FIELD1(RainbowMovingAverage, outer, price)
+        RTTA_FIELD1(RainbowMovingAverage, highest, price)
+        RTTA_FIELD1(RainbowMovingAverage, lowest, price)
+        RTTA_FIELD1(RainbowMovingAverage, mid, price)
+        RTTA_FIELD1(RainbowMovingAverage, width, price)
+        RTTA_REPLAY_OUTPUTS1(RainbowMovingAverage, price, batch_rainbow_ma)
+        RTTA_MULTI_BATCH1(RainbowMovingAverage, price, "close", batch_rainbow_ma);
+
+    nb::class_<RainbowOscillator>(m, "RainbowOscillator")
+        .def(nb::init<int, int, bool>(), nb::arg("period") = 2, nb::arg("layers") = 10, nb::arg("fillna") = true)
+        .def("update", &RainbowOscillator::update, nb::arg("price"))
+        RTTA_ADVANCE1(RainbowOscillator, price)
+        RTTA_REPLAY1(RainbowOscillator, price)
+        RTTA_FIELD1(RainbowOscillator, value, price)
+        RTTA_FIELD1(RainbowOscillator, position, price)
+        RTTA_FIELD1(RainbowOscillator, width, price)
+        RTTA_REPLAY_OUTPUTS1(RainbowOscillator, price, batch_rainbow_osc)
+        RTTA_MULTI_BATCH1(RainbowOscillator, price, "close", batch_rainbow_osc);
+
+    nb::class_<ChandeForecastOscillator>(m, "ChandeForecastOscillator")
+        .def(nb::init<int, bool>(), nb::arg("window") = 14, nb::arg("fillna") = true)
+        .def("update", &ChandeForecastOscillator::update, nb::arg("close"))
+        .def("last", &ChandeForecastOscillator::last)
+        RTTA_ADVANCE1(ChandeForecastOscillator, close)
+        RTTA_REPLAY1(ChandeForecastOscillator, close)
+        RTTA_BATCH1(ChandeForecastOscillator, close, "close");
+
+    nb::class_<RangeActionVerificationIndex>(m, "RangeActionVerificationIndex")
+        .def(nb::init<int, int, bool>(), nb::arg("short_window") = 7, nb::arg("long_window") = 65, nb::arg("fillna") = true)
+        .def("update", &RangeActionVerificationIndex::update, nb::arg("close"))
+        .def("last", &RangeActionVerificationIndex::last)
+        RTTA_ADVANCE1(RangeActionVerificationIndex, close)
+        RTTA_REPLAY1(RangeActionVerificationIndex, close)
+        RTTA_BATCH1(RangeActionVerificationIndex, close, "close");
+
+    nb::class_<BullsPower>(m, "BullsPower")
+        .def(nb::init<int, bool>(), nb::arg("window") = 13, nb::arg("fillna") = true)
+        .def("update", &BullsPower::update, nb::arg("high"), nb::arg("close"))
+        .def("last", &BullsPower::last)
+        RTTA_ADVANCE2(BullsPower, high, close)
+        RTTA_REPLAY2(BullsPower, high, close)
+        RTTA_BATCH2(BullsPower, high, close, "high", "close");
+
+    nb::class_<BearsPower>(m, "BearsPower")
+        .def(nb::init<int, bool>(), nb::arg("window") = 13, nb::arg("fillna") = true)
+        .def("update", &BearsPower::update, nb::arg("low"), nb::arg("close"))
+        .def("last", &BearsPower::last)
+        RTTA_ADVANCE2(BearsPower, low, close)
+        RTTA_REPLAY2(BearsPower, low, close)
+        RTTA_BATCH2(BearsPower, low, close, "low", "close");
+
+    nb::class_<ProjectionOscillator>(m, "ProjectionOscillator")
+        .def(nb::init<int, int, bool>(), nb::arg("window") = 14, nb::arg("signal_window") = 3, nb::arg("fillna") = true)
+        .def("update", &ProjectionOscillator::update, nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE3(ProjectionOscillator, high, low, close)
+        RTTA_REPLAY3(ProjectionOscillator, high, low, close)
+        RTTA_FIELD3(ProjectionOscillator, value, high, low, close)
+        RTTA_FIELD3(ProjectionOscillator, signal, high, low, close)
+        RTTA_FIELD3(ProjectionOscillator, upper, high, low, close)
+        RTTA_FIELD3(ProjectionOscillator, lower, high, low, close)
+        RTTA_REPLAY_OUTPUTS3(ProjectionOscillator, high, low, close, batch_projection_oscillator)
+        RTTA_MULTI_BATCH3(ProjectionOscillator, high, low, close, "high", "low", "close", batch_projection_oscillator);
+
+    nb::class_<Inertia>(m, "Inertia")
+        .def(nb::init<int, int, int, bool>(),
+             nb::arg("std_window") = 10, nb::arg("smooth_window") = 14, nb::arg("reg_window") = 20, nb::arg("fillna") = true)
+        .def("update", &Inertia::update, nb::arg("close"))
+        .def("last", &Inertia::last)
+        RTTA_ADVANCE1(Inertia, close)
+        RTTA_REPLAY1(Inertia, close)
+        RTTA_BATCH1(Inertia, close, "close");
+
+    nb::class_<MessageEventOrderFlowImbalance>(m, "MessageEventOrderFlowImbalance")
+        .def(nb::init<int, bool>(), nb::arg("window") = 50, nb::arg("fillna") = true)
+        .def("update", &MessageEventOrderFlowImbalance::update,
+             nb::arg("event_type"), nb::arg("side"), nb::arg("qty"))
+        RTTA_ADVANCE3(MessageEventOrderFlowImbalance, event_type, side, qty)
+        RTTA_REPLAY3(MessageEventOrderFlowImbalance, event_type, side, qty)
+        RTTA_FIELD3(MessageEventOrderFlowImbalance, ofi, event_type, side, qty)
+        RTTA_FIELD3(MessageEventOrderFlowImbalance, event, event_type, side, qty)
+        RTTA_FIELD3(MessageEventOrderFlowImbalance, signed_size, event_type, side, qty)
+        RTTA_REPLAY_OUTPUTS3(MessageEventOrderFlowImbalance, event_type, side, qty, batch_message_event_ofi)
+        RTTA_MULTI_BATCH3(MessageEventOrderFlowImbalance, event_type, side, qty, "event_type", "side", "qty", batch_message_event_ofi);
+
+    nb::class_<HawkesIntensity>(m, "HawkesIntensity")
+        .def(nb::init<double, double, double, bool>(),
+             nb::arg("mu") = 1.0, nb::arg("alpha") = 0.5, nb::arg("beta") = 1.0, nb::arg("fillna") = true)
+        .def("update", &HawkesIntensity::update, nb::arg("time"), nb::arg("jump") = 1.0)
+        .def("advance", &HawkesIntensity::advance, nb::arg("time"), nb::arg("jump") = 1.0)
+        .def("last", &HawkesIntensity::last)
+        RTTA_REPLAY2(HawkesIntensity, time, jump)
+        RTTA_FIELD2(HawkesIntensity, intensity, time, jump)
+        RTTA_FIELD2(HawkesIntensity, excitation, time, jump)
+        RTTA_FIELD2(HawkesIntensity, baseline, time, jump)
+        .def("replay_update_outputs", [](HawkesIntensity &self, const InputArray &time, const InputArray &jump) {
+            return batch_hawkes_intensity(self, time, jump);
+        }, array_arg("time"), array_arg("jump"))
+        .def("replay_update_outputs", [](HawkesIntensity &self, const FloatInputArray &time, const FloatInputArray &jump) {
+            return batch_hawkes_intensity(self, time, jump);
+        }, array_arg("time"), array_arg("jump"))
+        .def("batch", [](HawkesIntensity &self, const InputArray &time) {
+            return batch_hawkes_intensity1(self, time);
+        }, array_arg("time"))
+        .def("batch", [](HawkesIntensity &self, const FloatInputArray &time) {
+            return batch_hawkes_intensity1(self, time);
+        }, array_arg("time"))
+        RTTA_MULTI_BATCH2(HawkesIntensity, time, jump, "time", "jump", batch_hawkes_intensity);
+
+    nb::class_<WeightedMultiPeerOrderFlowImbalance>(m, "WeightedMultiPeerOrderFlowImbalance")
+        .def(nb::init<int, bool>(), nb::arg("window") = 50, nb::arg("fillna") = true)
+        .def("update",
+             nb::overload_cast<double, const InputArray &, const InputArray &>(&WeightedMultiPeerOrderFlowImbalance::update),
+             nb::arg("own_return"), array_arg("peer_ofis"), array_arg("weights"))
+        .def("update",
+             nb::overload_cast<double, const FloatInputArray &, const FloatInputArray &>(&WeightedMultiPeerOrderFlowImbalance::update),
+             nb::arg("own_return"), array_arg("peer_ofis"), array_arg("weights"))
+        .def("advance",
+             nb::overload_cast<double, const InputArray &, const InputArray &>(&WeightedMultiPeerOrderFlowImbalance::advance),
+             nb::arg("own_return"), array_arg("peer_ofis"), array_arg("weights"))
+        .def("advance",
+             nb::overload_cast<double, const FloatInputArray &, const FloatInputArray &>(&WeightedMultiPeerOrderFlowImbalance::advance),
+             nb::arg("own_return"), array_arg("peer_ofis"), array_arg("weights"))
+        .def("last", &WeightedMultiPeerOrderFlowImbalance::last)
+        .def("batch",
+             nb::overload_cast<const InputArray &, const InputArray2D &, const InputArray2D &>(&WeightedMultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"), array_arg("weights"))
+        .def("batch",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray2D &, const FloatInputArray2D &>(&WeightedMultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"), array_arg("weights"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const InputArray &, const InputArray2D &, const InputArray2D &>(&WeightedMultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"), array_arg("weights"))
+        .def("replay_update_outputs",
+             nb::overload_cast<const FloatInputArray &, const FloatInputArray2D &, const FloatInputArray2D &>(&WeightedMultiPeerOrderFlowImbalance::batch),
+             array_arg("own_return"), array_arg("peer_ofis"), array_arg("weights"));
+
+    nb::class_<ConformalBands>(m, "ConformalBands")
+        .def(nb::init<int, double, bool>(), nb::arg("window") = 20, nb::arg("alpha") = 0.1, nb::arg("fillna") = true)
+        .def("update", &ConformalBands::update, nb::arg("value"))
+        RTTA_ADVANCE1(ConformalBands, value)
+        RTTA_REPLAY1(ConformalBands, value)
+        RTTA_FIELD1(ConformalBands, middle, value)
+        RTTA_FIELD1(ConformalBands, upper, value)
+        RTTA_FIELD1(ConformalBands, lower, value)
+        RTTA_FIELD1(ConformalBands, radius, value)
+        RTTA_REPLAY_OUTPUTS1(ConformalBands, value, batch_conformal_bands)
+        RTTA_MULTI_BATCH1(ConformalBands, value, "close", batch_conformal_bands);
+
+    nb::class_<CDLDoji>(m, "CDLDoji")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLDoji::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLDoji::last)
+        RTTA_ADVANCE4(CDLDoji, open, high, low, close)
+        RTTA_REPLAY4(CDLDoji, open, high, low, close)
+        RTTA_BATCH4(CDLDoji, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLDragonflyDoji>(m, "CDLDragonflyDoji")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLDragonflyDoji::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLDragonflyDoji::last)
+        RTTA_ADVANCE4(CDLDragonflyDoji, open, high, low, close)
+        RTTA_REPLAY4(CDLDragonflyDoji, open, high, low, close)
+        RTTA_BATCH4(CDLDragonflyDoji, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLGravestoneDoji>(m, "CDLGravestoneDoji")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLGravestoneDoji::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLGravestoneDoji::last)
+        RTTA_ADVANCE4(CDLGravestoneDoji, open, high, low, close)
+        RTTA_REPLAY4(CDLGravestoneDoji, open, high, low, close)
+        RTTA_BATCH4(CDLGravestoneDoji, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLLongLeggedDoji>(m, "CDLLongLeggedDoji")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLLongLeggedDoji::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLLongLeggedDoji::last)
+        RTTA_ADVANCE4(CDLLongLeggedDoji, open, high, low, close)
+        RTTA_REPLAY4(CDLLongLeggedDoji, open, high, low, close)
+        RTTA_BATCH4(CDLLongLeggedDoji, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLHammer>(m, "CDLHammer")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLHammer::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLHammer::last)
+        RTTA_ADVANCE4(CDLHammer, open, high, low, close)
+        RTTA_REPLAY4(CDLHammer, open, high, low, close)
+        RTTA_BATCH4(CDLHammer, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLHangingMan>(m, "CDLHangingMan")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLHangingMan::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLHangingMan::last)
+        RTTA_ADVANCE4(CDLHangingMan, open, high, low, close)
+        RTTA_REPLAY4(CDLHangingMan, open, high, low, close)
+        RTTA_BATCH4(CDLHangingMan, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLInvertedHammer>(m, "CDLInvertedHammer")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLInvertedHammer::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLInvertedHammer::last)
+        RTTA_ADVANCE4(CDLInvertedHammer, open, high, low, close)
+        RTTA_REPLAY4(CDLInvertedHammer, open, high, low, close)
+        RTTA_BATCH4(CDLInvertedHammer, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLShootingStar>(m, "CDLShootingStar")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLShootingStar::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLShootingStar::last)
+        RTTA_ADVANCE4(CDLShootingStar, open, high, low, close)
+        RTTA_REPLAY4(CDLShootingStar, open, high, low, close)
+        RTTA_BATCH4(CDLShootingStar, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLMarubozu>(m, "CDLMarubozu")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLMarubozu::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLMarubozu::last)
+        RTTA_ADVANCE4(CDLMarubozu, open, high, low, close)
+        RTTA_REPLAY4(CDLMarubozu, open, high, low, close)
+        RTTA_BATCH4(CDLMarubozu, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLClosingMarubozu>(m, "CDLClosingMarubozu")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLClosingMarubozu::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLClosingMarubozu::last)
+        RTTA_ADVANCE4(CDLClosingMarubozu, open, high, low, close)
+        RTTA_REPLAY4(CDLClosingMarubozu, open, high, low, close)
+        RTTA_BATCH4(CDLClosingMarubozu, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLSpinningTop>(m, "CDLSpinningTop")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLSpinningTop::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLSpinningTop::last)
+        RTTA_ADVANCE4(CDLSpinningTop, open, high, low, close)
+        RTTA_REPLAY4(CDLSpinningTop, open, high, low, close)
+        RTTA_BATCH4(CDLSpinningTop, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLHighWave>(m, "CDLHighWave")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLHighWave::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLHighWave::last)
+        RTTA_ADVANCE4(CDLHighWave, open, high, low, close)
+        RTTA_REPLAY4(CDLHighWave, open, high, low, close)
+        RTTA_BATCH4(CDLHighWave, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLLongLine>(m, "CDLLongLine")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLLongLine::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLLongLine::last)
+        RTTA_ADVANCE4(CDLLongLine, open, high, low, close)
+        RTTA_REPLAY4(CDLLongLine, open, high, low, close)
+        RTTA_BATCH4(CDLLongLine, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLShortLine>(m, "CDLShortLine")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLShortLine::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLShortLine::last)
+        RTTA_ADVANCE4(CDLShortLine, open, high, low, close)
+        RTTA_REPLAY4(CDLShortLine, open, high, low, close)
+        RTTA_BATCH4(CDLShortLine, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLBeltHold>(m, "CDLBeltHold")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLBeltHold::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLBeltHold::last)
+        RTTA_ADVANCE4(CDLBeltHold, open, high, low, close)
+        RTTA_REPLAY4(CDLBeltHold, open, high, low, close)
+        RTTA_BATCH4(CDLBeltHold, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLEngulfing>(m, "CDLEngulfing")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLEngulfing::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLEngulfing::last)
+        RTTA_ADVANCE4(CDLEngulfing, open, high, low, close)
+        RTTA_REPLAY4(CDLEngulfing, open, high, low, close)
+        RTTA_BATCH4(CDLEngulfing, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLHarami>(m, "CDLHarami")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLHarami::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLHarami::last)
+        RTTA_ADVANCE4(CDLHarami, open, high, low, close)
+        RTTA_REPLAY4(CDLHarami, open, high, low, close)
+        RTTA_BATCH4(CDLHarami, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLHaramiCross>(m, "CDLHaramiCross")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLHaramiCross::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLHaramiCross::last)
+        RTTA_ADVANCE4(CDLHaramiCross, open, high, low, close)
+        RTTA_REPLAY4(CDLHaramiCross, open, high, low, close)
+        RTTA_BATCH4(CDLHaramiCross, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLPiercing>(m, "CDLPiercing")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLPiercing::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLPiercing::last)
+        RTTA_ADVANCE4(CDLPiercing, open, high, low, close)
+        RTTA_REPLAY4(CDLPiercing, open, high, low, close)
+        RTTA_BATCH4(CDLPiercing, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLDarkCloudCover>(m, "CDLDarkCloudCover")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLDarkCloudCover::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLDarkCloudCover::last)
+        RTTA_ADVANCE4(CDLDarkCloudCover, open, high, low, close)
+        RTTA_REPLAY4(CDLDarkCloudCover, open, high, low, close)
+        RTTA_BATCH4(CDLDarkCloudCover, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLDojiStar>(m, "CDLDojiStar")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLDojiStar::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLDojiStar::last)
+        RTTA_ADVANCE4(CDLDojiStar, open, high, low, close)
+        RTTA_REPLAY4(CDLDojiStar, open, high, low, close)
+        RTTA_BATCH4(CDLDojiStar, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLMatchingLow>(m, "CDLMatchingLow")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLMatchingLow::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLMatchingLow::last)
+        RTTA_ADVANCE4(CDLMatchingLow, open, high, low, close)
+        RTTA_REPLAY4(CDLMatchingLow, open, high, low, close)
+        RTTA_BATCH4(CDLMatchingLow, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLCounterAttack>(m, "CDLCounterAttack")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLCounterAttack::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLCounterAttack::last)
+        RTTA_ADVANCE4(CDLCounterAttack, open, high, low, close)
+        RTTA_REPLAY4(CDLCounterAttack, open, high, low, close)
+        RTTA_BATCH4(CDLCounterAttack, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLMorningStar>(m, "CDLMorningStar")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLMorningStar::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLMorningStar::last)
+        RTTA_ADVANCE4(CDLMorningStar, open, high, low, close)
+        RTTA_REPLAY4(CDLMorningStar, open, high, low, close)
+        RTTA_BATCH4(CDLMorningStar, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLEveningStar>(m, "CDLEveningStar")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLEveningStar::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLEveningStar::last)
+        RTTA_ADVANCE4(CDLEveningStar, open, high, low, close)
+        RTTA_REPLAY4(CDLEveningStar, open, high, low, close)
+        RTTA_BATCH4(CDLEveningStar, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLMorningDojiStar>(m, "CDLMorningDojiStar")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLMorningDojiStar::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLMorningDojiStar::last)
+        RTTA_ADVANCE4(CDLMorningDojiStar, open, high, low, close)
+        RTTA_REPLAY4(CDLMorningDojiStar, open, high, low, close)
+        RTTA_BATCH4(CDLMorningDojiStar, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLEveningDojiStar>(m, "CDLEveningDojiStar")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLEveningDojiStar::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLEveningDojiStar::last)
+        RTTA_ADVANCE4(CDLEveningDojiStar, open, high, low, close)
+        RTTA_REPLAY4(CDLEveningDojiStar, open, high, low, close)
+        RTTA_BATCH4(CDLEveningDojiStar, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDL3WhiteSoldiers>(m, "CDL3WhiteSoldiers")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDL3WhiteSoldiers::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDL3WhiteSoldiers::last)
+        RTTA_ADVANCE4(CDL3WhiteSoldiers, open, high, low, close)
+        RTTA_REPLAY4(CDL3WhiteSoldiers, open, high, low, close)
+        RTTA_BATCH4(CDL3WhiteSoldiers, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDL3BlackCrows>(m, "CDL3BlackCrows")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDL3BlackCrows::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDL3BlackCrows::last)
+        RTTA_ADVANCE4(CDL3BlackCrows, open, high, low, close)
+        RTTA_REPLAY4(CDL3BlackCrows, open, high, low, close)
+        RTTA_BATCH4(CDL3BlackCrows, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDL3Inside>(m, "CDL3Inside")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDL3Inside::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDL3Inside::last)
+        RTTA_ADVANCE4(CDL3Inside, open, high, low, close)
+        RTTA_REPLAY4(CDL3Inside, open, high, low, close)
+        RTTA_BATCH4(CDL3Inside, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDL3Outside>(m, "CDL3Outside")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDL3Outside::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDL3Outside::last)
+        RTTA_ADVANCE4(CDL3Outside, open, high, low, close)
+        RTTA_REPLAY4(CDL3Outside, open, high, low, close)
+        RTTA_BATCH4(CDL3Outside, open, high, low, close, "open", "high", "low", "close");
+
+
+    nb::class_<CDLTriStar>(m, "CDLTriStar")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLTriStar::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &CDLTriStar::last)
+        RTTA_ADVANCE4(CDLTriStar, open, high, low, close)
+        RTTA_REPLAY4(CDLTriStar, open, high, low, close)
+        RTTA_BATCH4(CDLTriStar, open, high, low, close, "open", "high", "low", "close");
+
+    nb::class_<CDLPatternPackResult>(m, "CDLPatternPackResult")
+        .def_ro("doji", &CDLPatternPackResult::doji)
+        .def_ro("hammer", &CDLPatternPackResult::hammer)
+        .def_ro("hanging_man", &CDLPatternPackResult::hanging_man)
+        .def_ro("inverted_hammer", &CDLPatternPackResult::inverted_hammer)
+        .def_ro("shooting_star", &CDLPatternPackResult::shooting_star)
+        .def_ro("engulfing", &CDLPatternPackResult::engulfing)
+        .def_ro("harami", &CDLPatternPackResult::harami)
+        .def_ro("piercing", &CDLPatternPackResult::piercing)
+        .def_ro("dark_cloud_cover", &CDLPatternPackResult::dark_cloud_cover)
+        .def_ro("morning_star", &CDLPatternPackResult::morning_star)
+        .def_ro("evening_star", &CDLPatternPackResult::evening_star)
+        .def_ro("three_white_soldiers", &CDLPatternPackResult::three_white_soldiers)
+        .def_ro("three_black_crows", &CDLPatternPackResult::three_black_crows)
+        .def_ro("marubozu", &CDLPatternPackResult::marubozu)
+        .def_ro("spinning_top", &CDLPatternPackResult::spinning_top);
+    nb::class_<CDLPatternPackBatchResult>(m, "CDLPatternPackBatchResult")
+        .def_ro("doji", &CDLPatternPackBatchResult::doji)
+        .def_ro("hammer", &CDLPatternPackBatchResult::hammer)
+        .def_ro("hanging_man", &CDLPatternPackBatchResult::hanging_man)
+        .def_ro("inverted_hammer", &CDLPatternPackBatchResult::inverted_hammer)
+        .def_ro("shooting_star", &CDLPatternPackBatchResult::shooting_star)
+        .def_ro("engulfing", &CDLPatternPackBatchResult::engulfing)
+        .def_ro("harami", &CDLPatternPackBatchResult::harami)
+        .def_ro("piercing", &CDLPatternPackBatchResult::piercing)
+        .def_ro("dark_cloud_cover", &CDLPatternPackBatchResult::dark_cloud_cover)
+        .def_ro("morning_star", &CDLPatternPackBatchResult::morning_star)
+        .def_ro("evening_star", &CDLPatternPackBatchResult::evening_star)
+        .def_ro("three_white_soldiers", &CDLPatternPackBatchResult::three_white_soldiers)
+        .def_ro("three_black_crows", &CDLPatternPackBatchResult::three_black_crows)
+        .def_ro("marubozu", &CDLPatternPackBatchResult::marubozu)
+        .def_ro("spinning_top", &CDLPatternPackBatchResult::spinning_top);
+
+    nb::class_<CDLPatternPack>(m, "CDLPatternPack")
+        .def(nb::init<bool>(), nb::arg("fillna") = true)
+        .def("update", &CDLPatternPack::update, nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        RTTA_ADVANCE4(CDLPatternPack, open, high, low, close)
+        RTTA_REPLAY4(CDLPatternPack, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, doji, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, hammer, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, hanging_man, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, inverted_hammer, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, shooting_star, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, engulfing, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, harami, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, piercing, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, dark_cloud_cover, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, morning_star, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, evening_star, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, three_white_soldiers, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, three_black_crows, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, marubozu, open, high, low, close)
+        RTTA_FIELD4(CDLPatternPack, spinning_top, open, high, low, close)
+        .def("replay_update_outputs", [](CDLPatternPack &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("replay_update_outputs", [](CDLPatternPack &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](CDLPatternPack &self, const InputArray &open, const InputArray &high, const InputArray &low, const InputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](CDLPatternPack &self, const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low, const FloatInputArray &close) {
+            return self.batch_array(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("batch", [](CDLPatternPack &self, nb::iterable records) {
+            if (table_has_column(records, "open")) {
+                return dispatch_table4(
+                    self, records, "open", "high", "low", "close",
+                    [](auto &indicator, const auto &open, const auto &high, const auto &low, const auto &close) {
+                        return indicator.batch_array(open, high, low, close);
+                    });
+            }
+            throw nb::type_error("pandas table batch input is missing a required column");
+        }, nb::arg("records"));
+
+
+    nb::class_<SqrtImpactFlowSignalResult>(m, "SqrtImpactFlowSignalResult")
+        .def_ro("signal", &SqrtImpactFlowSignalResult::signal)
+        .def_ro("score", &SqrtImpactFlowSignalResult::score)
+        .def_ro("impact", &SqrtImpactFlowSignalResult::impact)
+        .def_ro("residual", &SqrtImpactFlowSignalResult::residual)
+        .def_ro("continuation", &SqrtImpactFlowSignalResult::continuation)
+        .def_ro("reversion", &SqrtImpactFlowSignalResult::reversion)
+        .def_ro("participation", &SqrtImpactFlowSignalResult::participation)
+        .def_ro("flow", &SqrtImpactFlowSignalResult::flow)
+        .def_ro("volatility", &SqrtImpactFlowSignalResult::volatility)
+        .def_ro("vwap_gap", &SqrtImpactFlowSignalResult::vwap_gap);
+    nb::class_<SqrtImpactFlowSignalBatchResult>(m, "SqrtImpactFlowSignalBatchResult")
+        .def_ro("signal", &SqrtImpactFlowSignalBatchResult::signal)
+        .def_ro("score", &SqrtImpactFlowSignalBatchResult::score)
+        .def_ro("impact", &SqrtImpactFlowSignalBatchResult::impact)
+        .def_ro("residual", &SqrtImpactFlowSignalBatchResult::residual)
+        .def_ro("continuation", &SqrtImpactFlowSignalBatchResult::continuation)
+        .def_ro("reversion", &SqrtImpactFlowSignalBatchResult::reversion)
+        .def_ro("participation", &SqrtImpactFlowSignalBatchResult::participation)
+        .def_ro("flow", &SqrtImpactFlowSignalBatchResult::flow)
+        .def_ro("volatility", &SqrtImpactFlowSignalBatchResult::volatility)
+        .def_ro("vwap_gap", &SqrtImpactFlowSignalBatchResult::vwap_gap);
+
+    nb::class_<SqrtImpactFlowSignal>(m, "SqrtImpactFlowSignal")
+        .def(nb::init<double, double, double, double, double, double, double, double, bool>(),
+             nb::arg("impact_coefficient") = 1.0,
+             nb::arg("adv_span") = 50.0,
+             nb::arg("vol_span") = 20.0,
+             nb::arg("continuation_weight") = 1.0,
+             nb::arg("reversion_weight") = 0.5,
+             nb::arg("vwap_weight") = 0.25,
+             nb::arg("entry_z") = 0.75,
+             nb::arg("exit_z") = 0.25,
+             nb::arg("fillna") = true)
+        .def("update",
+             nb::overload_cast<double, double, double, double>(&SqrtImpactFlowSignal::update),
+             nb::arg("close"), nb::arg("volume"),
+             nb::arg("signed_dollar_volume") = nan(), nb::arg("vwap") = nan())
+        .def("update",
+             nb::overload_cast<double, double, double, double, double, double, double>(&SqrtImpactFlowSignal::update),
+             nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"), nb::arg("volume"),
+             nb::arg("signed_dollar_volume") = nan(), nb::arg("vwap") = nan())
+        .def("advance",
+             nb::overload_cast<double, double, double, double>(&SqrtImpactFlowSignal::advance),
+             nb::arg("close"), nb::arg("volume"),
+             nb::arg("signed_dollar_volume") = nan(), nb::arg("vwap") = nan())
+        .def("advance",
+             nb::overload_cast<double, double, double, double, double, double, double>(&SqrtImpactFlowSignal::advance),
+             nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"), nb::arg("volume"),
+             nb::arg("signed_dollar_volume") = nan(), nb::arg("vwap") = nan())
+        .def("last", &SqrtImpactFlowSignal::last)
+        RTTA_REPLAY2(SqrtImpactFlowSignal, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, signal, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, score, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, impact, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, residual, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, continuation, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, reversion, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, participation, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, flow, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, volatility, close, volume)
+        RTTA_FIELD2(SqrtImpactFlowSignal, vwap_gap, close, volume)
+        RTTA_MULTI_BATCH2(SqrtImpactFlowSignal, close, volume, "close", "volume", batch_sqrt_impact_flow)
+        .def("batch", [](SqrtImpactFlowSignal &self, const InputArray &close, const InputArray &volume,
+                         const InputArray &signed_dollar_volume, const InputArray &vwap) {
+            return self.batch_array(close, volume, signed_dollar_volume, vwap);
+        }, array_arg("close"), array_arg("volume"), array_arg("signed_dollar_volume"), array_arg("vwap"))
+        .def("batch", [](SqrtImpactFlowSignal &self, const FloatInputArray &close, const FloatInputArray &volume,
+                         const FloatInputArray &signed_dollar_volume, const FloatInputArray &vwap) {
+            return self.batch_array(close, volume, signed_dollar_volume, vwap);
+        }, array_arg("close"), array_arg("volume"), array_arg("signed_dollar_volume"), array_arg("vwap"))
+        .def("batch", [](SqrtImpactFlowSignal &self,
+                         const InputArray &open, const InputArray &high, const InputArray &low,
+                         const InputArray &close, const InputArray &volume) {
+            return self.batch_ohlcv(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("batch", [](SqrtImpactFlowSignal &self,
+                         const FloatInputArray &open, const FloatInputArray &high, const FloatInputArray &low,
+                         const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_ohlcv(open, high, low, close, volume);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"), array_arg("volume"))
+        .def("replay_update_outputs", [](SqrtImpactFlowSignal &self, const InputArray &close, const InputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"))
+        .def("replay_update_outputs", [](SqrtImpactFlowSignal &self, const FloatInputArray &close, const FloatInputArray &volume) {
+            return self.batch_array(close, volume);
+        }, array_arg("close"), array_arg("volume"));
+
+    nb::class_<FourierResidueIdentityResult>(m, "FourierResidueIdentityResult")
+        .def_ro("rho", &FourierResidueIdentityResult::rho)
+        .def_ro("rho_sign", &FourierResidueIdentityResult::rho_sign)
+        .def_ro("rho_magnitude", &FourierResidueIdentityResult::rho_magnitude)
+        .def_ro("z_rho", &FourierResidueIdentityResult::z_rho)
+        .def_ro("z_sign", &FourierResidueIdentityResult::z_sign)
+        .def_ro("directional_share", &FourierResidueIdentityResult::directional_share)
+        .def_ro("elliptical_ratio", &FourierResidueIdentityResult::elliptical_ratio)
+        .def_ro("variance_ratio", &FourierResidueIdentityResult::variance_ratio)
+        .def_ro("variance_ratio_sign", &FourierResidueIdentityResult::variance_ratio_sign)
+        .def_ro("variance_ratio_magnitude", &FourierResidueIdentityResult::variance_ratio_magnitude)
+        .def_ro("z_variance_ratio", &FourierResidueIdentityResult::z_variance_ratio)
+        .def_ro("persistence", &FourierResidueIdentityResult::persistence)
+        .def_ro("signal", &FourierResidueIdentityResult::signal)
+        .def_ro("score", &FourierResidueIdentityResult::score)
+        .def_ro("magnitude_forecast", &FourierResidueIdentityResult::magnitude_forecast);
+    nb::class_<FourierResidueIdentityBatchResult>(m, "FourierResidueIdentityBatchResult")
+        .def_ro("rho", &FourierResidueIdentityBatchResult::rho)
+        .def_ro("rho_sign", &FourierResidueIdentityBatchResult::rho_sign)
+        .def_ro("rho_magnitude", &FourierResidueIdentityBatchResult::rho_magnitude)
+        .def_ro("z_rho", &FourierResidueIdentityBatchResult::z_rho)
+        .def_ro("z_sign", &FourierResidueIdentityBatchResult::z_sign)
+        .def_ro("directional_share", &FourierResidueIdentityBatchResult::directional_share)
+        .def_ro("elliptical_ratio", &FourierResidueIdentityBatchResult::elliptical_ratio)
+        .def_ro("variance_ratio", &FourierResidueIdentityBatchResult::variance_ratio)
+        .def_ro("variance_ratio_sign", &FourierResidueIdentityBatchResult::variance_ratio_sign)
+        .def_ro("variance_ratio_magnitude", &FourierResidueIdentityBatchResult::variance_ratio_magnitude)
+        .def_ro("z_variance_ratio", &FourierResidueIdentityBatchResult::z_variance_ratio)
+        .def_ro("persistence", &FourierResidueIdentityBatchResult::persistence)
+        .def_ro("signal", &FourierResidueIdentityBatchResult::signal)
+        .def_ro("score", &FourierResidueIdentityBatchResult::score)
+        .def_ro("magnitude_forecast", &FourierResidueIdentityBatchResult::magnitude_forecast);
+
+    nb::class_<FourierResidueIdentity>(m, "FourierResidueIdentity")
+        .def(nb::init<int, int, int, double, int, double, double, bool>(),
+             nb::arg("max_lag") = 8,
+             nb::arg("horizon") = 2,
+             nb::arg("test_lag") = 1,
+             nb::arg("span") = 512.0,
+             nb::arg("median_window") = 256,
+             nb::arg("entry_z") = 2.0,
+             nb::arg("exit_z") = 1.0,
+             nb::arg("fillna") = true)
+        .def("update",
+             nb::overload_cast<double>(&FourierResidueIdentity::update),
+             nb::arg("close"))
+        .def("update",
+             nb::overload_cast<double, double, double, double>(&FourierResidueIdentity::update),
+             nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("advance",
+             nb::overload_cast<double>(&FourierResidueIdentity::advance),
+             nb::arg("close"))
+        .def("advance",
+             nb::overload_cast<double, double, double, double>(&FourierResidueIdentity::advance),
+             nb::arg("open"), nb::arg("high"), nb::arg("low"), nb::arg("close"))
+        .def("last", &FourierResidueIdentity::last)
+        .def("reset", &FourierResidueIdentity::reset)
+        .def("batch", [](FourierResidueIdentity &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        .def("batch", [](FourierResidueIdentity &self, const FloatInputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        // Pandas-table batch. Registered after the typed array overloads so a
+        // NumPy input still binds to them; only a table falls through to here.
+        .def("batch", [](FourierResidueIdentity &self, nb::handle table) {
+            nb::object column = table_column_array(table, "close");
+            switch (array_dtype(column)) {
+                case InputDType::Float32:
+                    return self.batch_array(nb::cast<FloatInputArray>(column));
+                case InputDType::Float64:
+                    return self.batch_array(nb::cast<InputArray>(column));
+            }
+            throw nb::type_error("unsupported pandas table column dtype");
+        }, nb::arg("table"))
+        .def("batch", [](FourierResidueIdentity &self,
+                         const InputArray &open, const InputArray &high,
+                         const InputArray &low, const InputArray &close) {
+            return self.batch_ohlc(open, high, low, close);
+        }, array_arg("open"), array_arg("high"), array_arg("low"), array_arg("close"))
+        .def("replay_update_outputs", [](FourierResidueIdentity &self, const InputArray &close) {
+            return self.batch_array(close);
+        }, array_arg("close"))
+        RTTA_REPLAY1(FourierResidueIdentity, close)
+        RTTA_FIELD1(FourierResidueIdentity, rho, close)
+        RTTA_FIELD1(FourierResidueIdentity, rho_sign, close)
+        RTTA_FIELD1(FourierResidueIdentity, rho_magnitude, close)
+        RTTA_FIELD1(FourierResidueIdentity, z_rho, close)
+        RTTA_FIELD1(FourierResidueIdentity, z_sign, close)
+        RTTA_FIELD1(FourierResidueIdentity, directional_share, close)
+        RTTA_FIELD1(FourierResidueIdentity, elliptical_ratio, close)
+        RTTA_FIELD1(FourierResidueIdentity, variance_ratio, close)
+        RTTA_FIELD1(FourierResidueIdentity, variance_ratio_sign, close)
+        RTTA_FIELD1(FourierResidueIdentity, variance_ratio_magnitude, close)
+        RTTA_FIELD1(FourierResidueIdentity, z_variance_ratio, close)
+        RTTA_FIELD1(FourierResidueIdentity, persistence, close)
+        RTTA_FIELD1(FourierResidueIdentity, signal, close)
+        RTTA_FIELD1(FourierResidueIdentity, score, close)
+        RTTA_FIELD1(FourierResidueIdentity, magnitude_forecast, close);
+
+    nb::class_<FlowPressureCapacitySignalResult>(m, "FlowPressureCapacitySignalResult")
+        .def_ro("signal", &FlowPressureCapacitySignalResult::signal)
+        .def_ro("score", &FlowPressureCapacitySignalResult::score)
+        .def_ro("fair_value", &FlowPressureCapacitySignalResult::fair_value)
+        .def_ro("microprice", &FlowPressureCapacitySignalResult::microprice)
+        .def_ro("raw_queue_imbalance", &FlowPressureCapacitySignalResult::raw_queue_imbalance)
+        .def_ro("queue_imbalance", &FlowPressureCapacitySignalResult::queue_imbalance)
+        .def_ro("flow_imbalance", &FlowPressureCapacitySignalResult::flow_imbalance)
+        .def_ro("pressure", &FlowPressureCapacitySignalResult::pressure)
+        .def_ro("replenishment", &FlowPressureCapacitySignalResult::replenishment)
+        .def_ro("fragility", &FlowPressureCapacitySignalResult::fragility)
+        .def_ro("spread_bps", &FlowPressureCapacitySignalResult::spread_bps);
+
+    nb::class_<FlowPressureCapacitySignalBatchResult>(m, "FlowPressureCapacitySignalBatchResult")
+        .def_ro("signal", &FlowPressureCapacitySignalBatchResult::signal)
+        .def_ro("score", &FlowPressureCapacitySignalBatchResult::score)
+        .def_ro("fair_value", &FlowPressureCapacitySignalBatchResult::fair_value)
+        .def_ro("microprice", &FlowPressureCapacitySignalBatchResult::microprice)
+        .def_ro("raw_queue_imbalance", &FlowPressureCapacitySignalBatchResult::raw_queue_imbalance)
+        .def_ro("queue_imbalance", &FlowPressureCapacitySignalBatchResult::queue_imbalance)
+        .def_ro("flow_imbalance", &FlowPressureCapacitySignalBatchResult::flow_imbalance)
+        .def_ro("pressure", &FlowPressureCapacitySignalBatchResult::pressure)
+        .def_ro("replenishment", &FlowPressureCapacitySignalBatchResult::replenishment)
+        .def_ro("fragility", &FlowPressureCapacitySignalBatchResult::fragility)
+        .def_ro("spread_bps", &FlowPressureCapacitySignalBatchResult::spread_bps);
+
+    nb::class_<FlowPressureCapacitySignal>(m, "FlowPressureCapacitySignal")
+        .def(nb::init<double, double, double, double, double, double, double, double, int, bool>(),
+             nb::arg("half_life_updates") = 32.0,
+             nb::arg("queue_weight") = 0.25,
+             nb::arg("pressure_weight") = 1.0,
+             nb::arg("replenishment_weight") = 0.75,
+             nb::arg("fragility_weight") = 0.25,
+             nb::arg("score_scale") = 1.0,
+             nb::arg("entry_threshold") = 0.35,
+             nb::arg("exit_threshold") = 0.15,
+             nb::arg("warmup") = 8,
+             nb::arg("fillna") = true)
+        .def("update",
+             nb::overload_cast<double, double, double, double, double>(&FlowPressureCapacitySignal::update),
+             nb::arg("bid_price"), nb::arg("bid_size"),
+             nb::arg("ask_price"), nb::arg("ask_size"),
+             nb::arg("signed_trade_volume") = 0.0)
+        .def("update",
+             nb::overload_cast<double, double, double, double, double, double>(&FlowPressureCapacitySignal::update),
+             nb::arg("bid_price"), nb::arg("bid_size"),
+             nb::arg("ask_price"), nb::arg("ask_size"),
+             nb::arg("buy_volume"), nb::arg("sell_volume"))
+        .def("advance",
+             nb::overload_cast<double, double, double, double, double>(&FlowPressureCapacitySignal::advance),
+             nb::arg("bid_price"), nb::arg("bid_size"),
+             nb::arg("ask_price"), nb::arg("ask_size"),
+             nb::arg("signed_trade_volume") = 0.0)
+        .def("advance",
+             nb::overload_cast<double, double, double, double, double, double>(&FlowPressureCapacitySignal::advance),
+             nb::arg("bid_price"), nb::arg("bid_size"),
+             nb::arg("ask_price"), nb::arg("ask_size"),
+             nb::arg("buy_volume"), nb::arg("sell_volume"))
+        .def("last", &FlowPressureCapacitySignal::last)
+        .def("reset", &FlowPressureCapacitySignal::reset)
+        .def("batch", [](FlowPressureCapacitySignal &self,
+                          const InputArray &bid_price, const InputArray &bid_size,
+                          const InputArray &ask_price, const InputArray &ask_size,
+                          const InputArray &signed_trade_volume) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size, signed_trade_volume);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        .def("batch", [](FlowPressureCapacitySignal &self,
+                          const FloatInputArray &bid_price, const FloatInputArray &bid_size,
+                          const FloatInputArray &ask_price, const FloatInputArray &ask_size,
+                          const FloatInputArray &signed_trade_volume) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size, signed_trade_volume);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        .def("batch", [](FlowPressureCapacitySignal &self,
+                          const InputArray &bid_price, const InputArray &bid_size,
+                          const InputArray &ask_price, const InputArray &ask_size,
+                          const InputArray &buy_volume, const InputArray &sell_volume) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size, buy_volume, sell_volume);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("buy_volume"), array_arg("sell_volume"))
+        .def("batch", [](FlowPressureCapacitySignal &self,
+                          const FloatInputArray &bid_price, const FloatInputArray &bid_size,
+                          const FloatInputArray &ask_price, const FloatInputArray &ask_size,
+                          const FloatInputArray &buy_volume, const FloatInputArray &sell_volume) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size, buy_volume, sell_volume);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("buy_volume"), array_arg("sell_volume"))
+        .def("batch", [](FlowPressureCapacitySignal &self, nb::iterable records) {
+            if (!table_has_column(records, "bid_price")) {
+                throw nb::type_error("record-list batch is not supported for FlowPressureCapacitySignal");
+            }
+            return dispatch_table5(
+                self, records, "bid_price", "bid_size", "ask_price", "ask_size", "signed_volume",
+                [](auto &indicator, const auto &bp, const auto &bs, const auto &ap, const auto &as, const auto &sv) {
+                    return indicator.batch_array(bp, bs, ap, as, sv);
+                });
+        }, nb::arg("records"))
+        .def("replay_update_outputs", [](FlowPressureCapacitySignal &self,
+                                          const InputArray &bid_price, const InputArray &bid_size,
+                                          const InputArray &ask_price, const InputArray &ask_size,
+                                          const InputArray &signed_trade_volume) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size, signed_trade_volume);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        .def("replay_update_outputs", [](FlowPressureCapacitySignal &self,
+                                          const FloatInputArray &bid_price, const FloatInputArray &bid_size,
+                                          const FloatInputArray &ask_price, const FloatInputArray &ask_size,
+                                          const FloatInputArray &signed_trade_volume) {
+            return self.batch_array(bid_price, bid_size, ask_price, ask_size, signed_trade_volume);
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        .def("replay_update", [](FlowPressureCapacitySignal &self,
+                                  const InputArray &bid_price, const InputArray &bid_size,
+                                  const InputArray &ask_price, const InputArray &ask_size,
+                                  const InputArray &signed_trade_volume) {
+            const std::size_t n = bid_price.shape(0);
+            require_same_size(n, bid_size.shape(0)); require_same_size(n, ask_price.shape(0));
+            require_same_size(n, ask_size.shape(0)); require_same_size(n, signed_trade_volume.shape(0));
+            double checksum = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                checksum += result_checksum(self.update(
+                    bid_price.data()[i], bid_size.data()[i], ask_price.data()[i],
+                    ask_size.data()[i], signed_trade_volume.data()[i]));
+            }
+            return checksum;
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        .def("replay_update", [](FlowPressureCapacitySignal &self,
+                                  const FloatInputArray &bid_price, const FloatInputArray &bid_size,
+                                  const FloatInputArray &ask_price, const FloatInputArray &ask_size,
+                                  const FloatInputArray &signed_trade_volume) {
+            const std::size_t n = bid_price.shape(0);
+            require_same_size(n, bid_size.shape(0)); require_same_size(n, ask_price.shape(0));
+            require_same_size(n, ask_size.shape(0)); require_same_size(n, signed_trade_volume.shape(0));
+            double checksum = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                checksum += result_checksum(self.update(
+                    static_cast<double>(bid_price.data()[i]), static_cast<double>(bid_size.data()[i]),
+                    static_cast<double>(ask_price.data()[i]), static_cast<double>(ask_size.data()[i]),
+                    static_cast<double>(signed_trade_volume.data()[i])));
+            }
+            return checksum;
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        .def("replay_advance", [](FlowPressureCapacitySignal &self,
+                                   const InputArray &bid_price, const InputArray &bid_size,
+                                   const InputArray &ask_price, const InputArray &ask_size,
+                                   const InputArray &signed_trade_volume) {
+            const std::size_t n = bid_price.shape(0);
+            require_same_size(n, bid_size.shape(0)); require_same_size(n, ask_price.shape(0));
+            require_same_size(n, ask_size.shape(0)); require_same_size(n, signed_trade_volume.shape(0));
+            double checksum = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                self.advance(bid_price.data()[i], bid_size.data()[i], ask_price.data()[i],
+                             ask_size.data()[i], signed_trade_volume.data()[i]);
+                checksum += result_checksum(self.last());
+            }
+            return checksum;
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        .def("replay_advance", [](FlowPressureCapacitySignal &self,
+                                   const FloatInputArray &bid_price, const FloatInputArray &bid_size,
+                                   const FloatInputArray &ask_price, const FloatInputArray &ask_size,
+                                   const FloatInputArray &signed_trade_volume) {
+            const std::size_t n = bid_price.shape(0);
+            require_same_size(n, bid_size.shape(0)); require_same_size(n, ask_price.shape(0));
+            require_same_size(n, ask_size.shape(0)); require_same_size(n, signed_trade_volume.shape(0));
+            double checksum = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                self.advance(
+                    static_cast<double>(bid_price.data()[i]), static_cast<double>(bid_size.data()[i]),
+                    static_cast<double>(ask_price.data()[i]), static_cast<double>(ask_size.data()[i]),
+                    static_cast<double>(signed_trade_volume.data()[i]));
+                checksum += result_checksum(self.last());
+            }
+            return checksum;
+        }, array_arg("bid_price"), array_arg("bid_size"), array_arg("ask_price"),
+           array_arg("ask_size"), array_arg("signed_trade_volume"))
+        RTTA_FIELD5(FlowPressureCapacitySignal, signal, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, score, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, fair_value, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, microprice, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, raw_queue_imbalance, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, queue_imbalance, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, flow_imbalance, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, pressure, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, replenishment, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, fragility, bid_price, bid_size, ask_price, ask_size, signed_trade_volume)
+        RTTA_FIELD5(FlowPressureCapacitySignal, spread_bps, bid_price, bid_size, ask_price, ask_size, signed_trade_volume);
+
 }

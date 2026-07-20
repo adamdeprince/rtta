@@ -2,61 +2,83 @@
 
 ## Summary
 
-`MACD` is RTTA's scalar Moving Average Convergence/Divergence pipeline. It
-computes a fast EMA, a slow EMA, subtracts them, and returns an EMA-smoothed
-signal value.
+`MACD` is RTTA's multi-output Moving Average Convergence/Divergence oscillator:
+fast EMA minus slow EMA, a signal EMA of that difference, and a histogram of
+MACD minus signal.
 
 ## Update API
 
 ```python
-value = rtta.MACD(a=12, b=26, c=9, fillna=False).update(value)
+result = rtta.MACD(a=12, b=26, c=9, fillna=False).update(value)
 ```
 
-`a` is the fast EMA window, `b` is the slow EMA window, and `c` is the signal EMA
-window.
+| Parameter | Default  | Meaning |
+|-----------|----------|---------|
+| `a`       | `12`     | Fast EMA period |
+| `b`       | `26`     | Slow EMA period |
+| `c`       | `9`      | Signal EMA period |
+| `fillna`  | `False`  | If `False`, NaN until warm-up |
+
+`update(value)` returns a result with:
+
+- `macd` — fast EMA − slow EMA
+- `signal` — EMA of `macd`
+- `histogram` — `macd` − `signal`
+
+`advance(value)` updates state; `last()` returns the cached result.
+
+Related APIs: [`MACDFix`](macd-fix.md) (fixed 12/26), [`MACDExt`](macd-ext.md)
+(selectable SMA/EMA types).
 
 ## Theory Of Operation
 
-MACD measures the distance between a fast and slow trend estimate. RTTA's
-scalar `MACD` class returns the signal-smoothed line:
+MACD measures the gap between a short-horizon and long-horizon exponential
+average of price. When the fast EMA is above the slow EMA, intermediate momentum
+is positive; the opposite signals negative momentum. The signal line is a further
+EMA that smooths MACD so that:
 
-- fast EMA of the input,
-- slow EMA of the input,
-- raw difference between the two,
-- signal EMA of that raw difference.
+- **MACD / signal crosses** are common entry triggers.
+- **Histogram** visualizes the gap and its expansion/contraction.
+- **Zero-line crosses** of MACD mark shifts in the fast/slow EMA order.
 
-For a multi-field percentage oscillator with signal and histogram fields, see
-`PercentagePrice`.
+All three nested EMAs run with internal `fillna=True` so coefficients and seeds
+advance every bar; the outer `fillna` flag only gates whether incomplete
+warm-up samples are returned as NaN.
 
 ## Recurrence
 
-Let \(x_t\) be the input, and define EMA recurrences with smoothing constants
-\(\alpha_a=2/(1+a)\), \(\alpha_b=2/(1+b)\), and \(\alpha_c=2/(1+c)\).
+Let \(x_t\) be the input series and \(a,b,c\) the three periods.
 
 \[
-F_t = \alpha_a x_t + (1-\alpha_a)F_{t-1}
+F_t = \operatorname{EMA}_a(x_t),\qquad
+S_t = \operatorname{EMA}_b(x_t)
 \]
 
 \[
-S_t = \alpha_b x_t + (1-\alpha_b)S_{t-1}
+MACD_t = F_t - S_t
 \]
 
 \[
-D_t = F_t - S_t
+signal_t = \operatorname{EMA}_c(MACD_t)
 \]
 
 \[
-M_t = \alpha_c D_t + (1-\alpha_c)M_{t-1}
+hist_t = MACD_t - signal_t
 \]
 
-`update(...)` returns \(M_t\). With `fillna=False`, returned values are `NaN`
-until the internal counter reaches \(\max(a,b)+c\), while all EMA state still
-advances.
+When `fillna=False`, all three fields are NaN while the sample counter is less
+than \(\max(a,b)+c\); otherwise the current MACD triple is returned.
+
+EMA seeding and \(\alpha=2/(n+1)\) follow RTTA's [`EMA`](ema.md).
 
 ## Implementation Notes
 
-The recurrence is implemented in `src/rtta/indicator.cpp` in `class MACD`.
+- Implemented in `src/rtta/indicator.cpp` in `class MACD`.
+- Members: `EMA a_`, `EMA b_`, `EMA c_`; result `MACDResult`.
+- Default `fillna=False` (unlike many other RTTA indicators that default True).
+- Batch helpers exist for MACD family series processing.
 
 ## Reference
 
-- [ChartSchool: MACD](https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/macd-moving-average-convergence-divergence-oscillator)
+- [StockCharts — MACD](https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-indicators/macd-moving-average-convergence-divergence-oscillator)
+- [Investopedia — MACD](https://www.investopedia.com/terms/m/macd.asp)
