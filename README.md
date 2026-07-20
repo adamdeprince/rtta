@@ -95,9 +95,15 @@ This project is built as a C++23 nanobind extension with CMake through
 `scikit-build-core`.
 
 ```bash
-poetry install --with build,dev --no-root
+poetry install --with build,dev,docs --no-root
 poetry run python -m pip install --no-build-isolation -e .
 poetry run pytest
+```
+
+Build the static HTML documentation with:
+
+```bash
+poetry run python tools/build_html_docs.py
 ```
 
 To build a wheel:

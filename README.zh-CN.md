@@ -64,9 +64,15 @@ current = ema.update(next_close)
 本项目使用 `scikit-build-core` 和 CMake 构建为基于 C++23 的 nanobind 扩展。
 
 ```bash
-poetry install --with build,dev --no-root
+poetry install --with build,dev,docs --no-root
 poetry run python -m pip install --no-build-isolation -e .
 poetry run pytest
+```
+
+构建静态 HTML 文档：
+
+```bash
+poetry run python tools/build_html_docs.py
 ```
 
 构建 wheel：

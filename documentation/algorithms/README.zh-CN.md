@@ -204,39 +204,6 @@
 | [`BollingerPercentB`](bollinger-percent-b.zh-CN.md) | 布林 %B：价格在滚动均值与标准差包络中的位置。 |
 | [`BullsPower`](bulls-power.zh-CN.md) | Elder 多头力量：最高价减收盘价 EMA。 |
 | [`CamarillaPivotPoints`](camarilla-pivot-points.zh-CN.md) | 根据前一根 K 线 HLC 计算 Camarilla 支撑位和阻力位。 |
-| [`CDL3BlackCrows`](cdl-3-black-crows.zh-CN.md) | 三只乌鸦：连续三根逐步下行的阴线实体。 |
-| [`CDL3Inside`](cdl-3-inside.zh-CN.md) | 三内部上涨/下跌：孕线加确认 K 线。 |
-| [`CDL3Outside`](cdl-3-outside.zh-CN.md) | 三外部上涨/下跌：吞没形态加确认 K 线。 |
-| [`CDL3WhiteSoldiers`](cdl-3-white-soldiers.zh-CN.md) | 三白兵（红三兵）：连续三根逐步上行的阳线实体。 |
-| [`CDLBeltHold`](cdl-belt-hold.zh-CN.md) | 捉腰带线：在极值处开盘并形成长实体。 |
-| [`CDLClosingMarubozu`](cdl-closing-marubozu.zh-CN.md) | 收盘光头光脚线：实体收于或接近 K 线极值。 |
-| [`CDLCounterAttack`](cdl-counter-attack.zh-CN.md) | 反击线：方向相反的长实体收于前一收盘价附近。 |
-| [`CDLDarkCloudCover`](cdl-dark-cloud-cover.zh-CN.md) | 乌云盖顶：阴线收盘穿过前一根阳线实体中点。 |
-| [`CDLDojiStar`](cdl-doji-star.zh-CN.md) | 十字星：长实体之后出现十字线，提示反转风险。 |
-| [`CDLDoji`](cdl-doji.zh-CN.md) | 十字线：真实实体相对全幅极小，表示犹豫。 |
-| [`CDLDragonflyDoji`](cdl-dragonfly-doji.zh-CN.md) | 蜻蜓十字：带长下影线的十字线，表示看涨拒绝。 |
-| [`CDLEngulfing`](cdl-engulfing.zh-CN.md) | 吞没形态：当前实体完全吞没前一实体，提示反转。 |
-| [`CDLEveningDojiStar`](cdl-evening-doji-star.zh-CN.md) | 黄昏十字星：中间 K 线为十字线的黄昏星。 |
-| [`CDLEveningStar`](cdl-evening-star.zh-CN.md) | 黄昏星：三根 K 线组成的看跌反转形态。 |
-| [`CDLGravestoneDoji`](cdl-gravestone-doji.zh-CN.md) | 墓碑十字：带长上影线的十字线，表示看跌拒绝。 |
-| [`CDLHammer`](cdl-hammer.zh-CN.md) | 锤头线：下跌趋势中带长下影线的看涨形态。 |
-| [`CDLHangingMan`](cdl-hanging-man.zh-CN.md) | 上吊线：上涨趋势中出现锤头外形的看跌形态。 |
-| [`CDLHaramiCross`](cdl-harami-cross.zh-CN.md) | 十字孕线：前一实体内部出现十字线。 |
-| [`CDLHarami`](cdl-harami.zh-CN.md) | 孕线：小实体位于前一实体内部，表示反转或停顿。 |
-| [`CDLHighWave`](cdl-high-wave.zh-CN.md) | 高浪线：极小实体配合很长的影线。 |
-| [`CDLInvertedHammer`](cdl-inverted-hammer.zh-CN.md) | 倒锤头线：下跌趋势中带长上影线的看涨形态。 |
-| [`CDLLongLeggedDoji`](cdl-long-legged-doji.zh-CN.md) | 长脚十字：上下影线都很长的十字线。 |
-| [`CDLLongLine`](cdl-long-line.zh-CN.md) | 长实体线：真实实体相对近期平均实体较大。 |
-| [`CDLMarubozu`](cdl-marubozu.zh-CN.md) | 光头光脚线：全幅主要由真实实体构成，方向性很强。 |
-| [`CDLMatchingLow`](cdl-matching-low.zh-CN.md) | 相同低价：两根阴线收盘价相近，提示支撑。 |
-| [`CDLMorningDojiStar`](cdl-morning-doji-star.zh-CN.md) | 晨星十字：中间 K 线为十字线的晨星。 |
-| [`CDLMorningStar`](cdl-morning-star.zh-CN.md) | 晨星：三根 K 线组成的看涨反转形态。 |
-| [`CDLPatternPack`](cdl-pattern-pack.zh-CN.md) | 一次 OHLC 更新即可计算多种常见 CDL 形态的多输出组合。 |
-| [`CDLPiercing`](cdl-piercing.zh-CN.md) | 刺透形态：阳线收盘穿过前一根阴线实体中点。 |
-| [`CDLShootingStar`](cdl-shooting-star.zh-CN.md) | 流星线：上涨趋势中带长上影线的看跌形态。 |
-| [`CDLShortLine`](cdl-short-line.zh-CN.md) | 短实体线：真实实体相对近期平均实体较小。 |
-| [`CDLSpinningTop`](cdl-spinning-top.zh-CN.md) | 纺锤线：小实体配合上下影线，表示犹豫。 |
-| [`CDLTriStar`](cdl-tri-star.zh-CN.md) | 三星十字：连续三根十字线构成的反转形态。 |
 | [`ChaikinVolatility`](chaikin-volatility.zh-CN.md) | 最高价—最低价区间 EMA 的百分比变化率。 |
 | [`ChandeForecastOscillator`](chande-forecast-oscillator.zh-CN.md) | Chande 预测振荡器：收盘价距时间序列预测值的百分比。 |
 | [`ChandelierExit`](chandelier-exit.zh-CN.md) | 根据滚动高低极值构建的 ATR 跟踪型多头/空头吊灯止损位。 |
@@ -322,3 +289,43 @@
 | [`WilliamsFractals`](williams-fractals.zh-CN.md) | 确认滞后两根 K 线的五根 K 线上下分形枢轴。 |
 | [`WoodiePivotPoints`](woodie-pivot-points.zh-CN.md) | 根据前一根 K 线 H + L + 2C 计算的 Woodie 场内枢轴点。 |
 | [`ZeroLagEMA`](zero-lag-ema.zh-CN.md) | 将去滞后价格送入 EMA 的零滞后指数移动平均。 |
+
+## K 线（CDL）形态
+
+概览：[cdl-patterns.zh-CN.md](cdl-patterns.zh-CN.md)。
+
+| 算法 | 说明 |
+| --- | --- |
+| [`CDL3BlackCrows`](cdl-3-black-crows.zh-CN.md) | 三只乌鸦：连续三根逐步下行的阴线实体。 |
+| [`CDL3Inside`](cdl-3-inside.zh-CN.md) | 三内部上涨/下跌：孕线加确认 K 线。 |
+| [`CDL3Outside`](cdl-3-outside.zh-CN.md) | 三外部上涨/下跌：吞没形态加确认 K 线。 |
+| [`CDL3WhiteSoldiers`](cdl-3-white-soldiers.zh-CN.md) | 三白兵（红三兵）：连续三根逐步上行的阳线实体。 |
+| [`CDLBeltHold`](cdl-belt-hold.zh-CN.md) | 捉腰带线：在极值处开盘并形成长实体。 |
+| [`CDLClosingMarubozu`](cdl-closing-marubozu.zh-CN.md) | 收盘光头光脚线：实体收于或接近 K 线极值。 |
+| [`CDLCounterAttack`](cdl-counter-attack.zh-CN.md) | 反击线：方向相反的长实体收于前一收盘价附近。 |
+| [`CDLDarkCloudCover`](cdl-dark-cloud-cover.zh-CN.md) | 乌云盖顶：阴线收盘穿过前一根阳线实体中点。 |
+| [`CDLDoji`](cdl-doji.zh-CN.md) | 十字线：真实实体相对全幅极小，表示犹豫。 |
+| [`CDLDojiStar`](cdl-doji-star.zh-CN.md) | 十字星：长实体之后出现十字线，提示反转风险。 |
+| [`CDLDragonflyDoji`](cdl-dragonfly-doji.zh-CN.md) | 蜻蜓十字：带长下影线的十字线，表示看涨拒绝。 |
+| [`CDLEngulfing`](cdl-engulfing.zh-CN.md) | 吞没形态：当前实体完全吞没前一实体，提示反转。 |
+| [`CDLEveningDojiStar`](cdl-evening-doji-star.zh-CN.md) | 黄昏十字星：中间 K 线为十字线的黄昏星。 |
+| [`CDLEveningStar`](cdl-evening-star.zh-CN.md) | 黄昏星：三根 K 线组成的看跌反转形态。 |
+| [`CDLGravestoneDoji`](cdl-gravestone-doji.zh-CN.md) | 墓碑十字：带长上影线的十字线，表示看跌拒绝。 |
+| [`CDLHammer`](cdl-hammer.zh-CN.md) | 锤头线：下跌趋势中带长下影线的看涨形态。 |
+| [`CDLHangingMan`](cdl-hanging-man.zh-CN.md) | 上吊线：上涨趋势中出现锤头外形的看跌形态。 |
+| [`CDLHarami`](cdl-harami.zh-CN.md) | 孕线：小实体位于前一实体内部，表示反转或停顿。 |
+| [`CDLHaramiCross`](cdl-harami-cross.zh-CN.md) | 十字孕线：前一实体内部出现十字线。 |
+| [`CDLHighWave`](cdl-high-wave.zh-CN.md) | 高浪线：极小实体配合很长的影线。 |
+| [`CDLInvertedHammer`](cdl-inverted-hammer.zh-CN.md) | 倒锤头线：下跌趋势中带长上影线的看涨形态。 |
+| [`CDLLongLeggedDoji`](cdl-long-legged-doji.zh-CN.md) | 长脚十字：上下影线都很长的十字线。 |
+| [`CDLLongLine`](cdl-long-line.zh-CN.md) | 长实体线：真实实体相对近期平均实体较大。 |
+| [`CDLMarubozu`](cdl-marubozu.zh-CN.md) | 光头光脚线：全幅主要由真实实体构成，方向性很强。 |
+| [`CDLMatchingLow`](cdl-matching-low.zh-CN.md) | 相同低价：两根阴线收盘价相近，提示支撑。 |
+| [`CDLMorningDojiStar`](cdl-morning-doji-star.zh-CN.md) | 晨星十字：中间 K 线为十字线的晨星。 |
+| [`CDLMorningStar`](cdl-morning-star.zh-CN.md) | 晨星：三根 K 线组成的看涨反转形态。 |
+| [`CDLPatternPack`](cdl-pattern-pack.zh-CN.md) | 一次 OHLC 更新即可计算多种常见 CDL 形态的多输出组合。 |
+| [`CDLPiercing`](cdl-piercing.zh-CN.md) | 刺透形态：阳线收盘穿过前一根阴线实体中点。 |
+| [`CDLShootingStar`](cdl-shooting-star.zh-CN.md) | 流星线：上涨趋势中带长上影线的看跌形态。 |
+| [`CDLShortLine`](cdl-short-line.zh-CN.md) | 短实体线：真实实体相对近期平均实体较小。 |
+| [`CDLSpinningTop`](cdl-spinning-top.zh-CN.md) | 纺锤线：小实体配合上下影线，表示犹豫。 |
+| [`CDLTriStar`](cdl-tri-star.zh-CN.md) | 三星十字：连续三根十字线构成的反转形态。 |

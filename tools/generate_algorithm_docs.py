@@ -82,7 +82,7 @@ def parse_reference_links() -> dict[str, str]:
                 references[match.group(1)] = ref
 
     for path in DOCS.glob("*.md"):
-        if path.name == "README.md":
+        if path.name == "README.md" or path.name.endswith(".zh-CN.md"):
             continue
         try:
             result = subprocess.run(
@@ -145,7 +145,7 @@ def parse_registry() -> dict[str, tuple[tuple[str, ...], dict[str, object]]]:
 def existing_doc_pages() -> dict[str, Path]:
     pages: dict[str, Path] = {}
     for path in DOCS.glob("*.md"):
-        if path.name == "README.md":
+        if path.name == "README.md" or path.name.endswith(".zh-CN.md"):
             continue
         text = path.read_text(encoding="utf-8")
         match = re.search(r"^#\s+(.+?)\s*$", text, flags=re.M)
@@ -1575,9 +1575,27 @@ def update_indexes(algos: list[Algo], paths: dict[str, Path]) -> None:
         "| Algorithm | Summary |",
         "|---|---|",
     ]
+    cdl_algos = [algo for algo in algos if algo.name.startswith("CDL")]
     for algo in algos:
+        if algo.name.startswith("CDL"):
+            continue
         rel = paths[algo.name].relative_to(DOCS).as_posix()
         index.append(f"| [`{algo.name}`]({rel}) | {algo.description} |")
+    if cdl_algos:
+        index.extend(
+            [
+                "",
+                "## Candlestick (CDL) patterns",
+                "",
+                "Overview: [cdl-patterns.md](cdl-patterns.md).",
+                "",
+                "| Algorithm | Description |",
+                "| --- | --- |",
+            ]
+        )
+        for algo in cdl_algos:
+            rel = paths[algo.name].relative_to(DOCS).as_posix()
+            index.append(f"| [`{algo.name}`]({rel}) | {algo.description} |")
     index.append("")
     (DOCS / "README.md").write_text("\n".join(index), encoding="utf-8")
 

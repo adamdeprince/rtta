@@ -29,6 +29,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
 
+[project.optional-dependencies]
+docs = ["Markdown>=3.5"]
+
 [project.urls]
 Homepage = "https://github.com/adamdeprince/rtta"
 Repository = "https://github.com/adamdeprince/rtta"
@@ -62,3 +65,6 @@ scikit-build-core = ">=0.12"
 flake8 = ">=3.7"
 pandas = ">=2.0"
 pytest = ">=5.1"
+
+[tool.poetry.group.docs.dependencies]
+Markdown = ">=3.5"

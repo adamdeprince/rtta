@@ -82,27 +82,27 @@ test = ["pytest (>=6)"]
 
 [[package]]
 name = "fast-kalman"
-version = "0.2.2"
-description = "Fixed-size C++23 Kalman filters with nanobind Python bindings"
+version = "0.2.3"
+description = "Very fast Kalman filters."
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "fast_kalman-0.2.2-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:86267ea4685383b9ae27d009b4afcd9cb7e6ce2b3559b3f3bfc33cb789637768"},
-    {file = "fast_kalman-0.2.2-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:30666550016725d00429ab715a7cbd4191421148aba71da52e9c283cbb90cebf"},
-    {file = "fast_kalman-0.2.2-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5115ecc616081f604e368e1a034cbc90f264e5053183fcec6f0a165e2fe65558"},
-    {file = "fast_kalman-0.2.2-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:d51e323eba021ab61816f26cb112a87bdf57d91c039c81a5896c81642f77f8db"},
-    {file = "fast_kalman-0.2.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:04c361db8398f965109ab0e280009c1b0d7a8074ab2693afeae8fd3048c6e9cb"},
-    {file = "fast_kalman-0.2.2-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:5e04c7ffc5a40ba7885480a6cbc985f882623556c5410ece362180645dd82d7b"},
-    {file = "fast_kalman-0.2.2-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:51465a5082bf7c81eaabcc9bca58f72d91afd4525f90d0b5003fdc20909cc9b0"},
-    {file = "fast_kalman-0.2.2-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:d059191c65bed3344a8ca0cbc21e60d6c0f782e70aec169b0eb2e97fa2358f3a"},
-    {file = "fast_kalman-0.2.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c50719bdb07747b2c8f4f9bd71961a831164ded2e599fa2fb0df2117ebb558f1"},
-    {file = "fast_kalman-0.2.2-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:2e56e670cde3cf43ef666cf349b28201ead254f82a9772f64f29682f902951f9"},
-    {file = "fast_kalman-0.2.2-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:941d8de2acf66133cd7522e49ad0e3e00aa2ab21ef910cb4be6b2c0d903f8a31"},
-    {file = "fast_kalman-0.2.2-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:372db9352aedc1aac905d0ade4b9e2a501a40865f8fd45663e8bedd5914c7666"},
-    {file = "fast_kalman-0.2.2-cp39-cp39-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:aae73cacda85907eec075fdcced869d750ea29a2036be755b689caa32d86c330"},
-    {file = "fast_kalman-0.2.2-cp39-cp39-musllinux_1_2_x86_64.whl", hash = "sha256:258b60fca457071565f90e1352fe30db1358d08b1644c93d4c651ba3fbcf4acd"},
-    {file = "fast_kalman-0.2.2.tar.gz", hash = "sha256:86d4236dcdffcf1abe66297b9b6e71c2b2fc6b57923469143e90771a1123121b"},
+    {file = "fast_kalman-0.2.3-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2c194497e3b2d0ed48d4a7cc241ef73a665eef60ffd0eea07f85d37861701da7"},
+    {file = "fast_kalman-0.2.3-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:7416def6cb3898a1e14c2082563ef112ab01733c45629c6fed4048aede6bbe9a"},
+    {file = "fast_kalman-0.2.3-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:879154f7be8cec9bf1c21b7c986f956b02e74109fa86e8bc5fba72155caac8c6"},
+    {file = "fast_kalman-0.2.3-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:6893b56256db8ed1aee5fc19a15308b87c81cdd72cd34d2166115f943a1f3a30"},
+    {file = "fast_kalman-0.2.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ab149aee52d6557f1e8c7f35c6376cd5781c4e3d8ea536e4b8aad62b249d3ce6"},
+    {file = "fast_kalman-0.2.3-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:bbc28d4a30c91557b7a1f593acbf53656651630920030e1095e25d5b6e28845a"},
+    {file = "fast_kalman-0.2.3-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1a462307650696518357ac4c730395ad6fdd93d5acca5434100a0a6b1d5bc2cb"},
+    {file = "fast_kalman-0.2.3-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:21824850c5e42aa1e386576826c26fa2c1a318c502f9ae2555d09f6a30a5cf28"},
+    {file = "fast_kalman-0.2.3-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:20569c214a3af851b1cca112fe95dd988c2f6944134fb73ca7ec9eb6cf7d094a"},
+    {file = "fast_kalman-0.2.3-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:3ed66a5e3f1b3d7a65cf55c015d4c6f003d8a9369b7ada959e04cf042fd1a93d"},
+    {file = "fast_kalman-0.2.3-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:48fb0ef491d085f3337c3f79d1b5ac95e524dcdaae9412881fe620a0396733c4"},
+    {file = "fast_kalman-0.2.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:007073b739ba6be9392d1406b0098f0c2d0f0c04e0636899bd45195509c56f87"},
+    {file = "fast_kalman-0.2.3-cp39-cp39-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9b4ff680a67b8585db1daa1a566debdc500b7201f65f21acd98afc2bf639e7a8"},
+    {file = "fast_kalman-0.2.3-cp39-cp39-musllinux_1_2_x86_64.whl", hash = "sha256:1534aba22d3b854c08f219d057a5dd200625be591985a874d4134d5f1fb66c22"},
+    {file = "fast_kalman-0.2.3.tar.gz", hash = "sha256:75cfa0697c6aef95c6109aa3f53654c7f78c4a9c329bbc6accab8025aa9dc9ed"},
 ]
 
 [package.dependencies]
@@ -135,12 +135,12 @@ version = "8.7.1"
 description = "Read metadata from Python packages"
 optional = false
 python-versions = ">=3.9"
-groups = ["build"]
-markers = "python_full_version < \"3.10.2\""
+groups = ["main", "build", "docs"]
 files = [
     {file = "importlib_metadata-8.7.1-py3-none-any.whl", hash = "sha256:5a1f80bf1daa489495071efbb095d75a634cf28a8bc299581244063b53176151"},
     {file = "importlib_metadata-8.7.1.tar.gz", hash = "sha256:49fef1ae6440c182052f407c8d34a68f72efc36db9ca90dc0113398f2fdde8bb"},
 ]
+markers = {main = "python_version < \"3.10\" and extra == \"docs\"", build = "python_full_version < \"3.10.2\"", docs = "python_version < \"3.10\""}
 
 [package.dependencies]
 zipp = ">=3.20"
@@ -179,6 +179,43 @@ files = [
     {file = "iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12"},
     {file = "iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730"},
 ]
+
+[[package]]
+name = "markdown"
+version = "3.9"
+description = "Python implementation of John Gruber's Markdown."
+optional = false
+python-versions = ">=3.9"
+groups = ["main", "docs"]
+files = [
+    {file = "markdown-3.9-py3-none-any.whl", hash = "sha256:9f4d91ed810864ea88a6f32c07ba8bee1346c0cc1f6b1f9f6c822f2a9667d280"},
+    {file = "markdown-3.9.tar.gz", hash = "sha256:d2900fe1782bd33bdbbd56859defef70c2e78fc46668f8eb9df3128138f2cb6a"},
+]
+markers = {main = "python_version < \"3.11\" and extra == \"docs\"", docs = "python_version < \"3.11\""}
+
+[package.dependencies]
+importlib-metadata = {version = ">=4.4", markers = "python_version < \"3.10\""}
+
+[package.extras]
+docs = ["mdx_gh_links (>=0.2)", "mkdocs (>=1.6)", "mkdocs-gen-files", "mkdocs-literate-nav", "mkdocs-nature (>=0.6)", "mkdocs-section-index", "mkdocstrings[python]"]
+testing = ["coverage", "pyyaml"]
+
+[[package]]
+name = "markdown"
+version = "3.10.2"
+description = "Python implementation of John Gruber's Markdown."
+optional = false
+python-versions = ">=3.10"
+groups = ["main", "docs"]
+files = [
+    {file = "markdown-3.10.2-py3-none-any.whl", hash = "sha256:e91464b71ae3ee7afd3017d9f358ef0baf158fd9a298db92f1d4761133824c36"},
+    {file = "markdown-3.10.2.tar.gz", hash = "sha256:994d51325d25ad8aa7ce4ebaec003febcce822c3f8c911e3b17c52f7f589f950"},
+]
+markers = {main = "python_version >= \"3.11\" and extra == \"docs\"", docs = "python_version >= \"3.11\""}
+
+[package.extras]
+docs = ["mdx_gh_links (>=0.2)", "mkdocs (>=1.6)", "mkdocs-gen-files", "mkdocs-literate-nav", "mkdocs-nature (>=0.6)", "mkdocs-section-index", "mkdocstrings[python] (>=0.28.3)"]
+testing = ["coverage", "pyyaml"]
 
 [[package]]
 name = "mccabe"
@@ -830,12 +867,12 @@ version = "3.23.1"
 description = "Backport of pathlib-compatible object wrapper for zip files"
 optional = false
 python-versions = ">=3.9"
-groups = ["build"]
-markers = "python_full_version < \"3.10.2\""
+groups = ["main", "build", "docs"]
 files = [
     {file = "zipp-3.23.1-py3-none-any.whl", hash = "sha256:0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc"},
     {file = "zipp-3.23.1.tar.gz", hash = "sha256:32120e378d32cd9714ad503c1d024619063ec28aad2248dc6672ad13edfa5110"},
 ]
+markers = {main = "python_version < \"3.10\" and extra == \"docs\"", build = "python_full_version < \"3.10.2\"", docs = "python_version < \"3.10\""}
 
 [package.extras]
 check = ["pytest-checkdocs (>=2.4)", "pytest-ruff (>=0.2.1) ; sys_platform != \"cygwin\""]
@@ -845,7 +882,10 @@ enabler = ["pytest-enabler (>=2.2)"]
 test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_itertools", "pytest (>=6,!=8.1.*)", "pytest-ignore-flaky"]
 type = ["pytest-mypy"]
 
+[extras]
+docs = ["Markdown"]
+
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.9.8,<4.0"
-content-hash = "c7dcb186d4eea86c3bca275fe4e2e4de63cd8fbc2ded7fdc8d1af744067d1901"
+content-hash = "ce475df41a47b8ab70eba38361d6d5286eef677ed93f84fda249ba5eab1e5c81"
