@@ -49,7 +49,8 @@ sdist.exclude = [".codex"]
 version = ">=3.21"
 
 [tool.poetry]
-package-mode = true
+# scikit-build-core builds the native extension; Poetry manages dependencies only.
+package-mode = false
 requires-poetry = ">=2.0"
 
 [tool.poetry.dependencies]
